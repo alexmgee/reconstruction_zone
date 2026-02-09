@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Test artifacts
+test_preview.png
+nul
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code local state
+.claude/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Model weights (large files)
+*.pth
+*.pt
+*.onnx
+*.bin
+*.safetensors
+
+# Environment
+.env
+*.env
