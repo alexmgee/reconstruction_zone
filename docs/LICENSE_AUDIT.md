@@ -125,7 +125,7 @@ These are full Git repositories cloned locally and installed in development mode
 | **Copyleft** | Partial — redistribution must preserve SAM License |
 | **Commercial Use** | Permitted with conditions |
 | **Local Path** | `models/sam3/` |
-| **Used By** | `masking_v2.py`, `sam3_pipeline.py` |
+| **Used By** | `reconstruction_pipeline.py`, `sam3_pipeline.py` |
 
 **Key License Terms:**
 - Grants non-exclusive, worldwide, royalty-free license to use, reproduce, distribute, and create derivative works.
@@ -149,7 +149,7 @@ These are full Git repositories cloned locally and installed in development mode
 | **Copyleft** | No |
 | **Commercial Use** | Yes |
 | **Local Path** | `models/EfficientSAM/` |
-| **Used By** | `masking_v2.py` (fallback segmenter) |
+| **Used By** | `reconstruction_pipeline.py` (fallback segmenter) |
 
 **Compatibility with GPL-3.0:** Fully compatible. Apache 2.0 is a permissive license that is one-way compatible with GPL-3.0.
 
@@ -204,7 +204,7 @@ These are full Git repositories cloned locally and installed in development mode
 | **OSI Approved** | Yes (AGPL-3.0 is OSI-approved) |
 | **Copyleft** | **Yes — strong copyleft with network clause** |
 | **Commercial Use** | Requires Enterprise License for proprietary use |
-| **Used By** | `masking_v2.py` (YOLO26 segmentation), `prep360/core/segmenter.py` |
+| **Used By** | `reconstruction_pipeline.py` (YOLO26 segmentation), `prep360/core/segmenter.py` |
 | **Import Path** | `from ultralytics import YOLO` |
 
 **Key License Terms (AGPL-3.0):**
@@ -232,7 +232,7 @@ Ultralytics offers a paid Enterprise License that removes the AGPL-3.0 obligatio
 | **OSI Approved** | Yes |
 | **Copyleft** | No |
 | **Commercial Use** | Yes |
-| **Used By** | `masking_v2.py` (RF-DETR detector) |
+| **Used By** | `reconstruction_pipeline.py` (RF-DETR detector) |
 | **Import Path** | `from rfdetr import RFDETRSegSmall` |
 
 **Note:** The base RF-DETR models are Apache 2.0. Roboflow also offers **RF-DETR+** under a proprietary "Platform Model License 1.0" (PML-1.0) — this project does **not** use RF-DETR+.

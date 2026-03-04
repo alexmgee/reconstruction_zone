@@ -4,12 +4,15 @@ Frame Extractor Module
 Extract frames from video with multiple selection modes.
 """
 
+import os
 import subprocess
 import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Callable, List
+
+_SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
 class ExtractionMode(Enum):
@@ -117,7 +120,8 @@ class FrameExtractor:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True
+                text=True,
+                **_SUBPROCESS_FLAGS,
             )
 
             if result.returncode != 0:

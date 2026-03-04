@@ -112,7 +112,7 @@ class VideoQueue:
     def __init__(self, save_path: Optional[str] = None):
         self.items: List[QueueItem] = []
         self.settings = QueueSettings()
-        self.save_path = save_path or str(Path.home() / ".panoex_queue.json")
+        self.save_path = save_path or str(Path.home() / ".prep360_queue.json")
         self._load()
 
     def _load(self):

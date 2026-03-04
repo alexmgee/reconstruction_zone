@@ -117,7 +117,7 @@ class ViewConfig:
 
 # Built-in presets
 VIEW_PRESETS = {
-    "panoex_default": ViewConfig(
+    "prep360_default": ViewConfig(
         rings=[
             Ring(pitch=0, count=8, fov=65),      # Horizon: 8 views @ 45° spacing
             Ring(pitch=-20, count=4, fov=65),   # Below: 4 views @ 90° spacing
@@ -347,7 +347,7 @@ class Reframer:
     """Reframe equirectangular images to perspective views."""
 
     def __init__(self, config: Optional[ViewConfig] = None):
-        self.config = config or VIEW_PRESETS["panoex_default"]
+        self.config = config or VIEW_PRESETS["prep360_default"]
 
     def reframe_single(
         self,
@@ -465,7 +465,7 @@ def main():
     parser.add_argument("input", help="Input directory with equirectangular images")
     parser.add_argument("output", help="Output directory for perspective views")
     parser.add_argument("--preset", "-p", choices=list(VIEW_PRESETS.keys()),
-                        default="panoex_default", help="View configuration preset")
+                        default="prep360_default", help="View configuration preset")
     parser.add_argument("--size", "-s", type=int, default=1920,
                         help="Output image size (default: 1920)")
     parser.add_argument("--quality", "-q", type=int, default=95,

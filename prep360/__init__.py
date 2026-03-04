@@ -1,5 +1,5 @@
 """
-Panoex - 360° Video Processing Pipeline
+prep360 - 360° Video Processing Pipeline
 
 A modular toolkit for processing 360° video into photogrammetry/3DGS-ready image sets.
 
@@ -13,12 +13,12 @@ Pipeline stages:
 
 Usage:
     # As library
-    from panoex.core import VideoAnalyzer, FrameExtractor, Reframer
+    from prep360.core import VideoAnalyzer, FrameExtractor, Reframer
 
     # As CLI
-    python -m panoex analyze video.mp4
-    python -m panoex extract video.mp4 ./frames
-    python -m panoex reframe ./frames ./perspectives
+    python -m prep360 analyze video.mp4
+    python -m prep360 extract video.mp4 ./frames
+    python -m prep360 reframe ./frames ./perspectives
 """
 
 __version__ = "0.1.0"
@@ -41,6 +41,13 @@ from .core import (
     SegmentConfig,
     COCO_CLASSES,
     CLASS_PRESETS,
+    BlurFilter,
+    BlurFilterConfig,
+    ColmapExporter,
+    ColmapExportConfig,
+    MetashapeProject,
+    parse_metashape_xml,
+    ExportResult,
 )
 
 __all__ = [
@@ -60,4 +67,11 @@ __all__ = [
     "SegmentConfig",
     "COCO_CLASSES",
     "CLASS_PRESETS",
+    "BlurFilter",
+    "BlurFilterConfig",
+    "ColmapExporter",
+    "ColmapExportConfig",
+    "MetashapeProject",
+    "parse_metashape_xml",
+    "ExportResult",
 ]
