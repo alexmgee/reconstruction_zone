@@ -1,88 +1,69 @@
 # Reconstruction Zone
 
-**End-to-end toolkit for photogrammetry and 3D Gaussian Splatting — from raw 360° video to reconstruction-ready datasets.**
+![Before and after masking](reconstruction_gui/docs/assets/hero_before_after.jpg)
 
-Reconstruction Zone combines automated masking (remove photographers, tripods, drones) with 360° video preparation (frame extraction, equirect-to-perspective reframing, quality filtering) into a single workflow. The result: clean, consistent image sets ready for [COLMAP](https://colmap.github.io/), [Metashape](https://www.agisoft.com/), or [3DGS](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) pipelines.
+> Automated masking toolkit for photogrammetry — remove photographers, tripods, and equipment from 360° and perspective images before 3D reconstruction.
 
-## What's inside
+Reconstruction Zone detects and masks unwanted objects in your capture images so they don't end up in your 3D models. Load images or extract frames from video, run multi-model segmentation, review and refine every mask, then export a clean dataset ready for [COLMAP](https://colmap.github.io/), [Metashape](https://www.agisoft.com/), or [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/).
 
-### Masking Studio (reconstruction_gui/)
-
-The main application. Automated object detection and masking for photogrammetry images — 360° equirectangular, perspective, and fisheye.
-
-- **Multi-model segmentation** — SAM 3 (text-prompted), YOLO26 (fast), RF-DETR (transformer), FastSAM, with ensemble fusion
-- **360°-aware processing** — Cubemap decomposition handles pole distortion that breaks standard detectors
-- **Temporal propagation** — LiVOS/Cutie propagate masks across video frames
-- **Refinement pipeline** — SAM boundary refinement, ViTMatte alpha matting, shadow detection
-- **Review workflow** — Thumbnail grid with accept/reject/edit, interactive mask editor
-
-[Full documentation](reconstruction_gui/README.md)
-
-### prep360 (prep360/)
-
-Library and CLI for preparing 360° video for reconstruction. Used by Masking Studio's Extract and Coverage tabs.
-
-- **Frame extraction** — Fixed interval, scene detection, or adaptive modes via ffmpeg
-- **Equirect-to-perspective reframing** — Configurable rings of views with presets for common cameras
-- **Quality filtering** — Sharpness scoring (Laplacian/Sobel/Brenner), sky detection, motion selection
-- **Fisheye support** — Dual-fisheye calibration and reframing (DJI Osmo 360, etc.)
-- **Gap detection** — Spatial coverage analysis with automatic bridge frame extraction
-- **COLMAP/XMP export** — Generate COLMAP databases and XMP pose priors from Metashape alignments
+## Installation
 
 ```bash
-python -m prep360 analyze video.mp4
-python -m prep360 extract video.mp4 ./frames --interval 2.0
-python -m prep360 reframe ./frames ./perspectives --preset prep360_default
-python -m prep360 pipeline video.mp4 ./output --preset prep360_default
+# PyTorch with CUDA (recommended — CPU works but is 10-50x slower)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+
+# Core dependencies
+pip install numpy opencv-python ultralytics tqdm pyyaml
+
+# GUI
+pip install customtkinter
 ```
 
-### Metashape Exporter (metashape_exporter.py)
+**Also needed:** [ffmpeg + ffprobe](https://ffmpeg.org/download.html) on PATH (for video extraction features).
 
-Run inside Agisoft Metashape Pro to export camera poses, sparse points, images, and masks — then feed into prep360's COLMAP export pipeline.
-
-## Quick start
+## Launch
 
 ```bash
-# Core dependencies
-pip install numpy opencv-python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-pip install ultralytics tqdm pyyaml
-
-# Launch the GUI
-pip install customtkinter
 python reconstruction_gui/reconstruction_zone.py
 ```
 
-See [reconstruction_gui/docs/QUICKSTART.md](reconstruction_gui/docs/QUICKSTART.md) for a full walkthrough.
+On Windows, double-click `reconstruction_gui/ReconstructionStudio.bat` for a console-free launch.
 
-## Project structure
+## The four tabs
 
-```
-reconstruction-zone/
-├── reconstruction_gui/              # Masking Studio — the main application
-│   ├── reconstruction_zone.py     # GUI launcher (4 tabs: Extract, Mask, Review, Coverage)
-│   ├── reconstruction_pipeline.py  # Core masking pipeline
-│   ├── tabs/                 # Extract, Coverage tab modules
-│   └── docs/                 # Per-tab guides, QUICKSTART, ARCHITECTURE, MODELS
-├── prep360/                  # 360° video preparation library + CLI
-│   ├── cli.py                # python -m prep360
-│   └── core/                 # Analyzer, extractor, reframer, filters, COLMAP export
-├── metashape_exporter.py     # Metashape Pro export script
-└── legacy/                   # Archived scripts (panoex_gui.py, etc.)
-```
+The GUI is organized into four tabs that follow the photogrammetry masking workflow:
+
+| Tab | What it does | Guide |
+|-----|-------------|-------|
+| **Extract** | Pull frames from 360° video, fisheye, or standard video. Equirect-to-perspective reframing with configurable view rings. | [Extract Guide](reconstruction_gui/docs/EXTRACT_TAB.md) |
+| **Mask** | Auto-detect and mask objects using text prompts or class selection. Supports 360°-aware cubemap decomposition. | [Mask Guide](reconstruction_gui/docs/MASK_TAB.md) |
+| **Review** | Thumbnail grid with accept/reject/skip workflow. Open any mask in the interactive editor for brush, flood fill, and lasso touch-ups. | [Review Guide](reconstruction_gui/docs/REVIEW_TAB.md) |
+| **Coverage** | Analyze spatial coverage gaps in your dataset and extract bridge frames to fill them. | [Coverage Guide](reconstruction_gui/docs/COVERAGE_TAB.md) |
+
+## Supported models
+
+| Model | Type | Speed | Best for |
+|-------|------|-------|----------|
+| **SAM 3** | Text-prompted | ~300ms/img | Highest quality, arbitrary objects ("selfie stick", "tripod") |
+| **YOLO26** | Class-based | ~15ms/img | Fast batch processing, COCO objects (person, backpack, car) |
+| **RF-DETR** | Transformer | ~50ms/img | Strong detection + segmentation in one pass |
+| **FastSAM** | Real-time SAM | ~30ms/img | Quick previews, lightweight |
+| **EfficientSAM** | Lightweight SAM | ~40ms/img | Fallback when others unavailable |
+
+Models auto-download on first use. See the full [Model Guide](reconstruction_gui/docs/MODELS.md) for configuration, model sizes, and comparison.
+
+## Requirements
+
+- Python 3.10+ (tested on 3.12–3.14)
+- NVIDIA GPU with CUDA (strongly recommended)
+- ffmpeg + ffprobe on PATH (for video features)
 
 ## Documentation
 
 - [Quickstart](reconstruction_gui/docs/QUICKSTART.md) — First mask in 5 minutes
 - [Architecture](reconstruction_gui/docs/ARCHITECTURE.md) — Pipeline internals, data flow, module map
-- [Model Guide](reconstruction_gui/docs/MODELS.md) — SAM 3, YOLO26, RF-DETR, FastSAM comparison
-- **Tab guides:** [Extract](reconstruction_gui/docs/EXTRACT_TAB.md) | [Mask](reconstruction_gui/docs/MASK_TAB.md) | [Review](reconstruction_gui/docs/REVIEW_TAB.md) | [Coverage](reconstruction_gui/docs/COVERAGE_TAB.md)
-- [Contributing](reconstruction_gui/docs/CONTRIBUTING.md)
-
-## Requirements
-
-- Python 3.10+ (tested on 3.12–3.14)
-- NVIDIA GPU with CUDA (strongly recommended; CPU works but is 10-50x slower)
-- ffmpeg + ffprobe on PATH (for video processing)
+- [Model Guide](reconstruction_gui/docs/MODELS.md) — Model comparison, configuration, COCO class reference
+- [Contributing](reconstruction_gui/docs/CONTRIBUTING.md) — Adding new models and modules
 
 ## License
 
