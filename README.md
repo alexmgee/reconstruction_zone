@@ -2,9 +2,9 @@
 
 ![Before and after masking](reconstruction_gui/docs/assets/hero_before_after.jpg)
 
-> Automated masking toolkit for photogrammetry — remove photographers, tripods, and equipment from 360° and perspective images before 3D reconstruction.
+> Photogrammetry preprocessing toolkit — extract frames from video, reframe 360° and fisheye into perspective views, auto-mask unwanted objects, and build clean datasets for 3D reconstruction.
 
-Reconstruction Zone detects and masks unwanted objects in your capture images so they don't end up in your 3D models. Load images or extract frames from video, run multi-model segmentation, review and refine every mask, then export a clean dataset ready for [COLMAP](https://colmap.github.io/), [Metashape](https://www.agisoft.com/), or [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/).
+This GUI prepares camera captures for 3D reconstruction. Extract and reframe perspectives from 360° or fisheye video, filter for sharpness, auto-detect and mask photographers/tripods/equipment across hundreds of images, review every mask with an interactive editor, then analyze spatial coverage and fill gaps. Outputs datasets ready for reconstruction pipelines.
 
 ## Installation
 
@@ -31,7 +31,7 @@ On Windows, double-click `reconstruction_gui/ReconstructionStudio.bat` for a con
 
 ## The four tabs
 
-The GUI is organized into four tabs that follow the photogrammetry masking workflow:
+The GUI is organized into four tabs that follow the photogrammetry preprocessing workflow:
 
 | Tab | What it does | Guide |
 |-----|-------------|-------|
