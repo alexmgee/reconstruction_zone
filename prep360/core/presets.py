@@ -52,6 +52,12 @@ class Preset:
     mask_classes: List[int] = field(default_factory=lambda: [0, 24, 25, 26, 27, 28])
     mask_confidence: float = 0.5
 
+    # COLMAP export settings
+    colmap_export_xmp: bool = True
+    colmap_export_rig: bool = False
+    colmap_xmp_pose_prior: str = "locked"
+    colmap_undistort_frame: bool = True
+
     def get_view_config(self) -> ViewConfig:
         """Convert preset to ViewConfig."""
         rings = [
@@ -105,14 +111,18 @@ class Preset:
             mask_model=data.get("mask_model", "yolo11s-seg"),
             mask_classes=data.get("mask_classes", [0, 24, 25, 26, 27, 28]),
             mask_confidence=data.get("mask_confidence", 0.5),
+            colmap_export_xmp=data.get("colmap_export_xmp", True),
+            colmap_export_rig=data.get("colmap_export_rig", False),
+            colmap_xmp_pose_prior=data.get("colmap_xmp_pose_prior", "locked"),
+            colmap_undistort_frame=data.get("colmap_undistort_frame", True),
         )
 
 
 # Built-in presets
 BUILTIN_PRESETS = {
-    "panoex_default": Preset(
-        name="panoex_default",
-        description="Panoex-style default: 8 horizon + 4 below + zenith",
+    "prep360_default": Preset(
+        name="prep360_default",
+        description="Default: 8 horizon + 4 below + zenith",
         extraction_interval=2.0,
         reframe_rings=[
             {"pitch": 0, "count": 8, "fov": 65},
@@ -303,7 +313,7 @@ class PresetManager:
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Manage panoex presets")
+    parser = argparse.ArgumentParser(description="Manage prep360 presets")
     parser.add_argument("command", choices=["list", "show", "export"],
                         help="Command to execute")
     parser.add_argument("name", nargs="?", help="Preset name (for show/export)")

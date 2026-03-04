@@ -16,6 +16,9 @@ nul
 *.swp
 *.swo
 
+# App preferences (user-specific)
+.studio_prefs.json
+
 # Claude Code local state
 .claude/
 
@@ -24,12 +27,21 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Model repos (cloned externally, not part of this project)
+models/
+
 # Model weights (large files)
 *.pth
 *.pt
 *.onnx
 *.bin
 *.safetensors
+
+# Archived docs (stale, kept for reference)
+archive/
+
+# Skill files (Claude Code)
+*.skill
 
 # Environment
 .env

@@ -1,5 +1,5 @@
 """
-Allow running panoex as a module: python -m panoex
+Allow running prep360 as a module: python -m prep360
 """
 from .cli import main
 

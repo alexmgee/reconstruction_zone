@@ -5,11 +5,14 @@ Analyze video files to extract metadata and recommend extraction parameters.
 """
 
 import json
+import os
 import subprocess
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+_SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
 @dataclass
@@ -130,7 +133,7 @@ class VideoAnalyzer:
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, **_SUBPROCESS_FLAGS)
             return json.loads(result.stdout)
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"ffprobe failed: {e.stderr}")

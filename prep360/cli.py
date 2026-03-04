@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Panoex CLI - Command-line interface for 360° video processing.
+prep360 CLI - Command-line interface for 360° video processing.
 
 Usage:
-    python -m panoex <command> [options]
+    python -m prep360 <command> [options]
 
 Commands:
     analyze     Analyze video file
@@ -11,8 +11,10 @@ Commands:
     reframe     Reframe equirectangular images
     lut         Apply LUT color correction
     sky         Filter sky images
+    blur        Filter blurry images
     presets     Manage presets
     pipeline    Run full pipeline
+    colmap      Export Metashape project to COLMAP/XMP
 """
 
 import argparse
@@ -261,6 +263,66 @@ def cmd_presets(args):
     return 0
 
 
+def cmd_blur(args):
+    """Filter blurry images from a directory."""
+    from .core.blur_filter import BlurFilter, BlurFilterConfig
+
+    input_path = Path(args.input)
+    if not input_path.is_dir():
+        print(f"Error: {input_path} is not a directory", file=sys.stderr)
+        return 1
+
+    config = BlurFilterConfig(
+        threshold=args.threshold,
+        percentile=args.percentile if args.threshold is None and args.top is None else 80.0,
+        keep_top_n=args.top,
+        workers=args.workers,
+    )
+
+    bf = BlurFilter(config)
+
+    if args.dry_run or not args.output:
+        # Analyze only
+        import numpy as np
+
+        def progress(curr, total, name):
+            if args.verbose:
+                print(f"  [{curr}/{total}] {name}")
+
+        scores = bf.analyze_batch(args.input, progress)
+        if not scores:
+            print("No images found.")
+            return 0
+
+        score_values = [s.score for s in scores]
+        print(f"Analyzed {len(scores)} images")
+        print(f"Score range: {min(score_values):.1f} - {max(score_values):.1f}")
+        print(f"Mean: {np.mean(score_values):.1f}, Median: {np.median(score_values):.1f}")
+
+        if args.verbose:
+            print("\nTop 5 sharpest:")
+            for s in scores[:5]:
+                print(f"  {s.image_name}: {s.score:.1f}")
+            print("\nBottom 5 (blurriest):")
+            for s in scores[-5:]:
+                print(f"  {s.image_name}: {s.score:.1f}")
+
+        return 0
+
+    def progress(curr, total, name):
+        print(f"  [{curr}/{total}] {name}")
+
+    result = bf.filter_images(args.input, args.output, config, progress)
+
+    print(f"\nKept {result.kept_count}/{result.total_images} images")
+    print(f"Rejected {result.rejected_count} blurry images")
+    if result.score_stats:
+        print(f"Score cutoff: {result.score_stats['cutoff']:.1f}")
+    print(f"Output: {args.output}")
+
+    return 0
+
+
 def cmd_pipeline(args):
     """Run full pipeline."""
     from .core.analyzer import VideoAnalyzer
@@ -309,6 +371,24 @@ def cmd_pipeline(args):
         return 1
     print(f"Extracted {result.frame_count} frames")
 
+    # Step 2.5: Filter blurry frames (optional)
+    reframe_source = frames_dir
+    if args.blur_filter:
+        from .core.blur_filter import BlurFilter, BlurFilterConfig
+
+        print(f"\n=== Step 2.5: Filter Blurry Frames ===")
+        filtered_dir = output_base / "frames_filtered"
+        blur_config = BlurFilterConfig(
+            percentile=args.blur_percentile,
+            workers=args.workers,
+        )
+        bf = BlurFilter(blur_config)
+        blur_result = bf.filter_images(str(frames_dir), str(filtered_dir), blur_config, progress)
+        print(f"Kept {blur_result.kept_count}/{blur_result.total_images} sharp frames")
+        if blur_result.rejected_count > 0:
+            print(f"Rejected {blur_result.rejected_count} blurry frames")
+        reframe_source = filtered_dir
+
     # Step 3: Reframe
     print("\n=== Step 3: Reframe ===")
     perspectives_dir = output_base / "perspectives"
@@ -317,13 +397,13 @@ def cmd_pipeline(args):
         view_config = preset.get_view_config()
     else:
         from .core.reframer import VIEW_PRESETS
-        view_config = VIEW_PRESETS["panoex_default"]
+        view_config = VIEW_PRESETS["prep360_default"]
 
     view_config.output_size = args.size
 
     reframer = Reframer(view_config)
     result = reframer.reframe_batch(
-        str(frames_dir),
+        str(reframe_source),
         str(perspectives_dir),
         num_workers=args.workers,
         progress_callback=progress
@@ -423,9 +503,78 @@ def cmd_segment(args):
         return 0
 
 
+def cmd_colmap(args):
+    """Export Metashape XML project to COLMAP + XMP."""
+    from .core.colmap_export import (
+        ColmapExporter, ColmapExportConfig, print_project_info,
+    )
+
+    if args.info:
+        try:
+            print_project_info(args.xml)
+        except FileNotFoundError:
+            print(f"Error: file not found: {args.xml}")
+            return 1
+        except Exception as e:
+            print(f"Error parsing XML: {e}")
+            return 1
+        return 0
+
+    if not args.images or not args.output:
+        print("Error: --images and --output are required (unless using --info)")
+        return 1
+
+    config = ColmapExportConfig(
+        xml_path=args.xml,
+        images_dir=args.images,
+        output_dir=args.output,
+        ply_path=getattr(args, 'ply', None),
+        masks_dir=getattr(args, 'masks', None),
+        preset_name=getattr(args, 'preset', "prep360_default") or "prep360_default",
+        output_size=args.size,
+        jpeg_quality=args.quality,
+        export_colmap=not args.no_colmap,
+        export_xmp=not args.no_xmp,
+        export_rig_config=args.rig_config,
+        undistort_frame_cameras=not args.no_undistort,
+        num_workers=args.workers,
+        xmp_pose_prior=args.xmp_pose_prior,
+        skip_existing=not args.force,
+    )
+
+    exporter = ColmapExporter(config)
+
+    def progress(curr, total, name):
+        print(f"  [{curr + 1}/{total}] {name}")
+
+    result = exporter.export(progress_callback=progress)
+
+    if result.success:
+        print(f"\nExport complete:")
+        print(f"  Images: {result.images_exported}")
+        if result.cameras_written > 0:
+            print(f"  COLMAP cameras: {result.cameras_written}")
+        if result.points_written > 0:
+            print(f"  3D points: {result.points_written}")
+        if result.xmp_count > 0:
+            print(f"  XMP sidecars: {result.xmp_count}")
+        if result.skipped_existing > 0:
+            print(f"  Skipped (existing): {result.skipped_existing}")
+        if result.skipped_unaligned > 0:
+            print(f"  Skipped (unaligned): {result.skipped_unaligned}")
+        if result.colmap_dir:
+            print(f"  COLMAP output: {result.colmap_dir}")
+        return 0
+    else:
+        print(f"\nExport failed:")
+        for err in result.errors[:10]:
+            print(f"  {err}")
+        return 1
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Panoex - 360° Video Processing Pipeline",
+        description="prep360 - 360° Video Processing Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -452,7 +601,7 @@ def main():
     p = subparsers.add_parser("reframe", help="Reframe equirectangular images")
     p.add_argument("input", nargs="?", help="Input directory")
     p.add_argument("output", nargs="?", help="Output directory")
-    p.add_argument("--preset", "-p", default="panoex_default", help="View preset")
+    p.add_argument("--preset", "-p", default="prep360_default", help="View preset")
     p.add_argument("--size", "-s", type=int, default=1920, help="Output size")
     p.add_argument("--quality", "-q", type=int, default=95, help="JPEG quality")
     p.add_argument("--workers", "-w", type=int, default=4, help="Parallel workers")
@@ -481,6 +630,18 @@ def main():
     p.add_argument("--verbose", "-v", action="store_true")
     p.add_argument("--quiet", "-q", action="store_true")
 
+    # blur
+    p = subparsers.add_parser("blur", help="Filter blurry images")
+    p.add_argument("input", help="Input directory with images")
+    p.add_argument("output", nargs="?", help="Output directory for sharp images")
+    p.add_argument("--percentile", "-p", type=float, default=80.0,
+                   help="Keep top N percent (default: 80)")
+    p.add_argument("--threshold", "-t", type=float, help="Absolute score threshold")
+    p.add_argument("--top", "-n", type=int, help="Keep only top N sharpest")
+    p.add_argument("--workers", "-w", type=int, default=4, help="Parallel workers")
+    p.add_argument("--dry-run", "-d", action="store_true", help="Analyze only, don't copy")
+    p.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+
     # presets
     p = subparsers.add_parser("presets", help="Manage presets")
     p.add_argument("action", choices=["list", "show", "export"])
@@ -495,6 +656,10 @@ def main():
     p.add_argument("--interval", "-i", type=float, default=2.0, help="Extraction interval")
     p.add_argument("--size", "-s", type=int, default=1920, help="Output size")
     p.add_argument("--workers", "-w", type=int, default=4, help="Parallel workers")
+    p.add_argument("--blur-filter", action="store_true",
+                   help="Filter blurry frames after extraction")
+    p.add_argument("--blur-percentile", type=float, default=80.0,
+                   help="Keep top N percent sharpest (default: 80)")
 
     # segment
     p = subparsers.add_parser("segment", help="Generate masks using YOLO segmentation")
@@ -517,6 +682,29 @@ def main():
     p.add_argument("--list-classes", action="store_true", help="List COCO classes")
     p.add_argument("--list-presets", action="store_true", help="List class presets")
 
+    # colmap
+    p = subparsers.add_parser("colmap", help="Export Metashape project to COLMAP/XMP")
+    p.add_argument("--xml", "-x", required=True, help="Metashape cameras.xml")
+    p.add_argument("--images", "-i", help="Source images directory")
+    p.add_argument("--output", "-o", help="Output directory")
+    p.add_argument("--ply", help="PLY pointcloud for points3D.txt")
+    p.add_argument("--masks", help="Equirectangular masks directory")
+    p.add_argument("--preset", "-p", default="prep360_default", help="View preset name")
+    p.add_argument("--size", "-s", type=int, default=1920, help="Output crop size")
+    p.add_argument("--quality", "-q", type=int, default=95, help="JPEG quality")
+    p.add_argument("--workers", "-w", type=int, default=4, help="Parallel workers")
+    p.add_argument("--no-colmap", action="store_true", help="Skip COLMAP output")
+    p.add_argument("--no-xmp", action="store_true", help="Skip XMP output")
+    p.add_argument("--rig-config", action="store_true", help="Generate rig_config.json")
+    p.add_argument("--no-undistort", action="store_true",
+                   help="Skip frame camera undistortion")
+    p.add_argument("--xmp-pose-prior", default="locked",
+                   choices=["initial", "exact", "locked"],
+                   help="XMP pose prior (default: locked)")
+    p.add_argument("--force", action="store_true", help="Overwrite existing outputs")
+    p.add_argument("--info", action="store_true",
+                   help="Parse XML and show project info only")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -530,9 +718,11 @@ def main():
         "reframe": cmd_reframe,
         "lut": cmd_lut,
         "sky": cmd_sky,
+        "blur": cmd_blur,
         "presets": cmd_presets,
         "pipeline": cmd_pipeline,
         "segment": cmd_segment,
+        "colmap": cmd_colmap,
     }
 
     return commands[args.command](args)
