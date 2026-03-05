@@ -21,20 +21,30 @@ This GUI prepares camera captures for 3D reconstruction. Extract and reframe per
 
 Request access to SAM 3 model weights before starting — approval can take hours. Go to [facebook/sam3 on HuggingFace](https://huggingface.co/facebook/sam3), create a free account if needed, and click **Request access**.
 
-```bash
-# PyTorch with CUDA (CPU works but is 10-50x slower)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+**PyTorch with CUDA** (CPU works but is 10–50x slower):
 
-# Core + GUI + models
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+```
+
+**Core + GUI + models:**
+
+```bash
 pip install numpy opencv-python Pillow ultralytics tqdm pyyaml customtkinter
 pip install rfdetr supervision py360convert
 pip install huggingface_hub "transformers>=4.50,<5.0"
+```
 
-# SAM 3 — text-prompted segmentation (primary masking model)
+**SAM 3** — text-prompted segmentation (primary masking model):
+
+```bash
 git clone https://github.com/facebookresearch/sam3.git
 cd sam3 && pip install -e .
+```
 
-# Authenticate with HuggingFace (once your access request is approved)
+**Authenticate with HuggingFace** (once your access request is approved):
+
+```bash
 huggingface-cli login
 ```
 
@@ -46,9 +56,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 ```
 
 <details>
-<summary><strong>Optional extras</strong> — temporal propagation and shadow detection</summary>
-
-**Temporal propagation** (masks propagate across video frames):
+<summary><strong>Temporal propagation</strong> (optional — masks propagate across video frames)</summary>
 
 ```bash
 # LiVOS (recommended)
@@ -60,7 +68,10 @@ git clone https://github.com/hkchengrex/Cutie.git
 cd Cutie && pip install -e .
 ```
 
-**Shadow detection** (extends masks to cover cast shadows):
+</details>
+
+<details>
+<summary><strong>Shadow detection</strong> (optional — extends masks to cover cast shadows)</summary>
 
 ```bash
 pip install efficientnet-pytorch
