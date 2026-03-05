@@ -77,15 +77,7 @@ python reconstruction_gui/reconstruction_zone.py
 
 The pipeline takes raw captures through four stages — each handled by a tab in the GUI:
 
-<!-- TODO: Replace with styled mermaid workflow diagram -->
-```mermaid
-graph LR
-    A[Video / Images] --> B[Extract]
-    B --> C[Mask]
-    C --> D[Review]
-    D --> E[Coverage]
-    E --> F[Clean Dataset]
-```
+*Workflow diagram coming soon.*
 
 | Tab | What it does | Guide |
 |-----|-------------|-------|
