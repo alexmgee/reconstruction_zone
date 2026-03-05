@@ -46,4 +46,10 @@ archive/
 # Environment
 .env
 *.env
--e "docs/\nlegacy/" 
+# Internal docs and legacy (not for GitHub)
+docs/
+legacy/
+
+# Dev-only files
+CLAUDE.md
+HANDOVER.md
