@@ -19,7 +19,7 @@ Request access to SAM 3 model weights before starting — approval can take hour
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 # Core + GUI + models
-pip install numpy opencv-python ultralytics tqdm pyyaml customtkinter
+pip install numpy opencv-python Pillow ultralytics tqdm pyyaml customtkinter
 pip install rfdetr supervision py360convert
 pip install huggingface_hub "transformers>=4.50,<5.0"
 
