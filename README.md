@@ -50,7 +50,8 @@ huggingface-cli login
 
 SAM 3 weights (~2 GB) download automatically on first run once authenticated. While waiting for approval, the app falls back to YOLO26 (class-based detection, works immediately).
 
-Verify CUDA is working:
+**Verify CUDA is working:**
+
 ```bash
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 ```
