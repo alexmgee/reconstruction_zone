@@ -10,25 +10,45 @@ This guide gets you from zero to a working mask on a fresh machine. By the end, 
 
 > **CPU-only?** Everything works on CPU — just set `device="cpu"` in MaskConfig. Expect 10-50x slower processing. YOLO26 on CPU is still usable for small batches.
 
-## Step 1: Request SAM 3 model access
+## Step 1: Install everything
 
-SAM 3 weights are gated on HuggingFace. Request access now — approval may take hours, and you can install everything else while you wait.
-
-Go to [facebook/sam3 on HuggingFace](https://huggingface.co/facebook/sam3) and click **Request access**. You'll need a free HuggingFace account.
-
-## Step 2: Install dependencies
+Request access to SAM 3 model weights before starting — approval can take hours. Go to [facebook/sam3 on HuggingFace](https://huggingface.co/facebook/sam3), create a free account if needed, and click **Request access**.
 
 ```bash
 # PyTorch with CUDA (adjust cu126 to match your CUDA version)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
-# Core + GUI
+# Core + GUI + models
 pip install numpy opencv-python ultralytics tqdm pyyaml customtkinter
+pip install rfdetr supervision py360convert
+pip install huggingface_hub "transformers>=4.50,<5.0"
 
-# SAM 3
-pip install huggingface_hub
+# SAM 3 — text-prompted segmentation (primary masking model)
 git clone https://github.com/facebookresearch/sam3.git
 cd sam3 && pip install -e .
+
+# Authenticate with HuggingFace (once your access request is approved)
+huggingface-cli login
+```
+
+SAM 3 weights (~2 GB) download automatically on first run once authenticated. While waiting for approval, the app falls back to YOLO26 (class-based detection, works immediately).
+
+**Temporal propagation** (optional — masks propagate across video frames):
+
+```bash
+# LiVOS (recommended)
+git clone https://github.com/hkchengrex/LiVOS.git
+cd LiVOS && pip install -e .
+
+# Or Cutie (alternative)
+git clone https://github.com/hkchengrex/Cutie.git
+cd Cutie && pip install -e .
+```
+
+**Shadow detection** (optional — extends masks to cover cast shadows):
+
+```bash
+pip install efficientnet-pytorch
 ```
 
 Verify CUDA:
@@ -43,14 +63,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 | `torch.cuda.is_available()` returns `False` | PyTorch CUDA version doesn't match your driver. Run `nvidia-smi` to check, then install the matching wheel from [pytorch.org](https://pytorch.org/get-started/locally/) |
 | `No module named 'ultralytics'` | `pip install ultralytics` — this provides YOLO26 |
 
-Once your HuggingFace access is approved, authenticate:
-```bash
-huggingface-cli login
-```
-
-SAM 3 weights (~2 GB) download automatically on first run once authenticated. While waiting for approval, the app falls back to YOLO26 (class-based detection, works immediately).
-
-## Step 3: Choose your model config
+## Step 2: Choose your model config
 
 **SAM 3** (recommended — text-prompted, highest quality):
 ```python
@@ -79,7 +92,7 @@ config = MaskConfig(
 SAM 3 → RF-DETR → YOLO26 → FastSAM → EfficientSAM → SAM 2
 ```
 
-## Step 4: Process your first image
+## Step 3: Process your first image
 
 ```python
 from reconstruction_pipeline import MaskingPipeline, MaskConfig, ImageGeometry, SegmentationModel
@@ -125,7 +138,7 @@ result = pipeline.process_image(image, ImageGeometry.PINHOLE)
 
 No cubemap decomposition — the detector runs directly on the image.
 
-## Step 5: Batch process a directory
+## Step 4: Batch process a directory
 
 ```python
 stats = pipeline.process_directory(
@@ -143,7 +156,7 @@ print(f"Failed: {stats['failed']}")
 
 Masks are saved with the same stem as the input: `frame_0001.jpg` → `masks/frame_0001.png`.
 
-## Step 6: Review the results
+## Step 5: Review the results
 
 ### Quick check in Python
 
@@ -178,32 +191,16 @@ The **Review tab** shows a thumbnail grid of all mask overlays, filterable by qu
 
 ## Dependency reference
 
-**Core (required):**
-
-| Package | Install | What it provides |
-|---------|---------|------------------|
-| `torch`, `torchvision` | `pip install torch torchvision torchaudio --index-url .../cu126` | GPU compute, model loading |
-| `numpy`, `opencv-python` | `pip install numpy opencv-python` | Array operations, image I/O |
-| `ultralytics` | `pip install ultralytics` | YOLO26 segmentation (weights auto-download) |
-| `tqdm` | `pip install tqdm` | Progress bars |
-| `pyyaml` | `pip install pyyaml` | Config parsing |
-| `customtkinter` | `pip install customtkinter` | GUI framework |
-| ffmpeg, ffprobe | [ffmpeg.org](https://ffmpeg.org/download.html) (on PATH) | Video frame extraction |
-
-**SAM 3 (text-prompted masking):**
-
-| Package | Install | Notes |
-|---------|---------|-------|
-| `sam3` | `git clone` + `pip install -e .` | Requires [HuggingFace access](https://huggingface.co/facebook/sam3) + `huggingface-cli login` |
-| `huggingface_hub` | `pip install huggingface_hub` | Authentication for SAM 3 weight download |
-
-**Optional extras:**
-
-| Package | Install | What it provides |
-|---------|---------|------------------|
-| `rfdetr`, `supervision` | `pip install rfdetr supervision` | RF-DETR transformer detection (ensemble partner) |
-| `py360convert` | `pip install py360convert` | Better equirect-to-perspective reframing |
-| `transformers` | `pip install "transformers>=4.50,<5.0"` | ViTMatte alpha matting |
-| `livos` or `cutie` | Clone + `pip install -e .` | Temporal mask propagation |
-| `segment_anything` | `pip install segment-anything` | SAM boundary refinement |
-| `efficientnet-pytorch` | `pip install efficientnet-pytorch` | Shadow detection (SDDNet) |
+| Package | What it provides |
+|---------|------------------|
+| `torch`, `torchvision`, `torchaudio` | GPU compute, model loading |
+| `numpy`, `opencv-python` | Array operations, image I/O |
+| `ultralytics` | YOLO26 + FastSAM segmentation |
+| `rfdetr`, `supervision` | RF-DETR transformer detection (ensemble partner) |
+| `py360convert` | Equirect-to-perspective reframing |
+| `transformers` | ViTMatte alpha matting |
+| `huggingface_hub` | SAM 3 weight authentication |
+| `sam3` | Text-prompted segmentation ([HF access](https://huggingface.co/facebook/sam3) required) |
+| `tqdm`, `pyyaml` | Progress bars, config parsing |
+| `customtkinter` | GUI framework |
+| ffmpeg, ffprobe | Video frame extraction ([ffmpeg.org](https://ffmpeg.org/download.html), must be on PATH) |

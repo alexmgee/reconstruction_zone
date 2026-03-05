@@ -19,52 +19,49 @@ This GUI prepares camera captures for 3D reconstruction. Extract and reframe per
 
 ## Installation
 
-**1. Request SAM 3 model access** (do this first — approval may take hours)
-
-SAM 3 is the primary masking model. It accepts natural language prompts ("photographer with tripod", "selfie stick", "camera rig") and produces the highest quality masks. Weights are gated on HuggingFace — request access now so it's ready when you need it.
-
-Go to [facebook/sam3 on HuggingFace](https://huggingface.co/facebook/sam3) and click **Request access**. You'll need a free HuggingFace account.
-
-**2. Install dependencies**
+Request access to SAM 3 model weights before starting — approval can take hours. Go to [facebook/sam3 on HuggingFace](https://huggingface.co/facebook/sam3), create a free account if needed, and click **Request access**.
 
 ```bash
 # PyTorch with CUDA (CPU works but is 10-50x slower)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
-# Core + GUI
+# Core + GUI + models
 pip install numpy opencv-python ultralytics tqdm pyyaml customtkinter
+pip install rfdetr supervision py360convert
+pip install huggingface_hub "transformers>=4.50,<5.0"
 
-# SAM 3
-pip install huggingface_hub
+# SAM 3 — text-prompted segmentation (primary masking model)
 git clone https://github.com/facebookresearch/sam3.git
 cd sam3 && pip install -e .
-```
 
-**3. Authenticate with HuggingFace** (once your access request is approved)
-
-```bash
+# Authenticate with HuggingFace (once your access request is approved)
 huggingface-cli login
 ```
 
 SAM 3 weights (~2 GB) download automatically on first run once authenticated. While waiting for approval, the app falls back to YOLO26 (class-based detection, works immediately).
 
-Verify CUDA:
+**Temporal propagation** (optional — masks propagate across video frames):
+
+```bash
+# LiVOS (recommended)
+git clone https://github.com/hkchengrex/LiVOS.git
+cd LiVOS && pip install -e .
+
+# Or Cutie (alternative)
+git clone https://github.com/hkchengrex/Cutie.git
+cd Cutie && pip install -e .
+```
+
+**Shadow detection** (optional — extends masks to cover cast shadows):
+
+```bash
+pip install efficientnet-pytorch
+```
+
+Verify CUDA is working:
 ```bash
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 ```
-
-<details>
-<summary><strong>Optional extras</strong></summary>
-
-| Package | Feature | Install |
-|---------|---------|---------|
-| `rfdetr`, `supervision` | RF-DETR transformer detection (ensemble partner for YOLO26) | `pip install rfdetr supervision` |
-| `py360convert` | Higher-quality equirect-to-perspective reframing | `pip install py360convert` |
-| `transformers` | ViTMatte alpha matting (soft mask edges) | `pip install "transformers>=4.50,<5.0"` |
-| LiVOS / Cutie | Temporal mask propagation across video frames | Clone repos + `pip install -e .` |
-| `efficientnet-pytorch` | Shadow detection (SDDNet model) | `pip install efficientnet-pytorch` |
-
-</details>
 
 ## Launch
 
