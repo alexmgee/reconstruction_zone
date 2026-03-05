@@ -53,3 +53,4 @@ legacy/
 # Dev-only files
 CLAUDE.md
 HANDOVER.md
+*.code-workspace
