@@ -15,23 +15,54 @@ This GUI prepares camera captures for 3D reconstruction. Extract and reframe per
 
 - Python 3.10+ (tested on 3.12–3.14)
 - NVIDIA GPU with CUDA (strongly recommended)
-- ffmpeg + ffprobe on PATH (for video features)
+- [ffmpeg + ffprobe](https://ffmpeg.org/download.html) on PATH (for video features)
 
-<details open>
-<summary><strong>Installation</strong></summary>
+## Installation
+
+**1. Request SAM 3 model access** (do this first — approval may take hours)
+
+SAM 3 is the primary masking model. It accepts natural language prompts ("photographer with tripod", "selfie stick", "camera rig") and produces the highest quality masks. Weights are gated on HuggingFace — request access now so it's ready when you need it.
+
+Go to [facebook/sam3 on HuggingFace](https://huggingface.co/facebook/sam3) and click **Request access**. You'll need a free HuggingFace account.
+
+**2. Install dependencies**
 
 ```bash
-# PyTorch with CUDA (recommended — CPU works but is 10-50x slower)
+# PyTorch with CUDA (CPU works but is 10-50x slower)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
-# Core dependencies
-pip install numpy opencv-python ultralytics tqdm pyyaml
+# Core + GUI
+pip install numpy opencv-python ultralytics tqdm pyyaml customtkinter
 
-# GUI
-pip install customtkinter
+# SAM 3
+pip install huggingface_hub
+git clone https://github.com/facebookresearch/sam3.git
+cd sam3 && pip install -e .
 ```
 
-**Also needed:** [ffmpeg + ffprobe](https://ffmpeg.org/download.html) on PATH (for video extraction features).
+**3. Authenticate with HuggingFace** (once your access request is approved)
+
+```bash
+huggingface-cli login
+```
+
+SAM 3 weights (~2 GB) download automatically on first run once authenticated. While waiting for approval, the app falls back to YOLO26 (class-based detection, works immediately).
+
+Verify CUDA:
+```bash
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
+```
+
+<details>
+<summary><strong>Optional extras</strong></summary>
+
+| Package | Feature | Install |
+|---------|---------|---------|
+| `rfdetr`, `supervision` | RF-DETR transformer detection (ensemble partner for YOLO26) | `pip install rfdetr supervision` |
+| `py360convert` | Higher-quality equirect-to-perspective reframing | `pip install py360convert` |
+| `transformers` | ViTMatte alpha matting (soft mask edges) | `pip install "transformers>=4.50,<5.0"` |
+| LiVOS / Cutie | Temporal mask propagation across video frames | Clone repos + `pip install -e .` |
+| `efficientnet-pytorch` | Shadow detection (SDDNet model) | `pip install efficientnet-pytorch` |
 
 </details>
 
@@ -67,7 +98,7 @@ The GUI is organized into four tabs that follow the photogrammetry preprocessing
 | **FastSAM** | Real-time SAM | ~30ms/img | Quick previews, lightweight |
 | **EfficientSAM** | Lightweight SAM | ~40ms/img | Fallback when others unavailable |
 
-Models auto-download on first use. See the full [Model Guide](reconstruction_gui/docs/MODELS.md) for configuration, model sizes, and comparison.
+YOLO26, FastSAM, and RF-DETR weights auto-download on first use. SAM 3 requires [HuggingFace access](#installation) first. See the full [Model Guide](reconstruction_gui/docs/MODELS.md) for configuration, model sizes, and comparison.
 
 </details>
 

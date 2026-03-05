@@ -33,7 +33,7 @@ What are you masking?
 | **VRAM** | ~4 GB | ~1 GB (nano) | ~2 GB (small) | ~1 GB |
 | **Novel objects** | Yes (any text description) | No (80 COCO classes only) | No (80 COCO classes only) | Auto — no class control |
 | **Weights** | ~2 GB (auto-download) | 7 MB nano, 25 MB small | ~100 MB small | ~140 MB |
-| **Install** | `git clone` + `pip install -e .` | `pip install ultralytics` | `pip install rfdetr supervision` | `pip install ultralytics` |
+| **Install** | `git clone` + `pip install -e .` + [HF access](https://huggingface.co/facebook/sam3) | `pip install ultralytics` | `pip install rfdetr supervision` | `pip install ultralytics` |
 
 ### SAM 3 — Segment Anything Model 3
 

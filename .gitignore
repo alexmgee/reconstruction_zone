@@ -47,8 +47,8 @@ archive/
 .env
 *.env
 # Internal docs and legacy (not for GitHub)
-docs/
-legacy/
+/docs/
+/legacy/
 
 # Dev-only files
 CLAUDE.md

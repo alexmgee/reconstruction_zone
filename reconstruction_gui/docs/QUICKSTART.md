@@ -10,53 +10,49 @@ This guide gets you from zero to a working mask on a fresh machine. By the end, 
 
 > **CPU-only?** Everything works on CPU — just set `device="cpu"` in MaskConfig. Expect 10-50x slower processing. YOLO26 on CPU is still usable for small batches.
 
-## Step 1: Install dependencies
+## Step 1: Request SAM 3 model access
+
+SAM 3 weights are gated on HuggingFace. Request access now — approval may take hours, and you can install everything else while you wait.
+
+Go to [facebook/sam3 on HuggingFace](https://huggingface.co/facebook/sam3) and click **Request access**. You'll need a free HuggingFace account.
+
+## Step 2: Install dependencies
 
 ```bash
 # PyTorch with CUDA (adjust cu126 to match your CUDA version)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
-# Core dependencies
-pip install numpy opencv-python ultralytics tqdm pyyaml
+# Core + GUI
+pip install numpy opencv-python ultralytics tqdm pyyaml customtkinter
 
-# Verify CUDA is working
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}, Device: {torch.cuda.get_device_name(0)}')"
+# SAM 3
+pip install huggingface_hub
+git clone https://github.com/facebookresearch/sam3.git
+cd sam3 && pip install -e .
 ```
 
-**Common issues at this stage:**
+Verify CUDA:
+```bash
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
+```
+
+**Common issues:**
 
 | Symptom | Fix |
 |---------|-----|
-| `torch.cuda.is_available()` returns `False` | PyTorch CUDA version doesn't match your driver. Run `nvidia-smi` to see your CUDA version, then install the matching wheel from [pytorch.org](https://pytorch.org/get-started/locally/) |
+| `torch.cuda.is_available()` returns `False` | PyTorch CUDA version doesn't match your driver. Run `nvidia-smi` to check, then install the matching wheel from [pytorch.org](https://pytorch.org/get-started/locally/) |
 | `No module named 'ultralytics'` | `pip install ultralytics` — this provides YOLO26 |
 
-## Step 2: Choose your model
-
-You need at least one segmentation model. Pick based on your use case:
-
-### Option A: YOLO26 (recommended for getting started)
-
-Already installed with `ultralytics`. Weights download automatically on first run (~7 MB for nano).
-
-```python
-from reconstruction_pipeline import MaskConfig, SegmentationModel
-
-config = MaskConfig(
-    model=SegmentationModel.YOLO26,
-    yolo_classes=[0, 24, 25, 26, 28],  # person, backpack, umbrella, handbag, suitcase
-    confidence_threshold=0.5,
-)
-```
-
-### Option B: SAM 3 (best quality, text-prompted)
-
+Once your HuggingFace access is approved, authenticate:
 ```bash
-# Clone and install SAM 3
-git clone https://github.com/facebookresearch/sam3.git
-cd sam3 && pip install -e .
-cd ..
+huggingface-cli login
 ```
 
+SAM 3 weights (~2 GB) download automatically on first run once authenticated. While waiting for approval, the app falls back to YOLO26 (class-based detection, works immediately).
+
+## Step 3: Choose your model config
+
+**SAM 3** (recommended — text-prompted, highest quality):
 ```python
 from reconstruction_pipeline import MaskConfig, SegmentationModel
 
@@ -67,26 +63,32 @@ config = MaskConfig(
 )
 ```
 
-SAM 3 downloads its model weights (~2 GB) on first use.
+**YOLO26** (fast, COCO classes only):
+```python
+from reconstruction_pipeline import MaskConfig, SegmentationModel
 
-### Option C: Let auto-select handle it
+config = MaskConfig(
+    model=SegmentationModel.YOLO26,
+    yolo_classes=[0, 24, 25, 26, 28],  # person, backpack, umbrella, handbag, suitcase
+    confidence_threshold=0.5,
+)
+```
 
-If you don't specify a model, the pipeline tries them in priority order and uses the first one that loads:
-
+**Auto-select** — if you don't specify a model, the pipeline tries them in priority order and uses the first one available:
 ```
 SAM 3 → RF-DETR → YOLO26 → FastSAM → EfficientSAM → SAM 2
 ```
 
-## Step 3: Process your first image
+## Step 4: Process your first image
 
 ```python
 from reconstruction_pipeline import MaskingPipeline, MaskConfig, ImageGeometry, SegmentationModel
 import cv2
 
-# Configure the pipeline
+# Configure the pipeline (using SAM3 or YOLO26 — see Step 3)
 config = MaskConfig(
-    model=SegmentationModel.YOLO26,           # or SAM3
-    yolo_classes=[0, 24, 25, 26, 28],
+    model=SegmentationModel.SAM3,
+    remove_prompts=["person", "tripod", "backpack"],
     confidence_threshold=0.5,
     geometry_aware=True,                     # cubemap decomposition for 360°
     fill_holes=True,                         # fill interior gaps
@@ -123,7 +125,7 @@ result = pipeline.process_image(image, ImageGeometry.PINHOLE)
 
 No cubemap decomposition — the detector runs directly on the image.
 
-## Step 4: Batch process a directory
+## Step 5: Batch process a directory
 
 ```python
 stats = pipeline.process_directory(
@@ -141,7 +143,7 @@ print(f"Failed: {stats['failed']}")
 
 Masks are saved with the same stem as the input: `frame_0001.jpg` → `masks/frame_0001.png`.
 
-## Step 5: Review the results
+## Step 6: Review the results
 
 ### Quick check in Python
 
@@ -176,17 +178,32 @@ The **Review tab** shows a thumbnail grid of all mask overlays, filterable by qu
 
 ## Dependency reference
 
-| Package | Required? | What it provides |
-|---------|-----------|------------------|
-| `torch`, `torchvision` | Yes | GPU compute, model loading |
-| `numpy`, `opencv-python` | Yes | Array operations, image I/O |
-| `ultralytics` | Yes (for YOLO) | YOLO26 segmentation |
-| `tqdm` | Yes | Progress bars |
-| `pyyaml` | Yes | Config parsing |
-| `sam3` | For SAM 3 | Text-prompted segmentation |
-| `rfdetr` | For RF-DETR | Transformer detection |
-| `supervision` | For RF-DETR | Detection result handling |
-| `transformers` | For matting | ViTMatte alpha matting |
-| `customtkinter` | For GUI | Modern tkinter widgets |
-| `livos` or `cutie` | For VOS | Temporal mask propagation |
-| `segment_anything` | For SAM refine | Boundary refinement |
+**Core (required):**
+
+| Package | Install | What it provides |
+|---------|---------|------------------|
+| `torch`, `torchvision` | `pip install torch torchvision torchaudio --index-url .../cu126` | GPU compute, model loading |
+| `numpy`, `opencv-python` | `pip install numpy opencv-python` | Array operations, image I/O |
+| `ultralytics` | `pip install ultralytics` | YOLO26 segmentation (weights auto-download) |
+| `tqdm` | `pip install tqdm` | Progress bars |
+| `pyyaml` | `pip install pyyaml` | Config parsing |
+| `customtkinter` | `pip install customtkinter` | GUI framework |
+| ffmpeg, ffprobe | [ffmpeg.org](https://ffmpeg.org/download.html) (on PATH) | Video frame extraction |
+
+**SAM 3 (text-prompted masking):**
+
+| Package | Install | Notes |
+|---------|---------|-------|
+| `sam3` | `git clone` + `pip install -e .` | Requires [HuggingFace access](https://huggingface.co/facebook/sam3) + `huggingface-cli login` |
+| `huggingface_hub` | `pip install huggingface_hub` | Authentication for SAM 3 weight download |
+
+**Optional extras:**
+
+| Package | Install | What it provides |
+|---------|---------|------------------|
+| `rfdetr`, `supervision` | `pip install rfdetr supervision` | RF-DETR transformer detection (ensemble partner) |
+| `py360convert` | `pip install py360convert` | Better equirect-to-perspective reframing |
+| `transformers` | `pip install "transformers>=4.50,<5.0"` | ViTMatte alpha matting |
+| `livos` or `cutie` | Clone + `pip install -e .` | Temporal mask propagation |
+| `segment_anything` | `pip install segment-anything` | SAM boundary refinement |
+| `efficientnet-pytorch` | `pip install efficientnet-pytorch` | Shadow detection (SDDNet) |
