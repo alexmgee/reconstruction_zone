@@ -31,11 +31,13 @@ pip install customtkinter
 
 ## Launch
 
+Double-click `reconstruction_gui/ReconstructionStudio.bat` to start the app (no console window).
+
+Or from the command line:
+
 ```bash
 python reconstruction_gui/reconstruction_zone.py
 ```
-
-On Windows, double-click `reconstruction_gui/ReconstructionStudio.bat` for a console-free launch.
 
 ## The four tabs
 
@@ -48,7 +50,8 @@ The GUI is organized into four tabs that follow the photogrammetry preprocessing
 | **Review** | Thumbnail grid with accept/reject/skip workflow. Open any mask in the interactive editor for brush, flood fill, and lasso touch-ups. | [Review Guide](reconstruction_gui/docs/REVIEW_TAB.md) |
 | **Coverage** | Analyze spatial coverage gaps in your dataset and extract bridge frames to fill them. | [Coverage Guide](reconstruction_gui/docs/COVERAGE_TAB.md) |
 
-## Supported models
+<details>
+<summary><strong>Supported models</strong></summary>
 
 | Model | Type | Speed | Best for |
 |-------|------|-------|----------|
@@ -59,6 +62,8 @@ The GUI is organized into four tabs that follow the photogrammetry preprocessing
 | **EfficientSAM** | Lightweight SAM | ~40ms/img | Fallback when others unavailable |
 
 Models auto-download on first use. See the full [Model Guide](reconstruction_gui/docs/MODELS.md) for configuration, model sizes, and comparison.
+
+</details>
 
 ## Requirements
 
