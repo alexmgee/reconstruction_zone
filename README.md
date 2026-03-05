@@ -11,7 +11,13 @@
 
 This GUI prepares camera captures for 3D reconstruction. Extract and reframe perspectives from 360° or fisheye video, filter for sharpness, auto-detect and mask photographers/tripods/equipment across hundreds of images, review every mask with an interactive editor, then analyze spatial coverage and fill gaps. Outputs datasets ready for reconstruction pipelines.
 
-<details>
+## Requirements
+
+- Python 3.10+ (tested on 3.12–3.14)
+- NVIDIA GPU with CUDA (strongly recommended)
+- ffmpeg + ffprobe on PATH (for video features)
+
+<details open>
 <summary><strong>Installation</strong></summary>
 
 ```bash
@@ -64,12 +70,6 @@ The GUI is organized into four tabs that follow the photogrammetry preprocessing
 Models auto-download on first use. See the full [Model Guide](reconstruction_gui/docs/MODELS.md) for configuration, model sizes, and comparison.
 
 </details>
-
-## Requirements
-
-- Python 3.10+ (tested on 3.12–3.14)
-- NVIDIA GPU with CUDA (strongly recommended)
-- ffmpeg + ffprobe on PATH (for video features)
 
 ## Documentation
 
