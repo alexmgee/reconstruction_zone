@@ -46,3 +46,4 @@ archive/
 # Environment
 .env
 *.env
+-e "docs/\nlegacy/" 
