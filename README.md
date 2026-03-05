@@ -1,12 +1,18 @@
 # Reconstruction Zone
 
+![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
+![Platform: Windows](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
+![CUDA](https://img.shields.io/badge/CUDA-Recommended-76B900.svg)
+
 ![Before and after masking](reconstruction_gui/docs/assets/hero_before_after.jpg)
 
 > Photogrammetry preprocessing toolkit — extract frames from video, reframe 360° and fisheye into perspective views, auto-mask unwanted objects, and build clean datasets for 3D reconstruction.
 
 This GUI prepares camera captures for 3D reconstruction. Extract and reframe perspectives from 360° or fisheye video, filter for sharpness, auto-detect and mask photographers/tripods/equipment across hundreds of images, review every mask with an interactive editor, then analyze spatial coverage and fill gaps. Outputs datasets ready for reconstruction pipelines.
 
-## Installation
+<details>
+<summary><strong>Installation</strong></summary>
 
 ```bash
 # PyTorch with CUDA (recommended — CPU works but is 10-50x slower)
@@ -20,6 +26,8 @@ pip install customtkinter
 ```
 
 **Also needed:** [ffmpeg + ffprobe](https://ffmpeg.org/download.html) on PATH (for video extraction features).
+
+</details>
 
 ## Launch
 
