@@ -26,7 +26,7 @@ Usage:
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Union
 from concurrent.futures import ProcessPoolExecutor
 
 import cv2
@@ -351,11 +351,13 @@ class FisheyeReframer:
         fisheye_image: np.ndarray,
         view: FisheyeView,
         crop_size: int = 1600,
-    ) -> Optional[np.ndarray]:
+        mask: Optional[np.ndarray] = None,
+    ) -> Union[Optional[np.ndarray], Tuple[Optional[np.ndarray], Optional[np.ndarray]]]:
         """Extract a single perspective view from a fisheye image.
 
         Returns the perspective crop, or None if the view extends
-        beyond the lens's usable FOV.
+        beyond the lens's usable FOV. If mask is provided, returns
+        (crop, mask_crop) tuple instead.
 
         Note: view.yaw_deg and view.pitch_deg are relative to the
         lens's own optical axis. The lens rotation (front=0°, back=180°)
@@ -381,6 +383,17 @@ class FisheyeReframer:
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0),
         )
+
+        if mask is not None:
+            mask_crop = cv2.remap(
+                mask, map1, map2,
+                interpolation=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            mask_crop = (mask_crop > 0).astype(np.uint8) * 255
+            return crop, mask_crop
+
         return crop
 
     def extract_all_views(
@@ -388,23 +401,35 @@ class FisheyeReframer:
         front_image: np.ndarray,
         back_image: np.ndarray,
         config: FisheyeViewConfig,
-    ) -> List[Tuple[FisheyeView, np.ndarray]]:
+        front_mask: Optional[np.ndarray] = None,
+        back_mask: Optional[np.ndarray] = None,
+    ) -> List[Tuple[FisheyeView, np.ndarray, Optional[np.ndarray]]]:
         """Extract all views from a dual-fisheye frame pair.
 
         Args:
             front_image: Front fisheye image (stream 1 from OSV).
             back_image: Back fisheye image (stream 0 from OSV).
             config: View configuration with preset views.
+            front_mask: Optional mask for front lens image.
+            back_mask: Optional mask for back lens image.
 
         Returns:
-            List of (view, crop_image) tuples.
+            List of (view, crop_image, mask_crop_or_None) tuples.
         """
         results = []
         for view in config.views:
             img = front_image if view.source_lens == "front" else back_image
-            crop = self.extract_view(img, view, config.crop_size)
-            if crop is not None:
-                results.append((view, crop))
+            mask = front_mask if view.source_lens == "front" else back_mask
+
+            if mask is not None:
+                result = self.extract_view(img, view, config.crop_size, mask=mask)
+                if result is not None:
+                    crop, mask_crop = result
+                    results.append((view, crop, mask_crop))
+            else:
+                crop = self.extract_view(img, view, config.crop_size)
+                if crop is not None:
+                    results.append((view, crop, None))
         return results
 
     def extract_and_save(
@@ -414,8 +439,13 @@ class FisheyeReframer:
         config: FisheyeViewConfig,
         output_dir: str,
         frame_name: str = "frame",
+        front_mask: Optional[np.ndarray] = None,
+        back_mask: Optional[np.ndarray] = None,
     ) -> List[str]:
         """Extract all views and save as JPEGs.
+
+        If masks are provided, saves reframed masks as PNGs
+        in a sibling 'masks/' directory.
 
         Returns list of saved file paths.
         """
@@ -423,8 +453,17 @@ class FisheyeReframer:
         out_path.mkdir(parents=True, exist_ok=True)
         saved = []
 
-        results = self.extract_all_views(front_image, back_image, config)
-        for view, crop in results:
+        # Set up mask output directory if masks provided
+        mask_dir = None
+        if front_mask is not None or back_mask is not None:
+            mask_dir = out_path.parent / "masks"
+            mask_dir.mkdir(parents=True, exist_ok=True)
+
+        results = self.extract_all_views(
+            front_image, back_image, config,
+            front_mask=front_mask, back_mask=back_mask,
+        )
+        for view, crop, mask_crop in results:
             filename = f"{frame_name}_{view.name}.jpg"
             filepath = out_path / filename
             cv2.imwrite(
@@ -432,6 +471,10 @@ class FisheyeReframer:
                 [cv2.IMWRITE_JPEG_QUALITY, config.quality],
             )
             saved.append(str(filepath))
+
+            if mask_crop is not None and mask_dir is not None:
+                mask_filename = f"{frame_name}_{view.name}.png"
+                cv2.imwrite(str(mask_dir / mask_filename), mask_crop)
 
         return saved
 
@@ -569,6 +612,7 @@ def batch_extract(
     config: FisheyeViewConfig,
     calibration: DualFisheyeCalibration,
     output_dir: str,
+    mask_dir: Optional[str] = None,
     num_workers: int = 1,
     progress_callback=None,
 ) -> Tuple[int, List[str]]:
@@ -579,6 +623,7 @@ def batch_extract(
         config: View configuration.
         calibration: Dual fisheye calibration.
         output_dir: Output directory for crops.
+        mask_dir: Optional directory containing masks (matched by stem name).
         num_workers: Parallel workers (1 = sequential, recommended
                      since remap tables are large).
         progress_callback: Called with (current, total, message).
@@ -587,6 +632,14 @@ def batch_extract(
         (total_crops_saved, list_of_errors)
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Build mask lookup by stem name
+    mask_map = {}
+    if mask_dir:
+        mask_path = Path(mask_dir)
+        for ext in ['*.png', '*.jpg', '*.jpeg', '*.PNG', '*.JPG', '*.JPEG']:
+            for m in mask_path.glob(ext):
+                mask_map[m.stem] = str(m)
 
     calib_dict = _calib_to_dict(calibration)
     config_dict = _config_to_dict(config)
@@ -623,8 +676,20 @@ def batch_extract(
                 errors.append(f"Failed to load: {back_path}")
                 continue
 
+            # Load masks if available (match by stem name)
+            front_mask = None
+            back_mask = None
+            if mask_dir:
+                front_stem = Path(front_path).stem
+                back_stem = Path(back_path).stem
+                if front_stem in mask_map:
+                    front_mask = cv2.imread(mask_map[front_stem], cv2.IMREAD_GRAYSCALE)
+                if back_stem in mask_map:
+                    back_mask = cv2.imread(mask_map[back_stem], cv2.IMREAD_GRAYSCALE)
+
             saved = reframer.extract_and_save(
                 front, back, config, output_dir, f"frame_{i:05d}",
+                front_mask=front_mask, back_mask=back_mask,
             )
             total_saved += len(saved)
 

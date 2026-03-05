@@ -296,6 +296,7 @@ def _process_single_image(args):
         output_dir,
         config,
         frame_idx,
+        mask_path,
     ) = args
 
     # Load image
@@ -303,9 +304,24 @@ def _process_single_image(args):
     if equirect is None:
         return None, f"Failed to load {image_path}"
 
+    # Load mask if provided
+    mask = None
+    if mask_path:
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            return None, f"Failed to load mask {mask_path}"
+        if mask.shape[:2] != equirect.shape[:2]:
+            return None, f"Mask dimensions {mask.shape[:2]} don't match image {equirect.shape[:2]} for {image_path}"
+
     stem = Path(image_path).stem
     output_dir = Path(output_dir)
     output_files = []
+
+    # Mask output directory (sibling of image output dir)
+    mask_dir = None
+    if mask is not None:
+        mask_dir = output_dir.parent / "masks"
+        mask_dir.mkdir(parents=True, exist_ok=True)
 
     # Process all views
     views = config.get_all_views()
@@ -330,6 +346,20 @@ def _process_single_image(args):
         )
         output_files.append(out_name)
 
+        # Reframe and save mask with nearest-neighbor interpolation
+        if mask is not None:
+            mask_persp = reframe_view(
+                mask,
+                fov_deg=fov,
+                yaw_deg=yaw,
+                pitch_deg=pitch,
+                out_size=config.output_size,
+                mode="nearest"
+            )
+            mask_persp = (mask_persp > 0).astype(np.uint8) * 255
+            mask_out = f"{stem}_{view_name}.png"
+            cv2.imwrite(str(mask_dir / mask_out), mask_persp)
+
     return output_files, None
 
 
@@ -353,6 +383,7 @@ class Reframer:
         self,
         image_path: str,
         output_dir: str,
+        mask_path: Optional[str] = None,
     ) -> Tuple[List[str], Optional[str]]:
         """
         Reframe a single equirectangular image.
@@ -360,13 +391,14 @@ class Reframer:
         Returns:
             (list of output filenames, error message or None)
         """
-        args = (image_path, output_dir, self.config, 0)
+        args = (image_path, output_dir, self.config, 0, mask_path)
         return _process_single_image(args)
 
     def reframe_batch(
         self,
         input_dir: str,
         output_dir: str,
+        mask_dir: Optional[str] = None,
         num_workers: int = 4,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> ReframeResult:
@@ -376,6 +408,7 @@ class Reframer:
         Args:
             input_dir: Directory containing equirectangular images
             output_dir: Output directory for perspective views
+            mask_dir: Optional directory containing masks (matched by stem name)
             num_workers: Number of parallel workers
             progress_callback: Called with (current, total, message)
 
@@ -402,9 +435,22 @@ class Reframer:
                 errors=["No images found in input directory"]
             )
 
+        # Build mask lookup by stem name
+        mask_map = {}
+        if mask_dir:
+            mask_path = Path(mask_dir)
+            for ext in extensions:
+                for m in mask_path.glob(ext):
+                    mask_map[m.stem] = str(m)
+            matched = sum(1 for img in images if img.stem in mask_map)
+            unmatched = len(images) - matched
+            if unmatched > 0:
+                print(f"Warning: {unmatched} of {len(images)} frames have no matching mask")
+
         # Prepare arguments for parallel processing
         args_list = [
-            (str(img), str(output_path), self.config, i)
+            (str(img), str(output_path), self.config, i,
+             mask_map.get(img.stem) if mask_dir else None)
             for i, img in enumerate(images)
         ]
 
