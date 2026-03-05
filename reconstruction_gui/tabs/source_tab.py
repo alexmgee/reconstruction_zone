@@ -1257,16 +1257,36 @@ def _build_fisheye_section(app, parent):
     sec.pack(fill="x", pady=(0, 6), padx=4)
     c = sec.content
 
-    # ── Video + Output ────────────────────────────────────────────────
+    # ── Video / Frames / Masks / Output ──────────────────────────────
 
     osv_frame = ctk.CTkFrame(c, fg_color="transparent")
     osv_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(osv_frame, text="Input:", width=55, anchor="w").pack(side="left")
+    ctk.CTkLabel(osv_frame, text="Video:", width=55, anchor="w").pack(side="left")
     app.fisheye_osv_entry = ctk.CTkEntry(osv_frame,
-                                          placeholder_text=".osv / .360 / .insv file...")
+                                          placeholder_text=".osv / .360 / .insv file (optional)...")
     app.fisheye_osv_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
     ctk.CTkButton(osv_frame, text="...", width=36,
                   command=lambda: _browse_osv(app)).pack(side="left")
+
+    frames_frame = ctk.CTkFrame(c, fg_color="transparent")
+    frames_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(frames_frame, text="Frames:", width=55, anchor="w").pack(side="left")
+    app.fisheye_frames_entry = ctk.CTkEntry(frames_frame,
+                                             placeholder_text="ERP frames folder (optional)...")
+    app.fisheye_frames_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(frames_frame, text="...", width=36,
+                  command=lambda: app._browse_folder_for(app.fisheye_frames_entry)
+                  ).pack(side="left")
+
+    masks_frame = ctk.CTkFrame(c, fg_color="transparent")
+    masks_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(masks_frame, text="Masks:", width=55, anchor="w").pack(side="left")
+    app.fisheye_masks_entry = ctk.CTkEntry(masks_frame,
+                                            placeholder_text="ERP masks folder (optional)...")
+    app.fisheye_masks_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(masks_frame, text="...", width=36,
+                  command=lambda: app._browse_folder_for(app.fisheye_masks_entry)
+                  ).pack(side="left")
 
     out_frame = ctk.CTkFrame(c, fg_color="transparent")
     out_frame.pack(fill="x", pady=3, padx=6)
@@ -1348,7 +1368,7 @@ def _build_fisheye_section(app, parent):
     # ── Reframe to Pinhole Perspectives ───────────────────────────────
 
     reframe_sec = CollapsibleSection(c, "Reframe to Pinhole Perspectives",
-                                     expanded=False)
+                                     expanded=True)
     reframe_sec.pack(fill="x", padx=2, pady=(4, 0))
     rc = reframe_sec.content
 
@@ -1357,7 +1377,7 @@ def _build_fisheye_section(app, parent):
                                               font=ctk.CTkFont(family="Consolas", size=10),
                                               fg_color="#1a1a1a", state="disabled")
     app.fisheye_status_text.pack(fill="x", padx=6, pady=(4, 2))
-    app._set_textbox(app.fisheye_status_text, "Select a .osv / .360 file and configure settings.")
+    app._set_textbox(app.fisheye_status_text, "Video: extract from 360 file. Frames: reframe existing. Masks: include mask reframing.")
 
     # Preset
     preset_frame = ctk.CTkFrame(rc, fg_color="transparent")
@@ -1473,16 +1493,16 @@ def _build_fisheye_section(app, parent):
             "Higher = more camera movement required between frames.\n"
             "10 works well for typical walking/driving captures.")
 
-    # Extract button
+    # Extract / Reframe button
     app.fisheye_run_btn = ctk.CTkButton(
-        rc, text="Extract Pinhole Views", command=lambda: _run_fisheye(app),
+        rc, text="Extract & Reframe", command=lambda: _run_fisheye(app),
         fg_color="#2E7D32", hover_color="#1B5E20",
         font=ctk.CTkFont(size=13, weight="bold"), height=36,
     )
     app.fisheye_run_btn.pack(fill="x", padx=6, pady=(6, 2))
     Tooltip(app.fisheye_run_btn,
-            "Extract pinhole perspective crops from each fisheye frame pair.\n"
-            "Uses the preset view layout and crop settings above.")
+            "Extract from video and/or reframe ERP frames into perspectives.\n"
+            "Fill Video to extract, Frames to reframe, Masks to include masks.")
 
     # Output estimate label (dynamic — updates with preset/interval/crop changes)
     app.fisheye_estimate_label = ctk.CTkLabel(rc, text="",
@@ -1701,24 +1721,44 @@ def _run_fisheye(app):
     if not HAS_PREP360:
         app.log("Error: prep360 core not available")
         return
-    osv_path = app.fisheye_osv_entry.get()
-    output_dir = app.fisheye_output_entry.get()
-    if not osv_path:
-        app.log("Error: Please select an OSV file")
-        return
-    if not Path(osv_path).exists():
-        app.log(f"Error: File not found: {osv_path}")
-        return
+
+    video_path = app.fisheye_osv_entry.get().strip()
+    frames_dir = app.fisheye_frames_entry.get().strip()
+    masks_dir = app.fisheye_masks_entry.get().strip()
+    output_dir = app.fisheye_output_entry.get().strip()
+
+    # Validate output (always required)
     if not output_dir:
-        app.log("Error: Please select an output folder")
+        app.log("Error: Please select an output directory")
+        return
+
+    # Auto-detect mode from filled fields
+    if not video_path and not frames_dir:
+        app.log("Error: Please select a video file or frames folder")
+        return
+    if video_path and not Path(video_path).exists():
+        app.log(f"Error: File not found: {video_path}")
+        return
+    if frames_dir and not Path(frames_dir).exists():
+        app.log(f"Error: Frames folder not found: {frames_dir}")
+        return
+    if masks_dir and not frames_dir:
+        app.log("Error: Masks require a frames folder")
+        return
+    if masks_dir and not Path(masks_dir).exists():
+        app.log(f"Error: Masks folder not found: {masks_dir}")
         return
 
     app._start_operation(app.fisheye_run_btn, app.fisheye_stop_btn)
-    threading.Thread(target=_fisheye_worker, args=(app, osv_path, output_dir),
-                     daemon=True).start()
+    threading.Thread(
+        target=_fisheye_worker,
+        args=(app, video_path or None, frames_dir or None,
+              masks_dir or None, output_dir),
+        daemon=True,
+    ).start()
 
 
-def _fisheye_worker(app, osv_path, output_dir):
+def _fisheye_worker(app, video_path, frames_dir, masks_dir, output_dir):
     try:
         calib = _get_fisheye_calibration(app)
         app.log(f"Calibration: {calib.camera_model}")
@@ -1737,39 +1777,68 @@ def _fisheye_worker(app, osv_path, output_dir):
             quality=quality,
         )
 
+        # Determine mode
+        has_video = video_path is not None
+        has_masks = masks_dir is not None
+        mode = "Extract & Reframe" if has_video else ("Reframe with Masks" if has_masks else "Reframe")
+        app.log(f"Mode: {mode}")
         app.log(f"Preset: {preset_name} ({config.total_views()} views)")
         app.log(f"Crop: {crop_size}x{crop_size} @ Q{quality}")
 
-        # Step 1: extract fisheye frames
-        interval = app.fisheye_interval_var.get()
-        frames_dir = str(Path(output_dir) / "fisheye_frames")
-        app.log(f"\nExtracting fisheye frames (interval={interval:.1f}s)...")
+        # Step 1: Extract fisheye frames from video (if video provided)
+        if has_video:
+            interval = app.fisheye_interval_var.get()
+            extract_dir = str(Path(output_dir) / "fisheye_frames")
+            app.log(f"\nExtracting fisheye frames (interval={interval:.1f}s)...")
 
-        handler = OSVHandler()
+            handler = OSVHandler()
 
-        def osv_progress(stream_name, current, total):
-            if not app.cancel_flag.is_set():
-                app.log(f"  [{stream_name}] {current}/{total}")
+            def osv_progress(stream_name, current, total):
+                if not app.cancel_flag.is_set():
+                    app.log(f"  [{stream_name}] {current}/{total}")
 
-        frame_dict = handler.extract_frames(
-            osv_path, frames_dir,
-            interval=interval, streams="both", quality=95,
-            progress_callback=osv_progress,
-        )
+            frame_dict = handler.extract_frames(
+                video_path, extract_dir,
+                interval=interval, streams="both", quality=95,
+                progress_callback=osv_progress,
+            )
 
-        front = sorted(frame_dict.get("front", []))
-        back = sorted(frame_dict.get("back", []))
-        if not front or not back:
-            app.log("Error: No frames extracted")
-            return
-        app.log(f"Extracted {len(front)} front + {len(back)} back frames")
+            front = sorted(frame_dict.get("front", []))
+            back = sorted(frame_dict.get("back", []))
+            if not front or not back:
+                app.log("Error: No frames extracted")
+                return
+            app.log(f"Extracted {len(front)} front + {len(back)} back frames")
+        else:
+            # Use existing frames from Frames directory
+            frames_path = Path(frames_dir)
+            front = sorted(str(f) for f in frames_path.glob("front_*.jpg"))
+            back = sorted(str(f) for f in frames_path.glob("back_*.jpg"))
+            if not front and not back:
+                # Try generic image names (ERP frames, not front/back pairs)
+                all_frames = sorted(
+                    str(f) for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']
+                    for f in frames_path.glob(ext)
+                )
+                if not all_frames:
+                    app.log("Error: No frames found in frames folder")
+                    return
+                # ERP reframe path (not fisheye pairs)
+                app.log(f"Found {len(all_frames)} ERP frames — using equirect reframer")
+                _erp_reframe_worker(app, all_frames, masks_dir, output_dir, config)
+                return
+
+            if not front or not back:
+                app.log("Error: Need both front_*.jpg and back_*.jpg frames")
+                return
+            app.log(f"Found {len(front)} front + {len(back)} back frames")
 
         if app.cancel_flag.is_set():
             app.log("Cancelled")
             return
 
-        # Optional motion selection
-        if app.fisheye_motion_var.get():
+        # Optional motion selection (only when extracting from video)
+        if has_video and app.fisheye_motion_var.get():
             app.log("\nRunning motion-aware selection...")
             selector = MotionSelector(
                 min_sharpness=app.fisheye_sharpness_var.get(),
@@ -1786,28 +1855,34 @@ def _fisheye_worker(app, osv_path, output_dir):
             app.log("Cancelled")
             return
 
-        # Step 2: reframe → perspective
+        # Step 2: Reframe → perspectives
         pairs = list(zip(front, back))
-        crops_dir = str(Path(output_dir) / "perspectives")
+        images_dir = str(Path(output_dir) / "images")
         app.log(f"\nReframing {len(pairs)} pairs \u2192 {config.total_views()} views each...")
+        if has_masks:
+            app.log(f"Masks: {masks_dir}")
 
         def rf_progress(current, total, msg):
             if not app.cancel_flag.is_set():
                 app.log(f"  [{current}/{total}] {msg}")
 
         total_crops, errors = fisheye_batch_extract(
-            pairs, config, calib, crops_dir,
+            pairs, config, calib, images_dir,
+            mask_dir=masks_dir,
             num_workers=1, progress_callback=rf_progress,
         )
 
         lines = [
-            "Fisheye extraction complete",
+            f"{mode} complete",
             f"  Frame pairs:   {len(pairs)}",
             f"  Views/pair:    {config.total_views()}",
             f"  Total crops:   {total_crops}",
             f"  Crop size:     {crop_size}x{crop_size}",
-            f"  Output:        {crops_dir}",
+            f"  Images:        {images_dir}",
         ]
+        if has_masks:
+            masks_out = str(Path(output_dir) / "masks")
+            lines.append(f"  Masks:         {masks_out}")
         if errors:
             lines.append(f"  Errors:        {len(errors)}")
             for err in errors[:5]:
@@ -1818,7 +1893,69 @@ def _fisheye_worker(app, osv_path, output_dir):
         app.after(0, lambda: app._set_textbox(app.fisheye_status_text, summary))
 
     except Exception as e:
+        import traceback
         app.log(f"Fisheye error: {e}")
+        app.log(traceback.format_exc())
     finally:
         app.after(0, lambda: app._stop_operation(
             app.fisheye_run_btn, app.fisheye_stop_btn))
+
+
+def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config):
+    """Reframe ERP frames using the equirect reframer (not fisheye pairs)."""
+    from prep360.core.reframer import Reframer, ViewConfig, Ring
+
+    # Build a ViewConfig from the fisheye preset's view angles
+    # Extract unique rings from the fisheye views
+    rings = []
+    pitch_groups = {}
+    for view in config.views:
+        pitch = view.pitch_deg
+        if pitch not in pitch_groups:
+            pitch_groups[pitch] = {"count": 0, "fov": view.fov_deg}
+        pitch_groups[pitch]["count"] += 1
+
+    for pitch, info in sorted(pitch_groups.items()):
+        rings.append(Ring(pitch=pitch, count=info["count"], fov=info["fov"]))
+
+    view_config = ViewConfig(
+        rings=rings,
+        output_size=config.crop_size,
+        jpeg_quality=config.quality,
+    )
+    reframer = Reframer(view_config)
+
+    # Create a temp directory with the frames (reframe_batch expects a directory)
+    frames_dir = str(Path(frame_paths[0]).parent)
+    images_dir = str(Path(output_dir) / "images")
+
+    app.log(f"\nReframing {len(frame_paths)} ERP frames...")
+
+    def rf_progress(current, total, msg):
+        if not app.cancel_flag.is_set():
+            app.log(f"  [{current}/{total}] {msg}")
+
+    result = reframer.reframe_batch(
+        frames_dir, images_dir,
+        mask_dir=masks_dir,
+        num_workers=1,
+        progress_callback=rf_progress,
+    )
+
+    lines = [
+        "ERP reframing complete",
+        f"  Input frames:  {result.input_count}",
+        f"  Total views:   {result.output_count}",
+        f"  Images:        {images_dir}",
+    ]
+    if masks_dir:
+        masks_out = str(Path(output_dir) / "masks")
+        lines.append(f"  Masks:         {masks_out}")
+    if result.errors:
+        lines.append(f"  Errors:        {len(result.errors)}")
+        for err in result.errors[:5]:
+            lines.append(f"    - {err}")
+
+    summary = "\n".join(lines)
+    app.log(f"\n{summary}")
+    app.after(0, lambda: app._set_textbox(app.fisheye_status_text, summary))
