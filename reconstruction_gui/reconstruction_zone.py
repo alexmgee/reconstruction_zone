@@ -6,7 +6,7 @@ Unified photogrammetry prep GUI. Double-click to launch.
 
 Tabs:
   Prepare — video analysis, frame extraction (queue), reframe, fisheye, LUT, filters
-  Mask    — multi-model masking pipeline (YOLO, SAM, shadow, ensemble, VOS)
+  Mask    — multi-model masking pipeline (YOLO, SAM, shadow, ensemble)
   Review  — paginated thumbnail grid, large preview, OpenCV editor launch
   Gaps    — spatial gap detection, bridge frame extraction
 
@@ -411,7 +411,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.shadow_detector_var = ctk.StringVar(value="targeted_person")
         ctk.CTkOptionMenu(sr1, variable=self.shadow_detector_var,
                           values=["targeted_person", "brightness",
-                                  "c1c2c3", "hybrid", "sddnet", "careaga"],
+                                  "c1c2c3", "hybrid"],
                           width=140).pack(side="left", padx=2)
         ctk.CTkLabel(sr1, text="Verify:").pack(side="left", padx=(12, 2))
         self.shadow_verifier_var = ctk.StringVar(value="none")
@@ -530,27 +530,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         ctk.CTkLabel(edge_row,
                      text="Detects thin structures that object detectors miss",
                      font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=8)
-
-        # VOS Temporal Propagation
-        vos_section = _CollapsibleSection(detect, "VOS Temporal Propagation",
-            subtitle="Propagate masks across frames for temporal consistency")
-        vos_section.pack(fill="x", padx=2, pady=(0, 4))
-        vosc = vos_section.content
-
-        vosr1 = ctk.CTkFrame(vosc, fg_color="transparent")
-        vosr1.pack(fill="x", pady=2)
-        self.vos_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(vosr1, text="Enable", variable=self.vos_var,
-                        width=80).pack(side="left")
-        ctk.CTkLabel(vosr1, text="Backend:").pack(side="left", padx=(12, 2))
-        self.vos_backend_var = ctk.StringVar(value="auto")
-        ctk.CTkOptionMenu(vosr1, variable=self.vos_backend_var,
-                          values=["auto", "livos", "cutie"],
-                          width=80).pack(side="left", padx=2)
-        self.vos_interval_var = self._slider(vosr1, "Keyframe every", 1, 30, 5, 29,
-                                              fmt=".0f", pad_left=12)
-        ctk.CTkLabel(vosr1, text="frames",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
 
         # COLMAP Geometric Validation
         col_section = _CollapsibleSection(detect, "COLMAP Geometric Validation",
@@ -1411,14 +1390,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         ens_models_raw = self.ens_models_var.get().strip()
         ensemble_models = [m.strip() for m in ens_models_raw.split(",") if m.strip()] if ens_models_raw else ["yolo26", "rfdetr"]
 
-        vos_enabled = self.vos_var.get()
-        vos_config = None
-        if vos_enabled:
-            vos_config = {
-                'backend': self.vos_backend_var.get(),
-                'device': device,
-            }
-
         colmap_enabled = self.colmap_var.get()
         colmap_dir = self.colmap_dir_var.get().strip()
         colmap_config = None
@@ -1438,9 +1409,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             sam_refine_config=sam_refine_config,
             matting=matting_enabled,
             matting_config=matting_config,
-            vos_propagation=vos_enabled,
-            vos_config=vos_config,
-            vos_keyframe_interval=int(self.vos_interval_var.get()),
             ensemble=ensemble_enabled,
             ensemble_models=ensemble_models,
             ensemble_iou_threshold=float(self.ens_iou_var.get()),
