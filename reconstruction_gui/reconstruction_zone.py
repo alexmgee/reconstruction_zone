@@ -24,6 +24,7 @@ import sys
 import os
 import json
 import logging
+import shutil
 
 # Ensure reconstruction_gui and prep360 are importable
 _this_dir = Path(__file__).resolve().parent
@@ -132,7 +133,23 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Divide by DPI scale so images fit the panel correctly on high-DPI displays.
         self._dpi_scale = ctk.ScalingTracker.get_widget_scaling(self)
         self._restore_prefs()
+        self._check_external_tools()
+
+        # Check for missing model weights on first launch
+        from reconstruction_gui.model_downloader import check_missing_models, ModelDownloadDialog
+        missing = check_missing_models()
+        if missing:
+            dialog = ModelDownloadDialog(self, missing)
+            self.wait_window(dialog)
+
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _check_external_tools(self):
+        """Warn at startup if external CLI tools are missing from PATH."""
+        if not shutil.which("ffmpeg"):
+            logger.warning("ffmpeg not found on PATH — video extraction will not work")
+        if not shutil.which("exiftool"):
+            logger.warning("exiftool not found on PATH — SRT geotagging will not work")
 
     # ── prefs ──
     # _load_prefs and _save_prefs inherited from AppInfrastructure
