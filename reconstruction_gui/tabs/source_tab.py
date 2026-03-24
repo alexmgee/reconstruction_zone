@@ -11,11 +11,12 @@ Usage::
     build_source_tab(app, tab_frame)
 """
 
+import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog
-from typing import List
+from typing import List, Optional
 
 import customtkinter as ctk
 
@@ -38,7 +39,19 @@ try:
     from prep360.core.fisheye_reframer import (
         default_osmo360_calibration, batch_extract as fisheye_batch_extract,
     )
-    from prep360.core.queue_manager import VideoQueue
+    from prep360.core.queue_manager import VideoQueue, ExtractionSettings
+    from prep360.core.dual_fisheye_dataset import (
+        DualFisheyeClipDataset,
+        discover_clip_roots,
+        load_clip_dataset,
+        write_dual_fisheye_session_manifest,
+    )
+    from prep360.core.paired_split_video_extractor import (
+        PairedSplitConfig,
+        PairedSplitVideoExtractor,
+    )
+    from prep360.core.srt_parser import find_srt_for_video, parse_srt
+    from prep360.core.geotagger import geotag_from_manifest, geotag_from_interval
 
     HAS_PREP360 = True
 except ImportError:
@@ -104,6 +117,27 @@ class PlannedFrame:
     included: bool = True
 
 
+@dataclass
+class SourceAnalysisSummary:
+    """Minimal analysis data for the currently selected extraction source."""
+
+    source_label: str
+    width: int
+    height: int
+    fps: float
+    duration_seconds: float
+    frame_count: int
+    recommended_interval: float = 2.0
+    format: str = ""
+    codec: str = ""
+    pixel_format: str = ""
+    is_equirectangular: bool = False
+    is_log_format: bool = False
+    detected_log_type: Optional[str] = None
+    pair_mode: bool = False
+    warning_lines: List[str] = field(default_factory=list)
+
+
 # ── extraction mode display labels ────────────────────────────────────
 
 _MODE_INFO = {
@@ -115,9 +149,46 @@ _MODE_INFO = {
 _LABEL_TO_MODE = {info[0]: key for key, info in _MODE_INFO.items()}
 _MODE_TO_LABEL = {key: info[0] for key, info in _MODE_INFO.items()}
 
+_PAIRED_SHARPEST_TIER_INFO = {
+    "fast": ("Fast", "Quick pair scoring from both lenses"),
+    "balanced": ("Balanced", "Blurdetect on both lenses, fixed time windows"),
+    "best": ("Best", "Blurdetect on both lenses with scene-aware pair selection"),
+}
+_PAIRED_TIER_LABEL_TO_KEY = {info[0]: key for key, info in _PAIRED_SHARPEST_TIER_INFO.items()}
+_PAIRED_TIER_KEY_TO_LABEL = {key: info[0] for key, info in _PAIRED_SHARPEST_TIER_INFO.items()}
+
 def _get_mode_value(app) -> str:
     """Map the display label back to the internal mode value."""
     return _LABEL_TO_MODE.get(app.extract_mode_var.get(), "fixed")
+
+
+def _get_paired_sharpest_tier_value(app) -> str:
+    """Map the paired sharpest tier label back to the internal mode value."""
+    var = getattr(app, "extract_sharpest_tier_var", None)
+    label = var.get() if var is not None else _PAIRED_TIER_KEY_TO_LABEL["best"]
+    return _PAIRED_TIER_LABEL_TO_KEY.get(label, "best")
+
+
+def _snapshot_settings(app) -> "ExtractionSettings":
+    """Capture current GUI extraction settings into an ExtractionSettings object."""
+    start = app.extract_start_entry.get().strip()
+    end = app.extract_end_entry.get().strip()
+    return ExtractionSettings(
+        mode=_get_mode_value(app),
+        interval=round(app.extract_interval_var.get(), 1),
+        quality=app.extract_quality_var.get(),
+        format=app.extract_format_var.get(),
+        start_sec=_parse_time(start) if start else None,
+        end_sec=_parse_time(end) if end else None,
+        blur_filter=app.extract_blur_enabled_var.get(),
+        blur_percentile=app.extract_blur_percentile_var.get(),
+        sky_filter=app.extract_sky_enabled_var.get(),
+        lut_enabled=app.extract_lut_enabled_var.get(),
+        lut_path=app.extract_lut_file_entry.get().strip(),
+        lut_strength=app.extract_lut_strength_var.get(),
+        shadow=app.extract_shadow_var.get(),
+        highlight=app.extract_highlight_var.get(),
+    )
 
 def _on_mode_change(app, label):
     """Update mode description when combo selection changes."""
@@ -125,6 +196,7 @@ def _on_mode_change(app, label):
     desc = _MODE_INFO.get(mode, ("", ""))[1]
     if hasattr(app, "extract_mode_desc"):
         app.extract_mode_desc.configure(text=desc)
+    _update_sharpest_tier_ui(app)
 
 
 # ── time parser ───────────────────────────────────────────────────────
@@ -161,13 +233,156 @@ def _format_duration(seconds: float) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+def _split_source_enabled(app) -> bool:
+    return bool(
+        getattr(app, "split_source_var", None)
+        and app.split_source_var.get()
+    )
+
+
+def _strip_lens_suffix(stem: str) -> str:
+    text = stem.strip()
+    patterns = [
+        r"(?i)[_-](front|back)$",
+        r"(?i)^(front|back)[_-]",
+        r"(?i)\s(front|back)$",
+        r"(?i)^(front|back)\s",
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, "", text)
+    return text.rstrip("_- ").strip()
+
+
+def _shared_clip_stem(front_path: str, back_path: str = "") -> str:
+    front_stem = _strip_lens_suffix(Path(front_path).stem)
+    if not back_path:
+        return front_stem or Path(front_path).stem
+
+    back_stem = _strip_lens_suffix(Path(back_path).stem)
+    if front_stem and back_stem and front_stem == back_stem:
+        return front_stem
+
+    common = Path(front_path).stem
+    other = Path(back_path).stem
+    prefix = []
+    for a, b in zip(common, other):
+        if a != b:
+            break
+        prefix.append(a)
+    merged = "".join(prefix).rstrip("_- ")
+    return merged or front_stem or back_stem or Path(front_path).stem
+
+
+def _set_entry_text(entry, value: str):
+    entry.delete(0, "end")
+    entry.insert(0, value)
+
+
+def _maybe_autofill_split_output(app):
+    if not hasattr(app, "split_output_entry"):
+        return
+
+    front = app.split_front_video_entry.get().strip()
+    back = app.split_back_video_entry.get().strip()
+    source = front or back
+    if not source:
+        return
+
+    stem = _shared_clip_stem(front or back, back)
+    parent_dir = Path(source).parent
+    new_value = str(parent_dir / stem)
+    current_value = app.split_output_entry.get().strip()
+    last_auto_value = getattr(app, "_last_split_auto_output", "")
+    if current_value and current_value != last_auto_value:
+        return
+    _set_entry_text(app.split_output_entry, new_value)
+    app._last_split_auto_output = new_value
+
+
+def _browse_split_video(app, entry, title: str):
+    app._browse_file_for(
+        entry,
+        title,
+        [("Video Files", "*.mp4 *.mov *.mkv *.avi"), ("All Files", "*.*")],
+    )
+    _maybe_autofill_split_output(app)
+
+
+def _analysis_placeholder_text(app) -> str:
+    if _split_source_enabled(app):
+        return (
+            "Shows: shared duration, fps,\n"
+            "pair compatibility warnings,\n"
+            "recommended interval & source notes"
+        )
+    return (
+        "Shows: resolution, fps, duration,\n"
+        "pair compatibility warnings,\n"
+        "recommended interval & source notes"
+    )
+
+
+def _on_split_source_toggle(app):
+    app.current_video_info = None
+    app.current_video_path = None
+    if hasattr(app, "analyze_results"):
+        app.analyze_results.delete("1.0", "end")
+        app.analyze_results.insert("1.0", _analysis_placeholder_text(app))
+    _update_estimate(app)
+    _update_source_mode_ui(app)
+
+
+def _update_source_mode_ui(app):
+    split_mode = _split_source_enabled(app)
+
+    for widget in getattr(app, "_split_source_widgets", []):
+        widget.configure(state="normal" if split_mode else "disabled")
+
+    queue_state = "disabled" if split_mode else "normal"
+    for attr in (
+        "extract_queue_add_btn",
+        "queue_run_btn",
+        "queue_add_videos_btn",
+        "queue_add_folder_btn",
+        "queue_remove_btn",
+        "queue_clear_done_btn",
+    ):
+        if hasattr(app, attr):
+            getattr(app, attr).configure(state=queue_state)
+
+    _update_sharpest_tier_ui(app)
+
+
+def _update_sharpest_tier_ui(app):
+    if not hasattr(app, "extract_sharpest_tier_row"):
+        return
+
+    show = _split_source_enabled(app) and _get_mode_value(app) == "sharpest"
+    row = app.extract_sharpest_tier_row
+    desc = getattr(app, "extract_sharpest_tier_desc", None)
+
+    if show:
+        if not row.winfo_manager():
+            row.pack(fill="x", pady=3, padx=6, after=app.extract_mode_desc)
+        if desc and not desc.winfo_manager():
+            desc.pack(fill="x", padx=12, pady=(0, 2), after=row)
+        tier = _get_paired_sharpest_tier_value(app)
+        if desc:
+            desc.configure(text=_PAIRED_SHARPEST_TIER_INFO[tier][1])
+    else:
+        if row.winfo_manager():
+            row.pack_forget()
+        if desc and desc.winfo_manager():
+            desc.pack_forget()
+
+
 def _update_estimate(app, *_args):
     """Recalculate and display extraction estimates from current settings."""
     if not hasattr(app, "extract_estimate_label"):
         return
     info = getattr(app, "current_video_info", None)
     if info is None:
-        app.extract_estimate_label.configure(text="Analyze a video to see estimates")
+        app.extract_estimate_label.configure(text="Analyze the selected source to see estimates")
         return
 
     # effective duration
@@ -181,14 +396,25 @@ def _update_estimate(app, *_args):
 
     mode = _get_mode_value(app)
     interval = app.extract_interval_var.get()
+    paired_tier = _get_paired_sharpest_tier_value(app) if getattr(info, "pair_mode", False) else ""
 
     # frame count estimate
-    if mode == "scene":
+    if mode == "scene" or (
+        mode == "sharpest"
+        and getattr(info, "pair_mode", False)
+        and paired_tier == "best"
+    ):
         frames = int(eff_dur / interval)  # rough baseline
-        frame_str = f"~{frames:,} frames (varies by scene cuts)"
+        if getattr(info, "pair_mode", False):
+            frame_str = f"~{frames:,} frame pairs (varies by scene cuts)"
+        else:
+            frame_str = f"~{frames:,} frames (varies by scene cuts)"
     else:
         frames = max(1, int(eff_dur / interval))
-        frame_str = f"~{frames:,} frames"
+        if getattr(info, "pair_mode", False):
+            frame_str = f"~{frames:,} frame pairs (~{frames * 2:,} images)"
+        else:
+            frame_str = f"~{frames:,} frames"
 
     # size estimate per frame (pixels × bytes-per-pixel × compression ratio)
     pixels = info.width * info.height
@@ -202,12 +428,17 @@ def _update_estimate(app, *_args):
         bytes_per_frame = pixels * 3 * (quality / 100) * 0.15
         fmt_label = f"jpg q{quality}"
 
-    total_bytes = frames * bytes_per_frame
+    total_bytes = frames * bytes_per_frame * (2 if getattr(info, "pair_mode", False) else 1)
 
     # blur/sky filter caveat
     caveats = []
     if mode == "sharpest":
-        caveats.append("sharpest per window")
+        if getattr(info, "pair_mode", False):
+            tier_label = getattr(app, "extract_sharpest_tier_var", None)
+            tier_text = tier_label.get() if tier_label else "Best"
+            caveats.append(f"sharpest per window ({tier_text.lower()})")
+        else:
+            caveats.append("sharpest per window")
     if app.extract_blur_enabled_var.get() and mode != "sharpest":
         pct = app.extract_blur_percentile_var.get()
         kept = max(1, int(frames * pct / 100))
@@ -237,6 +468,9 @@ def build_source_tab(app, parent):
     _build_video_selection_section(app, scroll)
     _build_extract_section(app, scroll)
     _build_fisheye_section(app, scroll)
+    _build_metadata_section(app, scroll)
+    _build_metashape_section(app, scroll)
+    _update_source_mode_ui(app)
 
 
 # ======================================================================
@@ -268,8 +502,106 @@ def _build_video_selection_section(app, parent):
                   command=lambda: app._browse_folder_for(app.extract_output_entry)
                   ).pack(side="left")
 
+    split_sec = CollapsibleSection(
+        c,
+        "Split Lens Videos",
+        subtitle="use graded front/back exports as the extraction source",
+        expanded=False,
+    )
+    split_sec.pack(fill="x", pady=(4, 0), padx=2)
+    sc = split_sec.content
+
+    app.split_source_var = ctk.BooleanVar(value=False)
+    split_mode_cb = ctk.CTkCheckBox(
+        sc,
+        text="Use Split Lens Videos",
+        variable=app.split_source_var,
+        command=lambda: _on_split_source_toggle(app),
+        width=180,
+    )
+    split_mode_cb.pack(pady=(2, 4), padx=6, anchor="w")
+    Tooltip(
+        split_mode_cb,
+        "When enabled, Analyze and Extract use the graded front/back videos below.\n"
+        "Use this after splitting and color-grading outside the GUI.",
+    )
+
+    split_desc = ctk.CTkLabel(
+        sc,
+        text="This is the paired extraction source for the main Extract button.\n"
+             "Top Input/Output still belong to single-video extraction and Split Lenses.",
+        font=("Consolas", 10),
+        text_color="#9ca3af",
+        anchor="w",
+        justify="left",
+    )
+    split_desc.pack(fill="x", padx=6, pady=(0, 4))
+
+    split_front_frame = ctk.CTkFrame(sc, fg_color="transparent")
+    split_front_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(split_front_frame, text="Front:", width=60, anchor="w").pack(side="left")
+    app.split_front_video_entry = ctk.CTkEntry(
+        split_front_frame,
+        placeholder_text="Graded front lens video (.mp4 / .mov)...",
+    )
+    app.split_front_video_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    app.split_front_video_entry.bind("<FocusOut>", lambda _e: _maybe_autofill_split_output(app))
+    split_front_btn = ctk.CTkButton(
+        split_front_frame,
+        text="...",
+        width=36,
+        command=lambda: _browse_split_video(app, app.split_front_video_entry, "Select Front Lens Video"),
+    )
+    split_front_btn.pack(side="left")
+
+    split_back_frame = ctk.CTkFrame(sc, fg_color="transparent")
+    split_back_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(split_back_frame, text="Back:", width=60, anchor="w").pack(side="left")
+    app.split_back_video_entry = ctk.CTkEntry(
+        split_back_frame,
+        placeholder_text="Graded back lens video (.mp4 / .mov)...",
+    )
+    app.split_back_video_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    app.split_back_video_entry.bind("<FocusOut>", lambda _e: _maybe_autofill_split_output(app))
+    split_back_btn = ctk.CTkButton(
+        split_back_frame,
+        text="...",
+        width=36,
+        command=lambda: _browse_split_video(app, app.split_back_video_entry, "Select Back Lens Video"),
+    )
+    split_back_btn.pack(side="left")
+
+    split_out_frame = ctk.CTkFrame(sc, fg_color="transparent")
+    split_out_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(split_out_frame, text="Clip Folder:", width=80, anchor="w").pack(side="left")
+    app.split_output_entry = ctk.CTkEntry(
+        split_out_frame,
+        placeholder_text="Per-clip working folder (auto-filled from the filename stem)...",
+    )
+    app.split_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    split_out_btn = ctk.CTkButton(
+        split_out_frame,
+        text="...",
+        width=36,
+        command=lambda: app._browse_folder_for(app.split_output_entry),
+    )
+    split_out_btn.pack(side="left")
+    Tooltip(
+        app.split_output_entry,
+        "The main Extract button writes front/frames + back/frames here for this one clip.",
+    )
+
+    app._split_source_widgets = [
+        app.split_front_video_entry,
+        split_front_btn,
+        app.split_back_video_entry,
+        split_back_btn,
+        app.split_output_entry,
+        split_out_btn,
+    ]
+
     # Analysis (collapsible subsection)
-    analysis_sec = CollapsibleSection(c, "Analysis", expanded=False)
+    analysis_sec = CollapsibleSection(c, "Analysis", expanded=True)
     analysis_sec.pack(fill="x", pady=(4, 0), padx=2)
     ac = analysis_sec.content
 
@@ -287,25 +619,42 @@ def _build_video_selection_section(app, parent):
     app.analyze_results = ctk.CTkTextbox(analysis_row, height=160,
                                          font=ctk.CTkFont(family="Consolas", size=11))
     app.analyze_results.pack(side="left", fill="x", expand=True)
-    app.analyze_results.insert("1.0",
-        "Shows: resolution, fps, duration,\n"
-        "360° detection, log format,\n"
-        "recommended interval & LUT")
+    app.analyze_results.insert("1.0", _analysis_placeholder_text(app))
 
 
 def _run_analyze(app):
     if not HAS_PREP360:
         app.log("Error: prep360 core not available")
         return
-    video = app.analyze_video_entry.get()
-    if not video:
-        app.log("Error: Please select a video file")
-        return
-    if not Path(video).exists():
-        app.log(f"Error: Video not found: {video}")
-        return
+    if _split_source_enabled(app):
+        front_video = app.split_front_video_entry.get().strip()
+        back_video = app.split_back_video_entry.get().strip()
+        if not front_video or not back_video:
+            app.log("Error: Select both front and back split videos first")
+            return
+        if not Path(front_video).exists():
+            app.log(f"Error: Front video not found: {front_video}")
+            return
+        if not Path(back_video).exists():
+            app.log(f"Error: Back video not found: {back_video}")
+            return
+    else:
+        video = app.analyze_video_entry.get().strip()
+        if not video:
+            app.log("Error: Please select a video file")
+            return
+        if not Path(video).exists():
+            app.log(f"Error: Video not found: {video}")
+            return
     app.analyze_run_btn.configure(state="disabled")
-    threading.Thread(target=_analyze_worker, args=(app, video), daemon=True).start()
+    if _split_source_enabled(app):
+        threading.Thread(
+            target=_analyze_split_worker,
+            args=(app, front_video, back_video),
+            daemon=True,
+        ).start()
+    else:
+        threading.Thread(target=_analyze_worker, args=(app, video), daemon=True).start()
 
 
 def _analyze_worker(app, video):
@@ -313,6 +662,22 @@ def _analyze_worker(app, video):
         app.log(f"Analyzing: {Path(video).name}")
         analyzer = VideoAnalyzer()
         info = analyzer.analyze(video)
+        summary = SourceAnalysisSummary(
+            source_label=Path(video).name,
+            width=info.width,
+            height=info.height,
+            fps=info.fps,
+            duration_seconds=info.duration_seconds,
+            frame_count=info.frame_count,
+            recommended_interval=info.recommended_interval,
+            format=info.format,
+            codec=info.codec,
+            pixel_format=info.pixel_format or "Unknown",
+            is_equirectangular=info.is_equirectangular,
+            is_log_format=info.is_log_format,
+            detected_log_type=info.detected_log_type,
+            pair_mode=False,
+        )
         result_text = (
             f"File: {info.filename}\n"
             f"Format: {info.format} ({info.codec})\n"
@@ -335,7 +700,7 @@ def _analyze_worker(app, video):
         )
         if info.recommended_lut:
             result_text += f"Recommended LUT: {info.recommended_lut}\n"
-        app.current_video_info = info
+        app.current_video_info = summary
         app.current_video_path = video
         app.after(0, lambda: _update_analyze_results(app, result_text))
         app.log("Analysis complete")
@@ -349,6 +714,83 @@ def _update_analyze_results(app, text):
     app.analyze_results.delete("1.0", "end")
     app.analyze_results.insert("1.0", text)
     _update_estimate(app)
+
+
+def _analyze_split_worker(app, front_video: str, back_video: str):
+    try:
+        app.log(f"Analyzing split pair: {Path(front_video).name} + {Path(back_video).name}")
+        analyzer = VideoAnalyzer()
+        front_info = analyzer.analyze(front_video)
+        back_info = analyzer.analyze(back_video)
+
+        warnings = []
+        if front_info.width != back_info.width or front_info.height != back_info.height:
+            warnings.append(
+                f"Resolution mismatch: front {front_info.width}x{front_info.height}, "
+                f"back {back_info.width}x{back_info.height}"
+            )
+        fps_delta = abs(front_info.fps - back_info.fps)
+        if fps_delta > 0.05:
+            warnings.append(
+                f"FPS mismatch: front {front_info.fps:.3f}, back {back_info.fps:.3f}"
+            )
+        duration_delta = abs(front_info.duration_seconds - back_info.duration_seconds)
+        if duration_delta > 0.1:
+            warnings.append(
+                f"Duration mismatch: front {front_info.duration_seconds:.2f}s, "
+                f"back {back_info.duration_seconds:.2f}s"
+            )
+
+        shared_duration = min(front_info.duration_seconds, back_info.duration_seconds)
+        shared_fps = min(front_info.fps, back_info.fps)
+        shared_frames = min(front_info.frame_count, back_info.frame_count)
+        shared_interval = min(front_info.recommended_interval, back_info.recommended_interval)
+
+        summary = SourceAnalysisSummary(
+            source_label=f"{Path(front_video).name} + {Path(back_video).name}",
+            width=min(front_info.width, back_info.width),
+            height=min(front_info.height, back_info.height),
+            fps=shared_fps,
+            duration_seconds=shared_duration,
+            frame_count=shared_frames,
+            recommended_interval=shared_interval,
+            format=f"{front_info.format}/{back_info.format}",
+            codec=f"{front_info.codec}/{back_info.codec}",
+            pixel_format=front_info.pixel_format or back_info.pixel_format or "Unknown",
+            is_equirectangular=False,
+            is_log_format=front_info.is_log_format or back_info.is_log_format,
+            detected_log_type=front_info.detected_log_type or back_info.detected_log_type,
+            pair_mode=True,
+            warning_lines=warnings,
+        )
+
+        result_lines = [
+            "Source: Split lens pair",
+            f"Front: {Path(front_video).name}",
+            f"Back:  {Path(back_video).name}",
+            "",
+            "=== Shared Pairing ===",
+            f"Resolution: {summary.width}x{summary.height} per lens",
+            f"FPS: {shared_fps:.2f}",
+            f"Duration: {_format_duration(shared_duration)} ({shared_duration:.1f}s shared)",
+            f"Frames: {shared_frames} shared",
+            "",
+            "=== Recommendations ===",
+            f"Extraction Interval: {shared_interval}s",
+            f"Estimated Frame Pairs @ {shared_interval}s: "
+            f"{max(1, int(shared_duration / shared_interval))}",
+        ]
+        if warnings:
+            result_lines.extend(["", "=== Warnings ===", *warnings])
+
+        app.current_video_info = summary
+        app.current_video_path = None
+        app.after(0, lambda: _update_analyze_results(app, "\n".join(result_lines)))
+        app.log("Split-pair analysis complete")
+    except Exception as e:
+        app.log(f"Error: {e}")
+    finally:
+        app.after(0, lambda: app.analyze_run_btn.configure(state="normal"))
 
 
 # ======================================================================
@@ -385,6 +827,32 @@ def _build_extract_section(app, parent):
         c, text=_MODE_INFO["fixed"][1], text_color="#9ca3af",
         font=ctk.CTkFont(size=10), anchor="w")
     app.extract_mode_desc.pack(fill="x", padx=12, pady=(0, 2))
+
+    app.extract_sharpest_tier_row = ctk.CTkFrame(c, fg_color="transparent")
+    ctk.CTkLabel(app.extract_sharpest_tier_row, text="Tier:", width=60, anchor="w").pack(side="left")
+    app.extract_sharpest_tier_var = ctk.StringVar(value=_PAIRED_TIER_KEY_TO_LABEL["best"])
+    tier_combo = ctk.CTkComboBox(
+        app.extract_sharpest_tier_row,
+        variable=app.extract_sharpest_tier_var,
+        values=list(_PAIRED_TIER_KEY_TO_LABEL.values()),
+        state="readonly",
+        width=160,
+        command=lambda _v: _update_sharpest_tier_ui(app),
+    )
+    tier_combo.pack(side="left", padx=(6, 0))
+    Tooltip(
+        tier_combo,
+        "Fast: quickest pair scoring.\n"
+        "Balanced: blurdetect on both lenses.\n"
+        "Best: blurdetect + scene-aware pair selection.",
+    )
+    app.extract_sharpest_tier_desc = ctk.CTkLabel(
+        c,
+        text=_PAIRED_SHARPEST_TIER_INFO["best"][1],
+        text_color="#9ca3af",
+        font=ctk.CTkFont(size=10),
+        anchor="w",
+    )
 
     int_frame = ctk.CTkFrame(c, fg_color="transparent")
     int_frame.pack(fill="x", pady=3, padx=6)
@@ -430,7 +898,7 @@ def _build_extract_section(app, parent):
     # -- live estimate --
     app.current_video_info = None
     app.extract_estimate_label = ctk.CTkLabel(
-        c, text="Analyze a video to see estimates", anchor="w", justify="left",
+        c, text="Analyze the selected source to see estimates", anchor="w", justify="left",
         text_color="gray", font=ctk.CTkFont(size=11))
     app.extract_estimate_label.pack(fill="x", padx=8, pady=(4, 0))
 
@@ -557,10 +1025,18 @@ def _build_extract_section(app, parent):
     )
     app.extract_run_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
-    ctk.CTkButton(
+    app.extract_queue_add_btn = ctk.CTkButton(
         action_row, text="Add to Queue", command=lambda: _add_current_to_queue(app),
         fg_color="#1565C0", hover_color="#0D47A1", height=38, width=110,
-    ).pack(side="left", padx=(0, 4))
+    )
+    app.extract_queue_add_btn.pack(side="left", padx=(0, 4))
+
+    app.queue_run_btn = ctk.CTkButton(
+        action_row, text="Process Queue", command=lambda: _run_extract_queue(app),
+        fg_color="#2E7D32", hover_color="#1B5E20",
+        font=ctk.CTkFont(size=13, weight="bold"), height=38, width=120,
+    )
+    app.queue_run_btn.pack(side="left", padx=(0, 4))
 
     app.extract_stop_btn = ctk.CTkButton(
         action_row, text="Stop", command=lambda: _queue_stop(app),
@@ -568,6 +1044,10 @@ def _build_extract_section(app, parent):
     )
     app.extract_stop_btn.pack(side="left")
     app.extract_stop_btn.pack_forget()
+
+    app.extract_progress_bar = ctk.CTkProgressBar(c, height=8)
+    app.extract_progress_bar.pack(fill="x", padx=8, pady=(0, 4))
+    app.extract_progress_bar.set(0)
 
     # -- Batch Queue (collapsed by default) --
     q_sec = CollapsibleSection(c, "Batch Queue", expanded=False)
@@ -577,14 +1057,22 @@ def _build_extract_section(app, parent):
     # queue controls
     qctrl = ctk.CTkFrame(qc, fg_color="transparent")
     qctrl.pack(fill="x", pady=(2, 4))
-    ctk.CTkButton(qctrl, text="Add Videos", width=80,
-                  command=lambda: _queue_add_videos(app)).pack(side="left", padx=(0, 4))
-    ctk.CTkButton(qctrl, text="Add Folder", width=80,
-                  command=lambda: _queue_add_folder(app)).pack(side="left", padx=(0, 4))
-    ctk.CTkButton(qctrl, text="Remove", width=60, fg_color="#666",
-                  command=lambda: _queue_remove_selected(app)).pack(side="left", padx=(0, 4))
-    ctk.CTkButton(qctrl, text="Clear Done", width=72, fg_color="#666",
-                  command=lambda: _queue_clear_done(app)).pack(side="left")
+    app.queue_add_videos_btn = ctk.CTkButton(
+        qctrl, text="Add Videos", width=80,
+        command=lambda: _queue_add_videos(app))
+    app.queue_add_videos_btn.pack(side="left", padx=(0, 4))
+    app.queue_add_folder_btn = ctk.CTkButton(
+        qctrl, text="Add Folder", width=80,
+        command=lambda: _queue_add_folder(app))
+    app.queue_add_folder_btn.pack(side="left", padx=(0, 4))
+    app.queue_remove_btn = ctk.CTkButton(
+        qctrl, text="Remove", width=60, fg_color="#666",
+        command=lambda: _queue_remove_selected(app))
+    app.queue_remove_btn.pack(side="left", padx=(0, 4))
+    app.queue_clear_done_btn = ctk.CTkButton(
+        qctrl, text="Clear Done", width=72, fg_color="#666",
+        command=lambda: _queue_clear_done(app))
+    app.queue_clear_done_btn.pack(side="left")
 
     # queue list — starts at minimal height, grows with content
     app.queue_scroll = ctk.CTkScrollableFrame(qc, height=0, fg_color="transparent")
@@ -593,17 +1081,6 @@ def _build_extract_section(app, parent):
     app.queue_stats_label = ctk.CTkLabel(qc, text="Queue: 0 pending, 0 done",
                                          text_color="gray", font=ctk.CTkFont(size=10))
     app.queue_stats_label.pack(anchor="w")
-
-    # process queue button
-    q_btn_row = ctk.CTkFrame(qc, fg_color="transparent")
-    q_btn_row.pack(fill="x", pady=(6, 4))
-
-    app.queue_run_btn = ctk.CTkButton(
-        q_btn_row, text="Process Queue", command=lambda: _run_extract_queue(app),
-        fg_color="#2E7D32", hover_color="#1B5E20",
-        font=ctk.CTkFont(size=13, weight="bold"), height=38,
-    )
-    app.queue_run_btn.pack(side="left", fill="x", expand=True)
 
     # refresh display after build
     _queue_refresh(app)
@@ -614,27 +1091,78 @@ def _build_extract_section(app, parent):
     app.extract_interval_var.trace_add("write", _est)
     app.extract_quality_var.trace_add("write", _est)
     app.extract_format_var.trace_add("write", _est)
+    app.extract_sharpest_tier_var.trace_add("write", _est)
     app.extract_blur_enabled_var.trace_add("write", _est)
     app.extract_blur_percentile_var.trace_add("write", _est)
     app.extract_sky_enabled_var.trace_add("write", _est)
     # Start/end entries don't have trace — use KeyRelease instead
     app.extract_start_entry.bind("<KeyRelease>", _est)
     app.extract_end_entry.bind("<KeyRelease>", _est)
+    _update_sharpest_tier_ui(app)
+
+
+# ── SRT geotagging helper ─────────────────────────────────────────────
+
+def _maybe_geotag(app, video_path, output_dir):
+    """Auto-geotag extracted frames if SRT Geotag is enabled.
+
+    Tries explicit SRT path from the GUI first, then auto-detects by stem.
+    Uses manifest-based geotagging (reads extraction_manifest.json).
+    Falls back to interval-based if no manifest exists.
+    """
+    if not app.extract_geotag_enabled_var.get():
+        return
+    if app.cancel_flag.is_set():
+        return
+
+    # Resolve SRT path: explicit entry from Metadata section > auto-detect
+    srt_path = app.metadata_srt_entry.get().strip()
+    if not srt_path:
+        srt_path = find_srt_for_video(video_path)
+    if not srt_path:
+        app.log("SRT geotag: no matching .SRT file found — skipping")
+        return
+
+    app.log(f"Geotagging with: {Path(srt_path).name}")
+
+    # Try manifest-based first, fall back to interval
+    manifest = output_dir / "extraction_manifest.json"
+    if manifest.exists():
+        result = geotag_from_manifest(str(output_dir), srt_path)
+    else:
+        interval = app.extract_interval_var.get()
+        start = app.extract_start_entry.get().strip()
+        start_sec = _parse_time(start) if start else 0.0
+        result = geotag_from_interval(str(output_dir), srt_path, interval, start_sec)
+
+    if result.success:
+        app.log(f"Geotagged {result.tagged_count}/{result.total_frames} frames"
+                f" ({result.skipped_count} skipped — no GPS)")
+    else:
+        for err in result.errors:
+            app.log(f"Geotag error: {err}")
 
 
 # ── single-video extract ──────────────────────────────────────────────
 
 def _add_current_to_queue(app):
-    """Add the currently analyzed video to the batch queue."""
-    video = getattr(app, "current_video_path", None)
+    """Add the current video to the batch queue with a snapshot of GUI settings."""
+    if _split_source_enabled(app):
+        app.log("Batch queue is not available for split lens video pairs. Use Extract instead.")
+        return
+    video = app.analyze_video_entry.get().strip()
     if not video:
-        app.log("Analyze a video first")
+        app.log("Select a video first")
+        return
+    if not Path(video).exists():
+        app.log(f"Video not found: {video}")
         return
     if not app.video_queue:
         return
-    added = app.video_queue.add_video(video)
+    settings = _snapshot_settings(app)
+    added = app.video_queue.add_video(video, settings=settings)
     if added:
-        app.log(f"Queued: {Path(video).name}")
+        app.log(f"Queued: {Path(video).name}  [{settings.summary()}]")
     else:
         app.log(f"Already in queue: {Path(video).name}")
     _queue_refresh(app)
@@ -645,28 +1173,65 @@ def _run_extract_single(app):
     if not HAS_PREP360:
         app.log("Error: prep360 core not available")
         return
-    video = getattr(app, "current_video_path", None)
-    if not video:
-        app.log("Error: Analyze a video first")
-        return
-    if not Path(video).exists():
-        app.log(f"Error: Video not found: {video}")
-        return
-    output = app.extract_output_entry.get()
-    if not output:
-        app.log("Error: Please select output folder")
-        return
+
+    split_mode = _split_source_enabled(app)
+    if split_mode:
+        front_video = app.split_front_video_entry.get().strip()
+        back_video = app.split_back_video_entry.get().strip()
+        output = app.split_output_entry.get().strip()
+        if not front_video or not back_video:
+            app.log("Error: Select both front and back split videos first")
+            return
+        if not Path(front_video).exists():
+            app.log(f"Error: Front video not found: {front_video}")
+            return
+        if not Path(back_video).exists():
+            app.log(f"Error: Back video not found: {back_video}")
+            return
+        if not output:
+            app.log("Error: Select a clip folder for paired extraction")
+            return
+    else:
+        video = app.analyze_video_entry.get().strip()
+        if not video:
+            app.log("Error: Select a video first")
+            return
+        if not Path(video).exists():
+            app.log(f"Error: Video not found: {video}")
+            return
+        output = app.extract_output_entry.get()
+        if not output:
+            app.log("Error: Please select output folder")
+            return
 
     app.cancel_flag.clear()
     app.extract_run_btn.configure(state="disabled")
     app.extract_stop_btn.pack(side="left")
-    if hasattr(app, "progress_bar"):
-        app.progress_bar.start()
+    if hasattr(app, "extract_progress_bar"):
+        app.extract_progress_bar.set(0)
 
-    threading.Thread(
-        target=_extract_single_worker, args=(app, video, output),
-        daemon=True,
-    ).start()
+    if split_mode:
+        threading.Thread(
+            target=_extract_split_pair_worker,
+            args=(app, front_video, back_video, output),
+            daemon=True,
+        ).start()
+    else:
+        threading.Thread(
+            target=_extract_single_worker, args=(app, video, output),
+            daemon=True,
+        ).start()
+
+
+def _extract_split_pair_worker(app, front_video, back_video, clip_root):
+    try:
+        _paired_split_video_worker(app, front_video, back_video, clip_root)
+    except Exception as e:
+        import traceback
+        app.log(f"Error: {e}")
+        app.log(traceback.format_exc())
+    finally:
+        app.after(0, lambda: _extract_single_done(app))
 
 
 def _extract_single_worker(app, video_path, base_output):
@@ -692,8 +1257,8 @@ def _extract_single_worker(app, video_path, base_output):
         app.log(f"Mode: {mode_str}, Interval: {interval}s")
 
         def progress(curr, total, msg):
-            if total > 0 and hasattr(app, "progress_bar"):
-                app.after(0, lambda p=curr/total: app.progress_bar.set(p))
+            if total > 0 and hasattr(app, "extract_progress_bar"):
+                app.after(0, lambda p=curr/total: app.extract_progress_bar.set(p))
             if msg:
                 app.after(0, lambda m=msg: app.log(m))
 
@@ -836,6 +1401,9 @@ def _extract_single_worker(app, video_path, base_output):
                         app.log(f"Removed {blur_removed} blurry frames (kept top {pct}%)")
                         final_count -= blur_removed
 
+            # SRT geotag (after all filters so we only tag surviving frames)
+            _maybe_geotag(app, video_path, output_dir)
+
             app.log(f"Done: {final_count} frames extracted")
         else:
             app.log(f"Error: {result.error}")
@@ -851,29 +1419,37 @@ def _extract_single_worker(app, video_path, base_output):
 def _extract_single_done(app):
     app.extract_run_btn.configure(state="normal")
     app.extract_stop_btn.pack_forget()
-    if hasattr(app, "progress_bar"):
-        app.progress_bar.stop()
-        app.progress_bar.set(1.0)
+    if hasattr(app, "extract_progress_bar"):
+        app.extract_progress_bar.set(1.0)
+    _update_source_mode_ui(app)
 
 
 # ── queue helpers ─────────────────────────────────────────────────────
 
 def _queue_add_videos(app):
+    if _split_source_enabled(app):
+        app.log("Batch queue is disabled while Use Split Lens Videos is active.")
+        return
     files = filedialog.askopenfilenames(
         title="Select Videos",
         filetypes=[("Video Files", "*.mp4 *.mov *.avi *.mkv *.360 *.insv"), ("All Files", "*.*")],
     )
     if files and app.video_queue:
-        n = app.video_queue.add_videos(list(files))
-        app.log(f"Added {n} videos to queue")
+        settings = _snapshot_settings(app)
+        n = app.video_queue.add_videos(list(files), settings=settings)
+        app.log(f"Added {n} videos to queue  [{settings.summary()}]")
         _queue_refresh(app)
 
 
 def _queue_add_folder(app):
+    if _split_source_enabled(app):
+        app.log("Batch queue is disabled while Use Split Lens Videos is active.")
+        return
     folder = filedialog.askdirectory(title="Select Folder with Videos")
     if folder and app.video_queue:
-        n = app.video_queue.add_folder(folder)
-        app.log(f"Added {n} videos from folder")
+        settings = _snapshot_settings(app)
+        n = app.video_queue.add_folder(folder, settings=settings)
+        app.log(f"Added {n} videos from folder  [{settings.summary()}]")
         _queue_refresh(app)
 
 
@@ -1002,6 +1578,9 @@ def _run_extract_queue(app):
     if not HAS_PREP360:
         app.log("Error: prep360 core not available")
         return
+    if _split_source_enabled(app):
+        app.log("Batch queue is not available for split lens video pairs. Use Extract instead.")
+        return
     output = app.extract_output_entry.get()
     if not output:
         app.log("Error: Please select output folder")
@@ -1015,8 +1594,8 @@ def _run_extract_queue(app):
     app.extract_run_btn.configure(state="disabled")
     app.queue_run_btn.configure(state="disabled")
     app.extract_stop_btn.pack(side="left")
-    if hasattr(app, "progress_bar"):
-        app.progress_bar.start()
+    if hasattr(app, "extract_progress_bar"):
+        app.extract_progress_bar.set(0)
 
     threading.Thread(target=_extract_queue_worker, args=(app,), daemon=True).start()
 
@@ -1036,15 +1615,14 @@ def _extract_queue_worker(app):
             app.log(f"Processing: {item.filename}")
 
             try:
-                mode_str = _get_mode_value(app)
-                interval = app.extract_interval_var.get()
-                quality = app.extract_quality_var.get()
-                fmt = app.extract_format_var.get()
-
-                start = app.extract_start_entry.get().strip()
-                end = app.extract_end_entry.get().strip()
-                start_sec = _parse_time(start) if start else None
-                end_sec = _parse_time(end) if end else None
+                # Use per-item settings (or fall back to current GUI for legacy items)
+                s = item.settings or _snapshot_settings(app)
+                mode_str = s.mode
+                interval = s.interval
+                quality = s.quality
+                fmt = s.format
+                start_sec = s.start_sec
+                end_sec = s.end_sec
 
                 base_output = Path(app.extract_output_entry.get())
                 video_name = Path(item.filename).stem
@@ -1056,11 +1634,13 @@ def _extract_queue_worker(app):
                         pct = int(curr / total * 100)
                         app.video_queue.set_progress(item.id, pct)
                         app.after(0, lambda: _queue_update_item(app, item.id))
+                        if hasattr(app, "extract_progress_bar"):
+                            app.after(0, lambda p=pct / 100.0: app.extract_progress_bar.set(p))
                     if msg:
                         app.after(0, lambda m=msg: app.log(m))
 
                 app.log(f"Output: {output_dir}")
-                app.log(f"Mode: {mode_str}, Interval: {interval}s")
+                app.log(f"Settings: {s.summary()}")
 
                 used_sharpest = False
 
@@ -1127,26 +1707,23 @@ def _extract_queue_worker(app):
                     final_count = len(images)
 
                     # LUT
-                    if app.extract_lut_enabled_var.get():
-                        lut_path = app.extract_lut_file_entry.get()
+                    if s.lut_enabled:
+                        lut_path = s.lut_path
                         if lut_path and Path(lut_path).exists():
                             app.log(f"Applying LUT: {Path(lut_path).name}")
                             processor = LUTProcessor()
-                            strength = app.extract_lut_strength_var.get()
                             for img_path in images:
                                 if app.cancel_flag.is_set():
                                     break
                                 img = cv2.imread(str(img_path))
                                 if img is not None:
-                                    processed = processor.apply_lut(img, lut_path, strength)
+                                    processed = processor.apply_lut(img, lut_path, s.lut_strength)
                                     params = ([cv2.IMWRITE_JPEG_QUALITY, quality]
                                               if ext in ("jpg", "jpeg") else [])
                                     cv2.imwrite(str(img_path), processed, params)
 
                     # Shadow / highlight
-                    shadow = app.extract_shadow_var.get()
-                    highlight = app.extract_highlight_var.get()
-                    if shadow != 50 or highlight != 50:
+                    if s.shadow != 50 or s.highlight != 50:
                         app.log("Applying shadow/highlight adjustments...")
                         from prep360.core.adjustments import apply_shadow_highlight
                         for img_path in images:
@@ -1154,13 +1731,13 @@ def _extract_queue_worker(app):
                                 break
                             img = cv2.imread(str(img_path))
                             if img is not None:
-                                adjusted = apply_shadow_highlight(img, shadow, highlight)
+                                adjusted = apply_shadow_highlight(img, s.shadow, s.highlight)
                                 params = ([cv2.IMWRITE_JPEG_QUALITY, quality]
                                           if ext in ("jpg", "jpeg") else [])
                                 cv2.imwrite(str(img_path), adjusted, params)
 
                     # Sky filter
-                    if app.extract_sky_enabled_var.get():
+                    if s.sky_filter:
                         app.log("Running sky filter...")
                         sky_cfg = SkyFilterConfig(
                             brightness_threshold=app.extract_sky_brightness_var.get(),
@@ -1181,28 +1758,31 @@ def _extract_queue_worker(app):
                             final_count -= removed
 
                     # Blur filter — skip if already using sharpest mode
-                    if (app.extract_blur_enabled_var.get()
+                    if (s.blur_filter
                             and not used_sharpest
                             and not app.cancel_flag.is_set()):
                         app.log("Running blur filter...")
                         from prep360.core.blur_filter import BlurFilter, BlurFilterConfig
-                        pct = app.extract_blur_percentile_var.get()
+                        pct = s.blur_percentile
                         bf = BlurFilter(BlurFilterConfig(percentile=float(pct), workers=4))
                         scores = bf.analyze_batch(str(output_dir))
                         if scores:
                             import numpy as np
-                            vals = [s.score for s in scores]
+                            vals = [s_item.score for s_item in scores]
                             cutoff = float(np.percentile(vals, 100 - pct))
                             blur_removed = 0
-                            for s in scores:
-                                if s.score < cutoff:
-                                    p = output_dir / s.image_name
+                            for s_item in scores:
+                                if s_item.score < cutoff:
+                                    p = output_dir / s_item.image_name
                                     if p.exists():
                                         p.unlink()
                                         blur_removed += 1
                             if blur_removed:
                                 app.log(f"Removed {blur_removed} blurry frames (kept top {pct}%)")
                                 final_count -= blur_removed
+
+                    # SRT geotag (after all filters)
+                    _maybe_geotag(app, item.video_path, output_dir)
 
                     app.video_queue.set_done(item.id, final_count)
                     app.log(f"Done: {final_count} frames extracted")
@@ -1236,10 +1816,10 @@ def _queue_done(app):
     if hasattr(app, "queue_run_btn"):
         app.queue_run_btn.configure(state="normal")
     app.extract_stop_btn.pack_forget()
-    if hasattr(app, "progress_bar"):
-        app.progress_bar.stop()
-        app.progress_bar.set(1.0)
+    if hasattr(app, "extract_progress_bar"):
+        app.extract_progress_bar.set(1.0)
     _queue_refresh(app)
+    _update_source_mode_ui(app)
 
 
 def _queue_stop(app):
@@ -1249,58 +1829,396 @@ def _queue_stop(app):
 
 
 # ======================================================================
-#  3. FISHEYE (DJI Osmo 360)
+#  3. METADATA — SRT geotagging (+ future EXIF/XMP tools)
 # ======================================================================
 
-def _build_fisheye_section(app, parent):
-    sec = CollapsibleSection(parent, "360 Video", expanded=False)
+def _build_metadata_section(app, parent):
+    """Metadata injection section — SRT geotagging and future EXIF tools."""
+    sec = CollapsibleSection(parent, "Metadata", expanded=False)
     sec.pack(fill="x", pady=(0, 6), padx=4)
     c = sec.content
 
-    # ── Video / Frames / Masks / Output ──────────────────────────────
+    # -- Auto-geotag after extraction --
+    app.extract_geotag_enabled_var = ctk.BooleanVar(value=True)
+    ctk.CTkCheckBox(c, text="Auto-geotag after extraction",
+                    variable=app.extract_geotag_enabled_var
+                    ).pack(pady=(2, 4), anchor="w", padx=6)
 
-    osv_frame = ctk.CTkFrame(c, fg_color="transparent")
+    # -- Shared SRT file path (used by both auto and standalone) --
+    srt_frame = ctk.CTkFrame(c, fg_color="transparent")
+    srt_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(srt_frame, text="SRT:", width=60, anchor="w").pack(side="left")
+    app.metadata_srt_entry = ctk.CTkEntry(srt_frame,
+                                          placeholder_text="Auto-detect from video name...")
+    app.metadata_srt_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(srt_frame, text="...", width=36,
+                  command=lambda: app._browse_file_for(
+                      app.metadata_srt_entry, "Select SRT File",
+                      [("SRT Files", "*.srt *.SRT"), ("All Files", "*.*")]
+                  )).pack(side="left")
+
+    ctk.CTkLabel(c, text="Writes EXIF GPS, altitude, focal length, datetime via exiftool",
+                 text_color="gray", font=ctk.CTkFont(size=10)
+                 ).pack(anchor="w", padx=8, pady=(0, 6))
+
+    # -- Standalone: geotag existing frames --
+    sep = ctk.CTkFrame(c, height=1, fg_color="gray30")
+    sep.pack(fill="x", padx=6, pady=(2, 6))
+
+    ctk.CTkLabel(c, text="Apply to folder",
+                 font=ctk.CTkFont(size=12, weight="bold")
+                 ).pack(anchor="w", padx=6, pady=(0, 4))
+
+    # Frames folder
+    fr_frame = ctk.CTkFrame(c, fg_color="transparent")
+    fr_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(fr_frame, text="Frames:", width=60, anchor="w").pack(side="left")
+    app.geotag_frames_entry = ctk.CTkEntry(fr_frame, placeholder_text="Folder with extracted frames...")
+    app.geotag_frames_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(fr_frame, text="...", width=36,
+                  command=lambda: app._browse_folder_for(app.geotag_frames_entry)
+                  ).pack(side="left")
+
+    # Action button
+    btn_row = ctk.CTkFrame(c, fg_color="transparent")
+    btn_row.pack(fill="x", pady=(8, 4), padx=6)
+    app.geotag_run_btn = ctk.CTkButton(
+        btn_row, text="Geotag", command=lambda: _run_geotag_standalone(app),
+        fg_color="#1976D2", hover_color="#1565C0",
+        font=ctk.CTkFont(size=13, weight="bold"), height=38,
+    )
+    app.geotag_run_btn.pack(side="left", fill="x", expand=True)
+
+
+def _run_geotag_standalone(app):
+    """Launch standalone geotagging in a background thread."""
+    if not HAS_PREP360:
+        app.log("Error: prep360 core not available")
+        return
+    frames_dir = app.geotag_frames_entry.get().strip()
+    srt_path = app.metadata_srt_entry.get().strip()
+    if not frames_dir:
+        app.log("Error: Please select a frames folder")
+        return
+    if not Path(frames_dir).is_dir():
+        app.log(f"Error: Not a directory: {frames_dir}")
+        return
+    if not srt_path:
+        app.log("Error: Please select an SRT file")
+        return
+    if not Path(srt_path).exists():
+        app.log(f"Error: SRT file not found: {srt_path}")
+        return
+
+    app.geotag_run_btn.configure(state="disabled")
+    threading.Thread(
+        target=_geotag_standalone_worker,
+        args=(app, frames_dir, srt_path),
+        daemon=True,
+    ).start()
+
+
+def _geotag_standalone_worker(app, frames_dir, srt_path):
+    """Worker thread for standalone geotagging."""
+    try:
+        frames_dir = Path(frames_dir)
+
+        app.log(f"\n{'='*50}")
+        app.log(f"Geotagging: {frames_dir.name}")
+        app.log(f"SRT: {Path(srt_path).name}")
+
+        # Show SRT summary
+        srt = parse_srt(srt_path)
+        summary = srt.summary()
+        app.log(f"SRT: {summary['total_entries']} entries, "
+                f"{summary['gps_coverage']} GPS coverage, "
+                f"{summary['duration_sec']:.0f}s duration")
+        if summary['focal_lengths_mm']:
+            app.log(f"Focal lengths: {summary['focal_lengths_mm']}")
+
+        # Require extraction manifest for accurate timestamp mapping
+        manifest = frames_dir / "extraction_manifest.json"
+        if not manifest.exists():
+            app.log("Error: No extraction_manifest.json found in folder")
+            app.log("Frames must be extracted with prep360 to generate a manifest")
+            return
+
+        app.log("Using extraction manifest for timestamp mapping")
+        result = geotag_from_manifest(str(frames_dir), srt_path)
+
+        if result.success:
+            app.log(f"Geotagged {result.tagged_count}/{result.total_frames} frames"
+                    f" ({result.skipped_count} skipped)")
+        else:
+            for err in result.errors:
+                app.log(f"Error: {err}")
+
+    except Exception as e:
+        import traceback
+        app.log(f"Error: {e}")
+        app.log(traceback.format_exc())
+    finally:
+        app.after(0, lambda: app.geotag_run_btn.configure(state="normal"))
+
+
+# ======================================================================
+#  4. METASHAPE SESSION
+# ======================================================================
+
+def _build_metashape_section(app, parent):
+    sec = CollapsibleSection(
+        parent,
+        "Metashape Session",
+        subtitle="assemble a no-copy session manifest from clip working folders",
+        expanded=False,
+    )
+    sec.pack(fill="x", pady=(0, 6), padx=4)
+    c = sec.content
+
+    desc = ctk.CTkLabel(
+        c,
+        text="Use this after several clip folders already have front/frames + back/frames\n"
+             "and optional front/masks + back/masks. This step writes a session manifest only.\n"
+             "It does not duplicate any images on disk.",
+        font=("Consolas", 10),
+        text_color="#9ca3af",
+        anchor="w",
+        justify="left",
+    )
+    desc.pack(fill="x", padx=6, pady=(2, 4))
+
+    clips_frame = ctk.CTkFrame(c, fg_color="transparent")
+    clips_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(clips_frame, text="Clips:", width=80, anchor="w").pack(side="left")
+    app.metashape_clips_root_entry = ctk.CTkEntry(
+        clips_frame,
+        placeholder_text="Clip folder or parent folder containing many clip folders...",
+    )
+    app.metashape_clips_root_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(
+        clips_frame, text="...", width=36,
+        command=lambda: app._browse_folder_for(app.metashape_clips_root_entry),
+    ).pack(side="left")
+
+    output_frame = ctk.CTkFrame(c, fg_color="transparent")
+    output_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(output_frame, text="Session Out:", width=80, anchor="w").pack(side="left")
+    app.metashape_output_entry = ctk.CTkEntry(
+        output_frame,
+        placeholder_text="Folder where the session manifest should be written...",
+    )
+    app.metashape_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(
+        output_frame, text="...", width=36,
+        command=lambda: app._browse_folder_for(app.metashape_output_entry),
+    ).pack(side="left")
+
+    name_frame = ctk.CTkFrame(c, fg_color="transparent")
+    name_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(name_frame, text="Name:", width=80, anchor="w").pack(side="left")
+    app.metashape_session_name_entry = ctk.CTkEntry(
+        name_frame,
+        placeholder_text="Optional session name (defaults from the output folder)...",
+    )
+    app.metashape_session_name_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+
+    app.metashape_require_masks_var = ctk.BooleanVar(value=False)
+    masks_cb = ctk.CTkCheckBox(
+        c,
+        text="Require masks for every clip pair",
+        variable=app.metashape_require_masks_var,
+    )
+    masks_cb.pack(pady=(4, 2), padx=6, anchor="w")
+    Tooltip(
+        masks_cb,
+        "Enable this if the session should only include clips with complete front/back masks.",
+    )
+
+    app.metashape_run_btn = ctk.CTkButton(
+        c, text="Assemble Session Manifest", command=lambda: _run_metashape_session(app),
+        fg_color="#2E7D32", hover_color="#1B5E20",
+        font=ctk.CTkFont(size=13, weight="bold"), height=36,
+    )
+    app.metashape_run_btn.pack(fill="x", padx=6, pady=(6, 2))
+
+    app.metashape_status_text = ctk.CTkTextbox(
+        c, height=50,
+        font=ctk.CTkFont(family="Consolas", size=10),
+        fg_color="#1a1a1a", state="disabled",
+    )
+    app.metashape_status_text.pack(fill="x", padx=6, pady=(4, 2))
+    app._set_textbox(
+        app.metashape_status_text,
+        "Assemble one session manifest from validated clip working folders.\n"
+        "This keeps the existing clip files in place and only writes a JSON handoff for Metashape.",
+    )
+
+
+def _run_metashape_session(app):
+    if not HAS_PREP360:
+        app.log("Error: prep360 core not available")
+        return
+
+    clips_root = app.metashape_clips_root_entry.get().strip()
+    session_out = app.metashape_output_entry.get().strip()
+    session_name = app.metashape_session_name_entry.get().strip() or None
+    if not clips_root:
+        app.log("Error: Select a clip folder or a parent folder of clip folders")
+        return
+    if not Path(clips_root).exists():
+        app.log(f"Error: Clips folder not found: {clips_root}")
+        return
+    if not session_out:
+        app.log("Error: Select a Session Out folder")
+        return
+
+    app.metashape_run_btn.configure(state="disabled")
+    threading.Thread(
+        target=_metashape_session_worker,
+        args=(app, clips_root, session_out, session_name, app.metashape_require_masks_var.get()),
+        daemon=True,
+    ).start()
+
+
+def _metashape_session_worker(app, clips_root, session_out, session_name, require_masks):
+    try:
+        clip_roots = discover_clip_roots(clips_root)
+        app.log(f"Assembling Metashape session from {len(clip_roots)} clip folder(s)...")
+
+        clip_datasets: list[DualFisheyeClipDataset] = []
+        total_pairs = 0
+        masked_pairs = 0
+        for clip_root in clip_roots:
+            dataset = load_clip_dataset(clip_root, require_masks=require_masks)
+            clip_datasets.append(dataset)
+            total_pairs += len(dataset.pair_records)
+            masked_pairs += sum(
+                1 for record in dataset.pair_records
+                if record.front_mask is not None and record.back_mask is not None
+            )
+            app.log(
+                f"  {dataset.clip_id}: {len(dataset.pair_records)} pairs"
+                + (f", {sum(1 for r in dataset.pair_records if r.front_mask and r.back_mask)} masked"
+                   if dataset.masks_root else ", no masks")
+            )
+
+        manifest_path = write_dual_fisheye_session_manifest(
+            session_out,
+            clip_datasets,
+            session_name=session_name,
+        )
+
+        summary = "\n".join([
+            "Metashape session ready",
+            f"  Clips:         {len(clip_datasets)}",
+            f"  Pair count:    {total_pairs}",
+            f"  Mask pairs:    {masked_pairs}",
+            f"  Manifest:      {manifest_path}",
+            "  Mode:          no-copy session assembly",
+        ])
+        app.log(f"\n{summary}")
+        app.after(0, lambda: app._set_textbox(app.metashape_status_text, summary))
+    except Exception as e:
+        import traceback
+        app.log(f"Metashape session error: {e}")
+        app.log(traceback.format_exc())
+    finally:
+        app.after(0, lambda: app.metashape_run_btn.configure(state="normal"))
+
+
+# ======================================================================
+#  5. FISHEYE (DJI Osmo 360)
+# ======================================================================
+
+def _build_fisheye_section(app, parent):
+    sec = CollapsibleSection(parent, "360 Video", expanded=True)
+    sec.pack(fill="x", pady=(0, 6), padx=4)
+    c = sec.content
+
+    split_sec = CollapsibleSection(
+        c,
+        "Split Lenses",
+        subtitle="lossless demux from a 360 container into front/back raw lens videos",
+        expanded=True,
+    )
+    split_sec.pack(fill="x", padx=2, pady=(4, 0))
+    sc = split_sec.content
+
+    split_desc = ctk.CTkLabel(
+        sc, text="Uses the top Video Selection Input + Output.\n"
+                 "This step only creates the raw front/back lens videos for external grading.\n"
+                 "After grading, go back to Video Selection and enable Split Lens Videos.",
+        font=("Consolas", 10), text_color="#9ca3af", anchor="w", justify="left")
+    split_desc.pack(fill="x", padx=6, pady=(2, 4))
+
+    app.fisheye_split_btn = ctk.CTkButton(
+        sc, text="Split Lenses", command=lambda: _run_split_lenses(app),
+        fg_color="#1565C0", hover_color="#0D47A1",
+        font=ctk.CTkFont(size=13, weight="bold"), height=36,
+    )
+    app.fisheye_split_btn.pack(fill="x", padx=6, pady=(0, 4))
+
+    reframe_sec = CollapsibleSection(
+        c, "Reframing",
+        subtitle="extract pinhole perspectives from a 360 file or existing ERP frames",
+        expanded=False,
+    )
+    reframe_sec.pack(fill="x", padx=2, pady=(4, 0))
+    rc = reframe_sec.content
+
+    osv_frame = ctk.CTkFrame(rc, fg_color="transparent")
     osv_frame.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(osv_frame, text="Video:", width=55, anchor="w").pack(side="left")
-    app.fisheye_osv_entry = ctk.CTkEntry(osv_frame,
-                                          placeholder_text=".osv / .360 / .insv file (optional)...")
+    app.fisheye_osv_entry = ctk.CTkEntry(
+        osv_frame,
+        placeholder_text=".osv / .360 / .insv file (optional)...",
+    )
     app.fisheye_osv_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
     ctk.CTkButton(osv_frame, text="...", width=36,
                   command=lambda: _browse_osv(app)).pack(side="left")
 
-    frames_frame = ctk.CTkFrame(c, fg_color="transparent")
-    frames_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(frames_frame, text="Frames:", width=55, anchor="w").pack(side="left")
-    app.fisheye_frames_entry = ctk.CTkEntry(frames_frame,
-                                             placeholder_text="ERP frames folder (optional)...")
-    app.fisheye_frames_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(frames_frame, text="...", width=36,
-                  command=lambda: app._browse_folder_for(app.fisheye_frames_entry)
-                  ).pack(side="left")
+    reframe_frames_frame = ctk.CTkFrame(rc, fg_color="transparent")
+    reframe_frames_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(reframe_frames_frame, text="Frames:", width=55, anchor="w").pack(side="left")
+    app.fisheye_reframe_frames_entry = ctk.CTkEntry(
+        reframe_frames_frame,
+        placeholder_text="Existing ERP frames folder (optional)...",
+    )
+    app.fisheye_reframe_frames_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(
+        reframe_frames_frame, text="...", width=36,
+        command=lambda: app._browse_folder_for(app.fisheye_reframe_frames_entry)
+    ).pack(side="left")
 
-    masks_frame = ctk.CTkFrame(c, fg_color="transparent")
-    masks_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(masks_frame, text="Masks:", width=55, anchor="w").pack(side="left")
-    app.fisheye_masks_entry = ctk.CTkEntry(masks_frame,
-                                            placeholder_text="ERP masks folder (optional)...")
-    app.fisheye_masks_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(masks_frame, text="...", width=36,
-                  command=lambda: app._browse_folder_for(app.fisheye_masks_entry)
-                  ).pack(side="left")
+    reframe_masks_frame = ctk.CTkFrame(rc, fg_color="transparent")
+    reframe_masks_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(reframe_masks_frame, text="Masks:", width=55, anchor="w").pack(side="left")
+    app.fisheye_reframe_masks_entry = ctk.CTkEntry(
+        reframe_masks_frame,
+        placeholder_text="Masks for ERP or fisheye frames (optional)...",
+    )
+    app.fisheye_reframe_masks_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(
+        reframe_masks_frame, text="...", width=36,
+        command=lambda: app._browse_folder_for(app.fisheye_reframe_masks_entry)
+    ).pack(side="left")
 
-    out_frame = ctk.CTkFrame(c, fg_color="transparent")
-    out_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(out_frame, text="Output:", width=55, anchor="w").pack(side="left")
-    app.fisheye_output_entry = ctk.CTkEntry(out_frame,
-                                             placeholder_text="Output directory...")
-    app.fisheye_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(out_frame, text="...", width=36,
-                  command=lambda: app._browse_folder_for(app.fisheye_output_entry)
-                  ).pack(side="left")
+    reframe_out_frame = ctk.CTkFrame(rc, fg_color="transparent")
+    reframe_out_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(reframe_out_frame, text="Output:", width=55, anchor="w").pack(side="left")
+    app.fisheye_reframe_output_entry = ctk.CTkEntry(
+        reframe_out_frame,
+        placeholder_text="Perspective output directory...",
+    )
+    app.fisheye_reframe_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(
+        reframe_out_frame, text="...", width=36,
+        command=lambda: app._browse_folder_for(app.fisheye_reframe_output_entry)
+    ).pack(side="left")
 
-    # ── Custom Calibration (collapsible) ─────────────────────────────
+    # ── Custom Calibration (collapsible, inside Reframe) ─────────────
 
-    adv_sec = CollapsibleSection(c, "Custom Calibration",
+    adv_sec = CollapsibleSection(rc, "Custom Calibration",
                                   subtitle="override built-in lens model",
                                   expanded=False)
     adv_sec.pack(fill="x", padx=2, pady=(4, 0))
@@ -1344,41 +2262,6 @@ def _build_fisheye_section(app, parent):
         text_color="#9ca3af", anchor="w")
     app._fisheye_calib_label.pack(fill="x", padx=12, pady=(0, 2))
 
-    # ── Split Lenses ──────────────────────────────────────────────────
-
-    split_sec = CollapsibleSection(c, "Split Lenses",
-                                    subtitle="lossless demux into front + back streams",
-                                    expanded=False)
-    split_sec.pack(fill="x", padx=2, pady=(4, 0))
-    sc = split_sec.content
-
-    split_desc = ctk.CTkLabel(
-        sc, text="Extract front + back lens streams from the 360 container.\n"
-                 "No reframing — use this to train on raw 180\u00b0 hemispheres.",
-        font=("Consolas", 10), text_color="#9ca3af", anchor="w", justify="left")
-    split_desc.pack(fill="x", padx=6, pady=(2, 4))
-
-    app.fisheye_split_btn = ctk.CTkButton(
-        sc, text="Split Lenses", command=lambda: _run_split_lenses(app),
-        fg_color="#1565C0", hover_color="#0D47A1",
-        font=ctk.CTkFont(size=13, weight="bold"), height=36,
-    )
-    app.fisheye_split_btn.pack(fill="x", padx=6, pady=(0, 4))
-
-    # ── Reframe to Pinhole Perspectives ───────────────────────────────
-
-    reframe_sec = CollapsibleSection(c, "Reframe to Pinhole Perspectives",
-                                     expanded=True)
-    reframe_sec.pack(fill="x", padx=2, pady=(4, 0))
-    rc = reframe_sec.content
-
-    # Status box — inside reframe section where its feedback is relevant
-    app.fisheye_status_text = ctk.CTkTextbox(rc, height=50,
-                                              font=ctk.CTkFont(family="Consolas", size=10),
-                                              fg_color="#1a1a1a", state="disabled")
-    app.fisheye_status_text.pack(fill="x", padx=6, pady=(4, 2))
-    app._set_textbox(app.fisheye_status_text, "Video: extract from 360 file. Frames: reframe existing. Masks: include mask reframing.")
-
     # Preset
     preset_frame = ctk.CTkFrame(rc, fg_color="transparent")
     preset_frame.pack(fill="x", pady=3, padx=6)
@@ -1408,7 +2291,7 @@ def _build_fisheye_section(app, parent):
     crop_combo = ctk.CTkComboBox(cq_frame, variable=app.fisheye_crop_var,
                     values=["1280", "1600", "1920"],
                     state="readonly", width=80,
-                    command=lambda v: _update_estimate(app))
+                    command=lambda v: _update_fisheye_estimate(app))
     crop_combo.pack(side="left", padx=(6, 0))
     Tooltip(crop_combo, "Output resolution per pinhole crop (square).\n"
             "1600 is a good balance of detail and file size.\n"
@@ -1434,7 +2317,7 @@ def _build_fisheye_section(app, parent):
                                               font=("Consolas", 11))
     def _on_interval_change(v):
         app.fisheye_interval_label.configure(text=f"{float(v):.1f}s")
-        _update_estimate(app)
+        _update_fisheye_estimate(app)
     interval_slider = ctk.CTkSlider(int_frame, from_=0.5, to=10.0,
                                      variable=app.fisheye_interval_var,
                                      command=_on_interval_change)
@@ -1493,16 +2376,18 @@ def _build_fisheye_section(app, parent):
             "Higher = more camera movement required between frames.\n"
             "10 works well for typical walking/driving captures.")
 
-    # Extract / Reframe button
-    app.fisheye_run_btn = ctk.CTkButton(
-        rc, text="Extract & Reframe", command=lambda: _run_fisheye(app),
-        fg_color="#2E7D32", hover_color="#1B5E20",
-        font=ctk.CTkFont(size=13, weight="bold"), height=36,
-    )
-    app.fisheye_run_btn.pack(fill="x", padx=6, pady=(6, 2))
-    Tooltip(app.fisheye_run_btn,
-            "Extract from video and/or reframe ERP frames into perspectives.\n"
-            "Fill Video to extract, Frames to reframe, Masks to include masks.")
+    # Station-aware output checkbox
+    app.station_dirs_var = ctk.BooleanVar(value=True)
+    app.fisheye_station_cb = ctk.CTkCheckBox(rc, text="Station dirs (for Metashape)",
+                    variable=app.station_dirs_var, width=200)
+    app.fisheye_station_cb.pack(pady=(6, 2), padx=6, anchor="w")
+    Tooltip(app.fisheye_station_cb,
+            "Organize output into per-source subdirectories.\n"
+            "Each subdirectory becomes a Metashape station\n"
+            "(shared camera position). Drag all subdirs into\n"
+            "an empty chunk, then set group type to Station.\n\n"
+            "Also writes reframe_metadata.json with pinhole\n"
+            "intrinsics and station-to-view mapping.")
 
     # Output estimate label (dynamic — updates with preset/interval/crop changes)
     app.fisheye_estimate_label = ctk.CTkLabel(rc, text="",
@@ -1510,6 +2395,18 @@ def _build_fisheye_section(app, parent):
                                                text_color="#9ca3af",
                                                anchor="w", justify="left")
     app.fisheye_estimate_label.pack(fill="x", padx=12, pady=(0, 4))
+
+    app.fisheye_reframe_btn = ctk.CTkButton(
+        rc, text="Extract & Reframe", command=lambda: _run_reframe(app),
+        fg_color="#2E7D32", hover_color="#1B5E20",
+        font=ctk.CTkFont(size=13, weight="bold"), height=36,
+    )
+    app.fisheye_reframe_btn.pack(fill="x", padx=6, pady=(6, 2))
+    Tooltip(
+        app.fisheye_reframe_btn,
+        "Extract from video and/or reframe ERP frames into perspectives.\n"
+        "Use only for pinhole-perspective workflows.",
+    )
 
     app.fisheye_stop_btn = ctk.CTkButton(
         c, text="Stop", command=app.stop_operation,
@@ -1521,8 +2418,6 @@ def _build_fisheye_section(app, parent):
     if HAS_PREP360:
         _on_preset_change(app, app.fisheye_preset_var.get())
 
-
-# ── fisheye helpers ───────────────────────────────────────────────────
 
 def _browse_osv(app):
     path = filedialog.askopenfilename(
@@ -1544,13 +2439,10 @@ def _probe_osv(app, path):
         handler = OSVHandler()
         info = handler.probe(path)
         app._fisheye_video_duration = info.duration
-        def _update():
-            app._set_textbox(app.fisheye_status_text, info.summary())
-            _update_estimate(app)
-        app.after(0, _update)
+        app.after(0, lambda: _update_fisheye_estimate(app))
         app.log(f"Probed: {info.filename} \u2014 {info.duration:.1f}s, {info.fps:.0f}fps")
     except Exception as e:
-        app.after(0, lambda: app._set_textbox(app.fisheye_status_text, f"Error: {e}"))
+        app.log(f"Error probing 360 source: {e}")
 
 
 def _load_calibration(app):
@@ -1623,10 +2515,10 @@ def _on_preset_change(app, display_label):
         return
     cfg = FISHEYE_PRESETS[preset_key]
     app.fisheye_preset_desc.configure(text=_preset_description(preset_key, cfg))
-    _update_estimate(app)
+    _update_fisheye_estimate(app)
 
 
-def _update_estimate(app):
+def _update_fisheye_estimate(app):
     """Update the dynamic output estimate label based on current settings."""
     if not HAS_PREP360:
         return
@@ -1666,16 +2558,16 @@ def _run_split_lenses(app):
     if not HAS_PREP360:
         app.log("Error: prep360 core not available")
         return
-    osv_path = app.fisheye_osv_entry.get()
-    output_dir = app.fisheye_output_entry.get()
+    osv_path = app.analyze_video_entry.get().strip()
+    output_dir = app.extract_output_entry.get().strip()
     if not osv_path:
-        app.log("Error: Please select a 360 video file")
+        app.log("Error: Load a 360 video in Video Selection first")
         return
     if not Path(osv_path).exists():
         app.log(f"Error: File not found: {osv_path}")
         return
     if not output_dir:
-        app.log("Error: Please select output folder")
+        app.log("Error: Set an output folder in Video Selection first")
         return
 
     app._start_operation(app.fisheye_split_btn, app.fisheye_stop_btn)
@@ -1695,16 +2587,15 @@ def _split_lenses_worker(app, osv_path, output_dir):
         app.log(f"Front lens: {front_path}")
         app.log(f"Back lens:  {back_path}")
         app.log("Split complete (lossless stream copy)")
+        summary = "\n".join([
+            "Split complete",
+            f"  Front lens:    {front_path}",
+            f"  Back lens:     {back_path}",
+            "  Next:          Color-grade these in Resolve if needed,",
+            "                 then enable Use Split Lens Videos and select the graded front/back exports.",
+        ])
 
-        # Auto-load front lens into Video Analysis for immediate use
-        if front_path:
-            def _load_front():
-                app.current_video_path = front_path
-                if hasattr(app, "video_entry"):
-                    app.video_entry.delete(0, "end")
-                    app.video_entry.insert(0, front_path)
-                app.log(f"\nLoaded front lens into Video Analysis — click Analyze to continue")
-            app.after(0, _load_front)
+        app.log(summary)
 
     except Exception as e:
         import traceback
@@ -1717,48 +2608,143 @@ def _split_lenses_worker(app, osv_path, output_dir):
 
 # ── fisheye worker ────────────────────────────────────────────────────
 
-def _run_fisheye(app):
+def _paired_split_video_worker(app, front_video, back_video, output_dir):
+    """Extract shared frame pairs from graded split lens videos."""
+    settings = _snapshot_settings(app)
+    mode = settings.mode
+    sharpest_tier = _get_paired_sharpest_tier_value(app)
+    if mode not in {"fixed", "sharpest"}:
+        app.log(
+            "Error: Split lens paired extraction currently supports only "
+            "Fixed Interval and Sharpest Frame."
+        )
+        return
+
+    clip_root = Path(output_dir)
+    settings_summary = (
+        f"sharpest/{_PAIRED_TIER_KEY_TO_LABEL[sharpest_tier].lower()}, "
+        f"{settings.interval:.1f}s windows, {settings.format}, q{settings.quality}, "
+        + (
+            "quick shared pair scoring, then pair extraction"
+            if sharpest_tier == "fast" else
+            "blurdetect pair analysis, then pair extraction"
+            if sharpest_tier == "balanced" else
+            "blurdetect + scene-aware pair analysis, then pair extraction"
+        )
+        if mode == "sharpest" else
+        f"fixed, {settings.interval:.1f}s, {settings.format}, q{settings.quality}"
+    )
+    app.log("Mode: Use Split Lens Videos")
+    app.log(f"Front video: {Path(front_video).name}")
+    app.log(f"Back video:  {Path(back_video).name}")
+    app.log(f"Clip folder: {clip_root}")
+    app.log(f"Settings:    {settings_summary}")
+
+    def paired_progress(current, total, msg):
+        if hasattr(app, "extract_progress_bar"):
+            progress_value = None
+            msg_lower = (msg or "").lower()
+            if total == 100 and current <= total:
+                progress_value = current / 100.0
+            elif "extracting" in msg_lower and total > 0:
+                progress_value = 0.85 + 0.15 * (current / total)
+            elif total > 0 and current <= total:
+                progress_value = current / total
+            if progress_value is not None:
+                progress_value = max(0.0, min(1.0, progress_value))
+                app.after(0, lambda p=progress_value: app.extract_progress_bar.set(p))
+        if not app.cancel_flag.is_set():
+            app.log(f"  [{current}/{total}] {msg}")
+
+    extractor = PairedSplitVideoExtractor()
+    result = extractor.extract(
+        front_video,
+        back_video,
+        str(clip_root),
+        PairedSplitConfig(
+            mode=mode,
+            sharpest_tier=sharpest_tier,
+            interval_sec=settings.interval,
+            quality=settings.quality,
+            output_format=settings.format,
+            start_sec=settings.start_sec,
+            end_sec=settings.end_sec,
+        ),
+        progress_callback=paired_progress,
+        cancel_check=lambda: app.cancel_flag.is_set(),
+    )
+
+    if not result.success:
+        app.log(f"Error: {result.error}")
+        return
+
+    summary = "\n".join([
+        "Paired extraction complete",
+        f"  Frame pairs:   {result.pair_count}",
+        f"  Front frames:  {frames_root / 'front'}",
+        f"  Back frames:   {frames_root / 'back'}",
+        f"  Front frames:  {clip_root / 'front' / 'frames'}",
+        f"  Back frames:   {clip_root / 'back' / 'frames'}",
+        f"  Manifest:      {clip_root / 'paired_extraction_manifest.json'}",
+        "  Next:          Run Mask on this clip folder, then assemble the Metashape session below Metadata.",
+    ])
+    app.log(f"\n{summary}")
+
+    def _update_ui():
+        if hasattr(app, "metashape_clips_root_entry") and not app.metashape_clips_root_entry.get().strip():
+            _set_entry_text(app.metashape_clips_root_entry, str(Path(output_dir).parent))
+        if hasattr(app, "metashape_output_entry") and not app.metashape_output_entry.get().strip():
+            _set_entry_text(app.metashape_output_entry, str(Path(output_dir).parent / "metashape"))
+    app.after(0, _update_ui)
+
+
+def _run_reframe(app):
     if not HAS_PREP360:
         app.log("Error: prep360 core not available")
         return
 
     video_path = app.fisheye_osv_entry.get().strip()
-    frames_dir = app.fisheye_frames_entry.get().strip()
-    masks_dir = app.fisheye_masks_entry.get().strip()
-    output_dir = app.fisheye_output_entry.get().strip()
+    frames_dir = app.fisheye_reframe_frames_entry.get().strip()
+    masks_dir = app.fisheye_reframe_masks_entry.get().strip()
+    output_dir = app.fisheye_reframe_output_entry.get().strip()
 
-    # Validate output (always required)
     if not output_dir:
-        app.log("Error: Please select an output directory")
+        app.log("Error: Select an output folder for reframing")
         return
-
-    # Auto-detect mode from filled fields
     if not video_path and not frames_dir:
-        app.log("Error: Please select a video file or frames folder")
+        app.log("Error: Reframing needs either a 360 video or an existing ERP frames folder")
         return
     if video_path and not Path(video_path).exists():
-        app.log(f"Error: File not found: {video_path}")
+        app.log(f"Error: Video not found: {video_path}")
         return
-    if frames_dir and not Path(frames_dir).exists():
+    if frames_dir and not Path(frames_dir).is_dir():
         app.log(f"Error: Frames folder not found: {frames_dir}")
         return
-    if masks_dir and not frames_dir:
-        app.log("Error: Masks require a frames folder")
-        return
-    if masks_dir and not Path(masks_dir).exists():
+    if masks_dir and not Path(masks_dir).is_dir():
         app.log(f"Error: Masks folder not found: {masks_dir}")
         return
 
-    app._start_operation(app.fisheye_run_btn, app.fisheye_stop_btn)
+    station_dirs = app.station_dirs_var.get()
+    app._start_operation(app.fisheye_reframe_btn, app.fisheye_stop_btn)
     threading.Thread(
         target=_fisheye_worker,
-        args=(app, video_path or None, frames_dir or None,
-              masks_dir or None, output_dir),
+        args=(
+            app,
+            video_path or None,
+            frames_dir or None,
+            masks_dir or None,
+            output_dir,
+            station_dirs,
+            app.fisheye_reframe_btn,
+        ),
         daemon=True,
     ).start()
 
 
-def _fisheye_worker(app, video_path, frames_dir, masks_dir, output_dir):
+def _fisheye_worker(
+    app, video_path, frames_dir, masks_dir, output_dir,
+    station_dirs=False, action_button=None,
+):
     try:
         calib = _get_fisheye_calibration(app)
         app.log(f"Calibration: {calib.camera_model}")
@@ -1825,7 +2811,7 @@ def _fisheye_worker(app, video_path, frames_dir, masks_dir, output_dir):
                     return
                 # ERP reframe path (not fisheye pairs)
                 app.log(f"Found {len(all_frames)} ERP frames — using equirect reframer")
-                _erp_reframe_worker(app, all_frames, masks_dir, output_dir, config)
+                _erp_reframe_worker(app, all_frames, masks_dir, output_dir, config, station_dirs)
                 return
 
             if not front or not back:
@@ -1857,7 +2843,9 @@ def _fisheye_worker(app, video_path, frames_dir, masks_dir, output_dir):
 
         # Step 2: Reframe → perspectives
         pairs = list(zip(front, back))
-        images_dir = str(Path(output_dir) / "images")
+        # Station mode: reframer creates images/ and masks/ subdirs itself
+        # Flat mode: put crops in output_dir/images/
+        reframe_out = output_dir if station_dirs else str(Path(output_dir) / "images")
         app.log(f"\nReframing {len(pairs)} pairs \u2192 {config.total_views()} views each...")
         if has_masks:
             app.log(f"Masks: {masks_dir}")
@@ -1867,9 +2855,10 @@ def _fisheye_worker(app, video_path, frames_dir, masks_dir, output_dir):
                 app.log(f"  [{current}/{total}] {msg}")
 
         total_crops, errors = fisheye_batch_extract(
-            pairs, config, calib, images_dir,
+            pairs, config, calib, reframe_out,
             mask_dir=masks_dir,
             num_workers=1, progress_callback=rf_progress,
+            station_dirs=station_dirs,
         )
 
         lines = [
@@ -1878,7 +2867,7 @@ def _fisheye_worker(app, video_path, frames_dir, masks_dir, output_dir):
             f"  Views/pair:    {config.total_views()}",
             f"  Total crops:   {total_crops}",
             f"  Crop size:     {crop_size}x{crop_size}",
-            f"  Images:        {images_dir}",
+            f"  Images:        {reframe_out}",
         ]
         if has_masks:
             masks_out = str(Path(output_dir) / "masks")
@@ -1890,18 +2879,18 @@ def _fisheye_worker(app, video_path, frames_dir, masks_dir, output_dir):
 
         summary = "\n".join(lines)
         app.log(f"\n{summary}")
-        app.after(0, lambda: app._set_textbox(app.fisheye_status_text, summary))
 
     except Exception as e:
         import traceback
         app.log(f"Fisheye error: {e}")
         app.log(traceback.format_exc())
     finally:
+        btn = action_button or app.fisheye_reframe_btn
         app.after(0, lambda: app._stop_operation(
-            app.fisheye_run_btn, app.fisheye_stop_btn))
+            btn, app.fisheye_stop_btn))
 
 
-def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config):
+def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config, station_dirs=False):
     """Reframe ERP frames using the equirect reframer (not fisheye pairs)."""
     from prep360.core.reframer import Reframer, ViewConfig, Ring
 
@@ -1927,7 +2916,9 @@ def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config):
 
     # Create a temp directory with the frames (reframe_batch expects a directory)
     frames_dir = str(Path(frame_paths[0]).parent)
-    images_dir = str(Path(output_dir) / "images")
+    # Station mode: reframer creates images/ and masks/ subdirs itself
+    # Flat mode: put crops in output_dir/images/
+    reframe_out = output_dir if station_dirs else str(Path(output_dir) / "images")
 
     app.log(f"\nReframing {len(frame_paths)} ERP frames...")
 
@@ -1936,17 +2927,18 @@ def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config):
             app.log(f"  [{current}/{total}] {msg}")
 
     result = reframer.reframe_batch(
-        frames_dir, images_dir,
+        frames_dir, reframe_out,
         mask_dir=masks_dir,
         num_workers=1,
         progress_callback=rf_progress,
+        station_dirs=station_dirs,
     )
 
     lines = [
         "ERP reframing complete",
         f"  Input frames:  {result.input_count}",
         f"  Total views:   {result.output_count}",
-        f"  Images:        {images_dir}",
+        f"  Images:        {reframe_out}",
     ]
     if masks_dir:
         masks_out = str(Path(output_dir) / "masks")
@@ -1958,4 +2950,3 @@ def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config):
 
     summary = "\n".join(lines)
     app.log(f"\n{summary}")
-    app.after(0, lambda: app._set_textbox(app.fisheye_status_text, summary))

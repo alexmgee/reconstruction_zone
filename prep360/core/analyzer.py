@@ -15,6 +15,26 @@ from typing import Optional, Dict, Any
 _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
+def _safe_float(val) -> float:
+    """Parse a float from ffprobe output, returning 0.0 for None/'N/A'/garbage."""
+    if val is None:
+        return 0.0
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _safe_int(val) -> int:
+    """Parse an int from ffprobe output, returning 0 for None/'N/A'/garbage."""
+    if val is None:
+        return 0
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return 0
+
+
 @dataclass
 class VideoInfo:
     """Video metadata and analysis results."""
@@ -153,20 +173,16 @@ class VideoAnalyzer:
         else:
             fps = float(fps_str)
 
-        # Parse duration
-        duration = float(stream.get("duration", 0) or fmt.get("duration", 0))
+        # Parse duration — .mov/.mkv often lack stream-level duration or return "N/A"
+        duration = _safe_float(stream.get("duration")) or _safe_float(fmt.get("duration")) or 0.0
 
-        # Parse frame count
-        nb_frames = stream.get("nb_frames")
-        if nb_frames:
-            frame_count = int(nb_frames)
-        else:
+        # Parse frame count — .mov/.mkv often lack nb_frames or return "N/A"
+        frame_count = _safe_int(stream.get("nb_frames"))
+        if not frame_count:
             frame_count = int(duration * fps) if duration else 0
 
         # Parse bitrate
-        bitrate = stream.get("bit_rate") or fmt.get("bit_rate")
-        if bitrate:
-            bitrate = int(bitrate)
+        bitrate = _safe_int(stream.get("bit_rate")) or _safe_int(fmt.get("bit_rate")) or None
 
         return VideoInfo(
             path=str(path.absolute()),

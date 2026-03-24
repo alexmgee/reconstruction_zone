@@ -128,6 +128,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         self._build_ui()
         self._init_infrastructure()  # logging + console redirect (from AppInfrastructure)
+        # CTkImage size is in logical pixels; winfo_width() returns physical pixels.
+        # Divide by DPI scale so images fit the panel correctly on high-DPI displays.
+        self._dpi_scale = ctk.ScalingTracker.get_widget_scaling(self)
         self._restore_prefs()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -154,6 +157,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self.shadow_verifier_var.set(self._prefs["shadow_verifier"])
         if self._prefs.get("shadow_spatial"):
             self.shadow_spatial_var.set(self._prefs["shadow_spatial"])
+        if "save_review_folder" in self._prefs:
+            self.review_folder_var.set(bool(self._prefs["save_review_folder"]))
+        if "save_reject_review_images" in self._prefs:
+            self.review_rejects_var.set(bool(self._prefs["save_reject_review_images"]))
         # Restore preview state
         if self._prefs.get("preview_image"):
             self._preview_image_entry.delete(0, "end")
@@ -245,20 +252,46 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         row2 = ctk.CTkFrame(core, fg_color="transparent")
         row2.pack(fill="x", padx=6, pady=3)
         ctk.CTkLabel(row2, text="Output:", width=55, anchor="e").pack(side="left")
-        self.output_entry = ctk.CTkEntry(row2, placeholder_text="Output directory for masks")
+        self.output_entry = ctk.CTkEntry(row2, placeholder_text="Output folder for masks")
         self.output_entry.pack(side="left", fill="x", expand=True, padx=5)
         ctk.CTkButton(row2, text="Browse", width=65,
                       command=lambda: self._browse_dir_into(self.output_entry)).pack(side="left")
+
+        row2b = ctk.CTkFrame(core, fg_color="transparent")
+        row2b.pack(fill="x", padx=6, pady=(0, 3))
+        ctk.CTkLabel(row2b, text="", width=55).pack(side="left")
+        self.review_folder_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            row2b,
+            text="Create review folder",
+            variable=self.review_folder_var,
+            width=150,
+        ).pack(side="left", padx=(5, 8))
+        self.review_rejects_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            row2b,
+            text="Include rejects",
+            variable=self.review_rejects_var,
+            width=130,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            row2b,
+            text="Off: write masks directly into Output. On: create masks/ and review/ inside Output.",
+            font=("Consolas", 10),
+            text_color="#9ca3af",
+        ).pack(side="left")
 
         # SAM3 mode: Hybrid / Unified Video  (above model row — mode determines what's relevant)
         sam3_mode_row = ctk.CTkFrame(core, fg_color="transparent")
         sam3_mode_row.pack(fill="x", padx=6, pady=3)
         ctk.CTkLabel(sam3_mode_row, text="SAM3 mode:").pack(side="left", padx=(0, 2))
         self.sam3_unified_var = ctk.BooleanVar(value=False)
-        ctk.CTkSegmentedButton(
+        self._sam3_mode_btn = ctk.CTkSegmentedButton(
             sam3_mode_row, values=["Hybrid", "Unified Video"],
             command=self._on_sam3_mode_change,
-        ).pack(side="left", padx=4)
+        )
+        self._sam3_mode_btn.set("Hybrid")
+        self._sam3_mode_btn.pack(side="left", padx=4)
         ctk.CTkLabel(sam3_mode_row,
                      text="Hybrid = per-frame detect+segment; Unified = SAM3 video tracking",
                      font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
@@ -365,11 +398,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         ctk.CTkCheckBox(sr1, text="Enable", variable=self.shadow_var,
                         width=80).pack(side="left")
         ctk.CTkLabel(sr1, text="Detector:").pack(side="left", padx=(12, 2))
-        self.shadow_detector_var = ctk.StringVar(value="brightness")
+        self.shadow_detector_var = ctk.StringVar(value="targeted_person")
         ctk.CTkOptionMenu(sr1, variable=self.shadow_detector_var,
-                          values=["brightness", "c1c2c3", "hybrid",
-                                  "sddnet", "careaga"],
-                          width=110).pack(side="left", padx=2)
+                          values=["targeted_person", "brightness",
+                                  "c1c2c3", "hybrid", "sddnet", "careaga"],
+                          width=140).pack(side="left", padx=2)
         ctk.CTkLabel(sr1, text="Verify:").pack(side="left", padx=(12, 2))
         self.shadow_verifier_var = ctk.StringVar(value="none")
         ctk.CTkOptionMenu(sr1, variable=self.shadow_verifier_var,
@@ -567,6 +600,17 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         ctk.CTkLabel(eq_row, text="(360° photographer body / pole distortion)",
                      font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
 
+        # Fisheye
+        fe_row = ctk.CTkFrame(post, fg_color="transparent")
+        fe_row.pack(fill="x", padx=6, pady=3)
+        self.fisheye_circle_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(fe_row, text="Fisheye circle mask",
+                        variable=self.fisheye_circle_var, width=140).pack(side="left")
+        self.fisheye_margin_var = self._slider(fe_row, "Margin", 0, 20, 0, 50,
+                                                fmt=".0f", pad_left=8)
+        ctk.CTkLabel(fe_row, text="% (mask corners + distorted periphery)",
+                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
+
         # Performance
         perf_row = ctk.CTkFrame(post, fg_color="transparent")
         perf_row.pack(fill="x", padx=6, pady=3)
@@ -584,15 +628,22 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         btn_row = ctk.CTkFrame(scroll, fg_color="transparent")
         btn_row.pack(fill="x", pady=6)
 
+        self._preview_run_btn = ctk.CTkButton(
+            btn_row, text="Preview", width=90, height=36,
+            fg_color="#2563eb", hover_color="#1d4ed8",
+            command=self._on_preview,
+        )
+        self._preview_run_btn.pack(side="left", padx=(10, 5))
+
         self.run_btn = ctk.CTkButton(
             btn_row, text="Run Masking", width=140, height=36,
             fg_color="#16a34a", hover_color="#15803d",
             command=self._on_run,
         )
-        self.run_btn.pack(side="left", padx=10)
+        self.run_btn.pack(side="left", padx=5)
 
         self.stop_btn = ctk.CTkButton(
-            btn_row, text="Cancel", width=80, height=36,
+            btn_row, text="Stop", width=80, height=36,
             fg_color="#dc2626", hover_color="#b91c1c",
             command=self._on_stop,
         )
@@ -600,6 +651,53 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.progress_label = ctk.CTkLabel(btn_row, text="", font=("Consolas", 11))
         self.progress_label.pack(side="left", padx=12)
 
+        # ==============================================================
+        #  BATCH MASKING QUEUE
+        # ==============================================================
+        from masking_queue import MaskingQueue
+        self.masking_queue = MaskingQueue()
+        self.mq_item_widgets = {}
+        self.mq_processing = False
+
+        mq_sec = _CollapsibleSection(scroll, "Batch Queue", expanded=False)
+        mq_sec.pack(fill="x", pady=(6, 0), padx=2)
+        mqc = mq_sec.content
+
+        # queue controls
+        mq_ctrl = ctk.CTkFrame(mqc, fg_color="transparent")
+        mq_ctrl.pack(fill="x", pady=(2, 4))
+        ctk.CTkButton(mq_ctrl, text="Add Current", width=85,
+                      command=self._mq_add_current).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(mq_ctrl, text="Add Subfolders", width=100,
+                      command=self._mq_add_subfolders).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(mq_ctrl, text="Remove", width=60, fg_color="#666",
+                      command=self._mq_remove_selected).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(mq_ctrl, text="Clear Done", width=72, fg_color="#666",
+                      command=self._mq_clear_done).pack(side="left")
+
+        # queue list — scrollable, auto-resizes
+        self.mq_scroll = ctk.CTkScrollableFrame(mqc, height=0, fg_color="transparent")
+        self.mq_scroll.pack(fill="x", pady=(0, 4))
+
+        self.mq_stats_label = ctk.CTkLabel(mqc, text="Queue: 0 pending, 0 done",
+                                           text_color="gray", font=ctk.CTkFont(size=10))
+        self.mq_stats_label.pack(anchor="w")
+
+        # process queue button
+        mq_btn_row = ctk.CTkFrame(mqc, fg_color="transparent")
+        mq_btn_row.pack(fill="x", pady=(6, 4))
+        self.mq_run_btn = ctk.CTkButton(
+            mq_btn_row, text="Process Queue", command=self._run_masking_queue,
+            fg_color="#2E7D32", hover_color="#1B5E20",
+            font=ctk.CTkFont(size=13, weight="bold"), height=38,
+        )
+        self.mq_run_btn.pack(side="left", fill="x", expand=True)
+
+        self._mq_refresh()
+
+        # ==============================================================
+        #  PROGRESS BAR + STATUS
+        # ==============================================================
         self.progress_bar = ctk.CTkProgressBar(scroll, height=8)
         self.progress_bar.pack(fill="x", padx=10, pady=(0, 4))
         self.progress_bar.set(0)
@@ -696,13 +794,13 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                      font=ctk.CTkFont(size=13, weight="bold"),
                      anchor="w").pack(side="left")
 
-        # Zoom control
-        self._zoom_var = ctk.DoubleVar(value=65)
+        # Zoom control (100% = fit to panel width)
+        self._zoom_var = ctk.DoubleVar(value=100)
         self._preview_overlay_pil = None  # cached PIL images for zoom
         self._preview_mask_pil = None
         ctk.CTkLabel(header, text="Zoom:", font=("Consolas", 10),
                      text_color="#9ca3af").pack(side="left", padx=(12, 2))
-        self._zoom_label = ctk.CTkLabel(header, text="65%", width=35,
+        self._zoom_label = ctk.CTkLabel(header, text="100%", width=35,
                                          font=("Consolas", 10))
         ctk.CTkSlider(header, from_=25, to=300, number_of_steps=55,
                       variable=self._zoom_var, width=90,
@@ -728,14 +826,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._preview_image_frame = ctk.CTkScrollableFrame(panel)
         self._preview_image_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
 
-        ctk.CTkLabel(self._preview_image_frame, text="Overlay (red = masked)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(pady=(4, 0))
         self._process_overlay_label = ctk.CTkLabel(self._preview_image_frame, text="")
-        self._process_overlay_label.pack(padx=4, pady=(0, 4))
+        self._process_overlay_label.pack(padx=4, pady=4)
 
         # Mask view (hidden by default — toggled via checkbox)
-        self._mask_subtitle = ctk.CTkLabel(self._preview_image_frame, text="Mask",
-                     font=("Consolas", 10), text_color="#9ca3af")
         self._process_mask_label = ctk.CTkLabel(self._preview_image_frame, text="")
 
         # Hidden entry for internal path storage
@@ -765,13 +859,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             text_color="#9ca3af", anchor="w",
         )
         self._preview_stats.pack(side="left", padx=6)
-
-        self._preview_run_btn = ctk.CTkButton(
-            ctrl, text="Preview", width=75, height=26,
-            fg_color="#2563eb", hover_color="#1d4ed8",
-            command=self._on_preview,
-        )
-        self._preview_run_btn.pack(side="right", padx=(4, 0))
 
         # Row 3: Console (compact)
         console_frame = ctk.CTkFrame(panel)
@@ -807,8 +894,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
     def _on_view_toggle(self):
         """Toggle mask view visibility in preview panel."""
         if self._show_mask_view.get():
-            self._mask_subtitle.pack(pady=(4, 0))
-            self._process_mask_label.pack(padx=4, pady=(0, 4))
+            self._process_mask_label.pack(padx=4, pady=4)
             if self._preview_mask_pil is not None:
                 zoom = self._zoom_var.get() / 100.0
                 ow, oh = self._preview_mask_pil.size
@@ -817,7 +903,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 self._process_mask_label.configure(image=ctk_mask, text="")
                 self._process_mask_label._ctk_image = ctk_mask
         else:
-            self._mask_subtitle.pack_forget()
             self._process_mask_label.pack_forget()
 
     def _on_tab_change(self):
@@ -825,11 +910,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         active = self.tabs.get()
         if active == "Mask":
             self._preview_mode = "process"
-            self._preview_run_btn.pack(side="right", padx=(4, 0))
             self._load_image_list()
         elif active == "Review":
             self._preview_mode = "review"
-            self._preview_run_btn.pack_forget()
             self._load_review_nav_list()
         else:
             # Extract / Coverage — no special preview mode yet
@@ -981,10 +1064,17 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             return
 
         h, w = img.shape[:2]
-        panel_w = self._preview_image_frame.winfo_width()
-        target_w = max(300, panel_w - 30) if panel_w > 100 else 700
-        # Fill panel width; vertical overflow handled by scrollable frame
-        scale = min(target_w / w, 1.0)
+        # winfo_width/height return physical pixels; CTkImage size is logical pixels
+        # Use panel width from scrollable frame, but height from parent panel
+        # (CTkScrollableFrame.winfo_height returns content height, not viewport)
+        panel_w = self._preview_image_frame.winfo_width() / self._dpi_scale
+        panel_total_h = self._preview_panel.winfo_height() / self._dpi_scale
+        # Subtract header (~35), nav bar (~35), console (~15% of panel)
+        panel_h = panel_total_h * 0.80 - 70
+        target_w = max(200, panel_w - 20) if panel_w > 60 else 500
+        target_h = max(200, panel_h) if panel_h > 60 else 500
+        # Fit entire image within panel (both width and height)
+        scale = min(target_w / w, target_h / h)
         pw, ph = int(w * scale), int(h * scale)
         img_r = cv2.resize(img, (pw, ph))
         mask_r = cv2.resize(mask, (pw, ph))
@@ -1096,9 +1186,16 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._save_prefs()
         self._preview_run_btn.configure(state="disabled", text="Running...")
         self._preview_stats.configure(text="Processing...")
-        threading.Thread(target=self._preview_worker, args=(img_path,), daemon=True).start()
+        # Capture panel dimensions on main thread (winfo is unsafe from bg thread)
+        # Convert physical pixels to logical pixels for CTkImage sizing
+        # Use panel width from scrollable frame, but height from parent panel
+        # (CTkScrollableFrame.winfo_height returns content height, not viewport)
+        panel_w = self._preview_image_frame.winfo_width() / self._dpi_scale
+        panel_total_h = self._preview_panel.winfo_height() / self._dpi_scale
+        panel_h = panel_total_h * 0.80 - 70
+        threading.Thread(target=self._preview_worker, args=(img_path, panel_w, panel_h), daemon=True).start()
 
-    def _preview_worker(self, img_path: Path):
+    def _preview_worker(self, img_path: Path, panel_w: float = 0, panel_h: float = 0):
         try:
             import cv2
             import numpy as np
@@ -1116,11 +1213,13 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self.log(f"Preview: processing {img_path.name}...")
             result = pipeline.process_image(image, geometry)
 
-            # Build overlay — fill panel width, vertical scroll handles height
+            # Build overlay — fit entire image within panel
             h, w = image.shape[:2]
-            panel_w = self._preview_image_frame.winfo_width()
-            target_w = max(300, panel_w - 30) if panel_w > 100 else 700
-            scale = min(target_w / w, 1.0)
+            # panel_w/panel_h already in logical pixels (DPI-corrected on main thread)
+            # panel_h is already adjusted (80% of panel minus header/nav)
+            target_w = max(200, panel_w - 20) if panel_w > 60 else 500
+            target_h = max(200, panel_h) if panel_h > 60 else 500
+            scale = min(target_w / w, target_h / h)
             pw, ph = int(w * scale), int(h * scale)
             img_r = cv2.resize(image, (pw, ph))
             mask_uint8 = (result.mask * 255).astype(np.uint8) if result.mask.max() <= 1 else result.mask
@@ -1191,11 +1290,18 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._prefs["shadow_detector"] = self.shadow_detector_var.get()
         self._prefs["shadow_verifier"] = self.shadow_verifier_var.get()
         self._prefs["shadow_spatial"] = self.shadow_spatial_var.get()
+        self._prefs["save_review_folder"] = self.review_folder_var.get()
+        self._prefs["save_reject_review_images"] = self.review_rejects_var.get()
         self._save_prefs()
+
+        if self.is_running or self.mq_processing:
+            self.log("A process is already running.")
+            return
 
         self.is_running = True
         self.cancel_flag.clear()
         self.run_btn.configure(state="disabled")
+        self.mq_run_btn.configure(state="disabled")
         self.stop_btn.pack(side="left", padx=5)
         self.progress_bar.set(0)
         self.stats_label.configure(text="Initializing...")
@@ -1205,7 +1311,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
     def _on_stop(self):
         if self.is_running:
-            self.log("Cancelling...")
+            self.log("Stopping...")
             self.cancel_flag.set()
 
     def _build_mask_config(self):
@@ -1339,13 +1445,16 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             mask_dilate_px=int(self.mask_dilate_var.get()),
             fill_holes=self.fill_holes_var.get(),
             nadir_mask_percent=float(self.nadir_mask_var.get()),
+            fisheye_circle_mask=self.fisheye_circle_var.get(),
+            fisheye_margin_percent=float(self.fisheye_margin_var.get()),
             pole_mask_expand=float(self.pole_expand_var.get()),
             cubemap_overlap=float(self.cubemap_overlap_var.get()),
             torch_compile=self.torch_compile_var.get(),
             confidence_threshold=float(self.conf_var.get()),
             review_threshold=float(self.review_thresh_var.get()),
             yolo_model_size=self.yolo_size_var.get(),
-            save_review_images=True,
+            save_review_images=self.review_folder_var.get(),
+            save_reject_review_images=self.review_rejects_var.get(),
             keep_prompts=keep_prompts,
         )
         if remove_prompts is not None:
@@ -1363,6 +1472,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             inp = Path(input_path)
             out = Path(output_path)
             out.mkdir(parents=True, exist_ok=True)
+            create_review_folder = self.review_folder_var.get()
 
             n_classes = len(config.yolo_classes) if config.yolo_classes else 0
             self.log(f"Model: {model_str} | Geometry: {self.geometry_var.get()} | "
@@ -1375,7 +1485,12 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             pipeline = MaskingPipeline(config=config, auto_select_model=(model_str == "auto"))
 
             # Quality bridge: write per-image results to review_status.json
-            mask_out_dir = out / "masks"
+            if create_review_folder:
+                mask_out_dir = out / "masks"
+                review_dir = out / "review"
+            else:
+                mask_out_dir = out
+                review_dir = None
             try:
                 ReviewStatusManager = _import_review()[4]
                 _status_mgr = ReviewStatusManager(mask_out_dir)
@@ -1388,6 +1503,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 _on_result = None
 
             if inp.is_dir():
+                if create_review_folder:
+                    self.log(f"Output: masks → {mask_out_dir}, review → {review_dir}")
+                else:
+                    self.log(f"Output: masks → {mask_out_dir}")
                 if self.sam3_unified_var.get() and pipeline.sam3_video_pipeline is not None:
                     self.log(f"Processing directory with SAM3 unified video: {inp}")
                     stats = pipeline.process_directory_sam3_unified(
@@ -1400,12 +1519,22 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                         geometry=geometry, pattern=self.pattern_var.get(),
                         result_callback=_on_result,
                         skip_existing=self.skip_existing_var.get(),
+                        cancel_event=self.cancel_flag,
+                        mask_dir=mask_out_dir,
+                        review_dir=review_dir,
                     )
             elif inp.suffix.lower() in (".mp4", ".mov", ".avi", ".mkv"):
                 self.log(f"Processing video: {inp}")
+                if create_review_folder:
+                    self.log(f"Output: masks → {mask_out_dir}, review → {review_dir}")
+                else:
+                    self.log(f"Output: masks → {mask_out_dir}")
                 stats = pipeline.process_video(
                     video_path=inp, output_dir=out,
-                    geometry=geometry, save_review=True,
+                    geometry=geometry,
+                    save_review=create_review_folder,
+                    mask_dir=mask_out_dir,
+                    review_dir=review_dir,
                 )
             else:
                 self.log(f"Processing single image: {inp}")
@@ -1415,13 +1544,24 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                     self.log(f"ERROR: Failed to load image: {inp}")
                     return
                 result = pipeline.process_image(image, geometry)
-                mask_dir = out / "masks"
+                mask_dir = mask_out_dir
                 mask_dir.mkdir(exist_ok=True)
                 cv2.imwrite(str(mask_dir / f"{inp.stem}.png"), result.mask * 255)
-                images_dir = out / "images"
-                images_dir.mkdir(exist_ok=True)
-                shutil.copy2(str(inp), str(images_dir / inp.name))
-                stats = {"processed_images": 1, "quality": result.quality.value}
+                if create_review_folder:
+                    images_dir = out / "images"
+                    images_dir.mkdir(exist_ok=True)
+                    shutil.copy2(str(inp), str(images_dir / inp.name))
+                    if result.should_save_review_image(self.review_rejects_var.get()):
+                        review_dir.mkdir(exist_ok=True)
+                        review_img = pipeline._create_review_image(image, result.mask)
+                        cv2.imwrite(str(review_dir / f"review_{inp.stem}.jpg"), review_img)
+                stats = {
+                    "processed_images": 1,
+                    "quality": result.quality.value,
+                    "review_images": int(
+                        create_review_folder and result.should_save_review_image(self.review_rejects_var.get())
+                    ),
+                }
 
             self.log(f"Done! {json.dumps(stats, indent=2)}")
 
@@ -1461,7 +1601,315 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
     def _done(self):
         self.is_running = False
         self.run_btn.configure(state="normal")
+        self.mq_run_btn.configure(state="normal")
         self.stop_btn.pack_forget()
+
+    # ══════════════════════════════════════════════════════════════════
+    # MASKING QUEUE — batch masking across multiple folders
+    # ══════════════════════════════════════════════════════════════════
+
+    _MQ_STATUS_COLORS = {
+        "pending":    "#888888",
+        "processing": "#FFA500",
+        "done":       "#4CAF50",
+        "error":      "#F44336",
+        "cancelled":  "#9E9E9E",
+    }
+
+    def _mq_add_current(self):
+        """Add the folder from the Input field to the masking queue."""
+        folder = self.input_entry.get().strip()
+        if not folder:
+            self.log("Queue: no input folder set — enter a path in the Input field first.")
+            return
+        p = Path(folder)
+        if not p.is_dir():
+            self.log(f"Queue: {folder} is not a directory.")
+            return
+        item = self.masking_queue.add_folder(folder)
+        if item:
+            self.log(f"Queue: added {item.folder_name}")
+        else:
+            self.log(f"Queue: {p.name} already in queue")
+        self._mq_refresh()
+
+    def _mq_add_subfolders(self):
+        """Pick a parent folder and add all its immediate subfolders to the queue."""
+        parent = filedialog.askdirectory(title="Select parent — all subfolders will be added")
+        if not parent:
+            return
+        subfolders = sorted(
+            p for p in Path(parent).iterdir() if p.is_dir() and not p.name.startswith(".")
+        )
+        if not subfolders:
+            self.log(f"Queue: no subfolders found in {Path(parent).name}")
+            return
+        count = self.masking_queue.add_folders([str(f) for f in subfolders])
+        self.log(f"Queue: added {count} folder(s) from {Path(parent).name}")
+        self._mq_refresh()
+
+    def _mq_remove_selected(self):
+        """Remove selected items from the masking queue."""
+        to_remove = [iid for iid, w in self.mq_item_widgets.items() if w.get("selected")]
+        for iid in to_remove:
+            self.masking_queue.remove_item(iid)
+        self._mq_refresh()
+
+    def _mq_clear_done(self):
+        """Clear completed/error/cancelled items from the masking queue."""
+        self.masking_queue.clear_completed()
+        self._mq_refresh()
+
+    def _mq_refresh(self):
+        """Rebuild the masking queue widget list."""
+        for w in self.mq_item_widgets.values():
+            if "frame" in w:
+                w["frame"].destroy()
+        self.mq_item_widgets = {}
+
+        for item in self.masking_queue.items:
+            self._mq_create_item(item)
+
+        n = len(self.masking_queue.items)
+        if n == 0:
+            self.mq_scroll.pack_forget()
+        else:
+            row_h = 34
+            target_h = min(n, 5) * row_h
+            self.mq_scroll.configure(height=target_h)
+            self.mq_scroll.pack(fill="x", pady=(0, 4))
+
+        stats = self.masking_queue.get_stats()
+        self.mq_stats_label.configure(
+            text=(f"Queue: {stats['pending']} pending, {stats['processing']} processing, "
+                  f"{stats['done']} done, {stats['error']} errors")
+        )
+
+    def _mq_create_item(self, item):
+        """Create a widget row for a masking queue item."""
+        frame = ctk.CTkFrame(self.mq_scroll, fg_color="#2b2b2b", corner_radius=5)
+        frame.pack(fill="x", pady=2, padx=2)
+
+        selected = False
+
+        def toggle(event=None):
+            nonlocal selected
+            selected = not selected
+            self.mq_item_widgets[item.id]["selected"] = selected
+            frame.configure(fg_color="#3d5a80" if selected else "#2b2b2b")
+
+        frame.bind("<Button-1>", toggle)
+
+        color = self._MQ_STATUS_COLORS.get(item.status, "#888")
+        ctk.CTkLabel(frame, text="\u25cf", text_color=color, width=18).pack(side="left", padx=(8, 4))
+
+        display_name = item.folder_name
+        if len(display_name) > 28:
+            display_name = display_name[:12] + "\u2026" + display_name[-12:]
+        name_lbl = ctk.CTkLabel(frame, text=display_name, anchor="w", width=180)
+        name_lbl.pack(side="left", padx=(0, 6))
+        name_lbl.bind("<Button-1>", toggle)
+
+        status_text = item.status.capitalize()
+        if item.status == "processing":
+            status_text = f"Processing {item.progress}%"
+        elif item.status == "done":
+            status_text = f"Done ({item.processed_count} images)"
+        elif item.status == "error":
+            status_text = "Error"
+
+        st_lbl = ctk.CTkLabel(frame, text=status_text, text_color=color, width=130)
+        st_lbl.pack(side="left")
+
+        progress_bar = None
+        if item.status == "processing":
+            progress_bar = ctk.CTkProgressBar(frame, width=80, height=8)
+            progress_bar.set(item.progress / 100)
+            progress_bar.pack(side="left", padx=(4, 0))
+
+        self.mq_item_widgets[item.id] = {
+            "frame": frame,
+            "status_label": st_lbl,
+            "progress": progress_bar,
+            "selected": selected,
+        }
+
+    def _mq_update_item(self, item_id):
+        """Update status/progress display for a masking queue item."""
+        item = self.masking_queue.get_item(item_id)
+        w = self.mq_item_widgets.get(item_id)
+        if not item or not w:
+            return
+        color = self._MQ_STATUS_COLORS.get(item.status, "#888")
+        status_text = item.status.capitalize()
+        if item.status == "processing":
+            status_text = f"Processing {item.progress}%"
+        elif item.status == "done":
+            status_text = f"Done ({item.processed_count} images)"
+        w["status_label"].configure(text=status_text, text_color=color)
+        if w["progress"] and item.status == "processing":
+            w["progress"].set(item.progress / 100)
+
+    def _run_masking_queue(self):
+        """Start processing the masking queue."""
+        if self.is_running or self.mq_processing:
+            self.log("A process is already running.")
+            return
+
+        pending = self.masking_queue.get_pending_count()
+        if pending == 0:
+            self.log("Queue: no pending folders to process.")
+            return
+
+        self.mq_processing = True
+        self.is_running = True
+        self.cancel_flag.clear()
+        self.run_btn.configure(state="disabled")
+        self.mq_run_btn.configure(state="disabled")
+        self.stop_btn.pack(side="left", padx=5)
+        self.progress_bar.set(0)
+        self.stats_label.configure(text=f"Queue: loading model for {pending} folders...")
+
+        threading.Thread(target=self._masking_queue_worker, daemon=True).start()
+
+    def _masking_queue_worker(self):
+        """Worker thread: process all pending folders in the masking queue."""
+        try:
+            import numpy as np
+            MaskingPipeline = _import_pipeline()[0]
+            config, model_str, geometry = self._build_mask_config()
+            pattern = self.pattern_var.get()
+            skip_existing = self.skip_existing_var.get()
+
+            self.log(f"Queue: Model={model_str} | Geometry={self.geometry_var.get()} | "
+                     f"Confidence={config.confidence_threshold}")
+            if config.remove_prompts:
+                self.log(f"Queue: Remove prompts: {config.remove_prompts}")
+
+            # Load pipeline once — reuse across all folders
+            pipeline = MaskingPipeline(config=config, auto_select_model=(model_str == "auto"))
+
+            folder_idx = 0
+            total_pending = self.masking_queue.get_pending_count()
+
+            while not self.cancel_flag.is_set():
+                item = self.masking_queue.get_next_pending()
+                if not item:
+                    break
+
+                folder_idx += 1
+                self.masking_queue.set_processing(item.id)
+                self.after(0, self._mq_refresh)
+
+                input_dir = Path(item.folder_path)
+                masks_dir = input_dir.parent / f"{input_dir.name}_masks"
+                review_dir = input_dir.parent / f"{input_dir.name}_review"
+
+                self.log(f"Queue [{folder_idx}/{total_pending}]: {item.folder_name}")
+                self.log(f"  Masks  → {masks_dir}")
+                self.log(f"  Review → {review_dir}")
+
+                # Count images for progress tracking
+                image_files = []
+                for pat in pattern.split():
+                    image_files.extend(input_dir.glob(pat))
+                image_files = sorted(set(image_files))
+                if not image_files:
+                    for ext in ("*.jpg", "*.png", "*.jpeg", "*.tif", "*.tiff"):
+                        image_files = sorted(input_dir.glob(ext))
+                        if image_files:
+                            break
+                image_count = len(image_files)
+                self.masking_queue.update_item(item.id, image_count=image_count)
+
+                self.after(0, lambda f=folder_idx, t=total_pending, n=item.folder_name, c=image_count:
+                    self.stats_label.configure(
+                        text=f"Queue [{f}/{t}]: {n} — 0/{c} images"))
+
+                # Progress callback via result_callback
+                processed = [0]  # use list for closure mutability
+
+                def on_result(stem, result, _iid=item.id, _count=image_count,
+                              _fidx=folder_idx, _total=total_pending, _name=item.folder_name):
+                    processed[0] += 1
+                    pct = int(processed[0] / max(_count, 1) * 100)
+                    self.masking_queue.set_progress(_iid, pct)
+                    self.after(0, lambda: self._mq_update_item(_iid))
+                    self.after(0, lambda p=processed[0], c=_count, f=_fidx, t=_total, n=_name:
+                        self.stats_label.configure(
+                            text=f"Queue [{f}/{t}]: {n} — {p}/{c} images"))
+
+                # Review status bridge
+                try:
+                    ReviewStatusManager = _import_review()[4]
+                    _status_mgr = ReviewStatusManager(masks_dir)
+                    def on_result_with_review(stem, result, _iid=item.id, _count=image_count,
+                                              _fidx=folder_idx, _total=total_pending,
+                                              _name=item.folder_name):
+                        area = float(np.sum(result.mask > 0) / result.mask.size * 100)
+                        _status_mgr.set_quality_info(
+                            stem, quality=result.quality.value,
+                            confidence=result.confidence, area_percent=area)
+                        on_result(stem, result, _iid, _count, _fidx, _total, _name)
+                    result_cb = on_result_with_review
+                except Exception:
+                    result_cb = on_result
+
+                try:
+                    stats = pipeline.process_directory(
+                        input_dir=input_dir,
+                        output_dir=masks_dir,
+                        mask_dir=masks_dir,
+                        review_dir=review_dir,
+                        geometry=geometry,
+                        pattern=pattern,
+                        result_callback=result_cb,
+                        skip_existing=skip_existing,
+                        cancel_event=self.cancel_flag,
+                    )
+                    done_count = stats.get('processed_images', 0)
+                    self.masking_queue.set_done(item.id, processed_count=done_count)
+                    self.log(f"  Done: {done_count} processed, "
+                             f"{stats.get('review_images', 0)} for review, "
+                             f"{stats.get('rejected_images', 0)} rejected")
+                except Exception as e:
+                    self.masking_queue.set_error(item.id, str(e))
+                    self.log(f"  ERROR: {e}")
+                    import traceback
+                    self.log(traceback.format_exc())
+
+                if self.cancel_flag.is_set():
+                    # Mark current item as cancelled if it was still processing
+                    current = self.masking_queue.get_item(item.id)
+                    if current and current.status == "processing":
+                        self.masking_queue.set_cancelled(item.id)
+                    break
+
+                self.after(0, self._mq_refresh)
+
+            # Summary
+            qs = self.masking_queue.get_stats()
+            self.log(f"Queue complete: {qs['done']} done, {qs['error']} errors, "
+                     f"{qs['cancelled']} cancelled, {qs['pending']} remaining")
+            self.after(0, lambda: self.progress_bar.set(1.0))
+            self.after(0, lambda: self.stats_label.configure(
+                text=f"Queue complete: {qs['done']} done, {qs['error']} errors"))
+
+        except Exception as e:
+            self.log(f"Queue ERROR: {e}")
+            import traceback
+            self.log(traceback.format_exc())
+        finally:
+            self.after(0, self._masking_queue_done)
+
+    def _masking_queue_done(self):
+        """Re-enable UI after masking queue finishes."""
+        self.mq_processing = False
+        self.is_running = False
+        self.run_btn.configure(state="normal")
+        self.mq_run_btn.configure(state="normal")
+        self.stop_btn.pack_forget()
+        self._mq_refresh()
 
     # ══════════════════════════════════════════════════════════════════
     # REVIEW TAB — compact controls, shared preview panel
@@ -1657,9 +2105,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self._thumb_widgets.clear()
             threading.Thread(target=self._load_thumbnails_bg, daemon=True).start()
 
-            # Set zoom to 65% so the full image is visible without scrolling
-            self._zoom_var.set(65)
-            self._zoom_label.configure(text="65%")
+            # Set zoom to 100% = fit to panel width
+            self._zoom_var.set(100)
+            self._zoom_label.configure(text="100%")
 
             # If we're on the Review tab, refresh the navigator
             if self._preview_mode == "review":

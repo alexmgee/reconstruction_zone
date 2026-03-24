@@ -10,7 +10,7 @@ The tab has three collapsible sections, top to bottom:
 |---------|---------|
 | **Video Selection** | Load a video, set output folder, optionally analyze metadata |
 | **Frame Extraction** | Pull frames from the video with mode/interval/filter controls |
-| **360 Video** | Split dual-fisheye containers, reframe to pinhole perspectives |
+| **360 Video** | Split dual-fisheye containers, prepare raw Metashape datasets, or reframe to pinhole perspectives |
 
 You'll use Video Selection + Frame Extraction for normal perspective video. Add 360 Video when working with DJI Osmo, Insta360, or GoPro Max footage.
 
@@ -70,6 +70,12 @@ Four modes control how frames are selected from the video:
 - **Adaptive Density** — Dynamically adjusts extraction density based on motion. High-motion segments get more frames; static segments get fewer. Good for varied-pace captures where the camera alternates between walking and pausing.
 
 - **Sharpest Frame** — Divides the video into N-second windows and picks the single sharpest frame from each window, scoring every frame in the window using ffmpeg's blurdetect filter. More expensive than other modes (analyzes all frames, not just sampled ones) but produces the highest-quality dataset from shaky or handheld footage.
+
+When **Video Selection → Split Lens Videos** is enabled and **Sharpest Frame** is selected, a paired sharpness tier appears:
+
+- **Fast** — Quick pair scoring from both lenses
+- **Balanced** — blurdetect on both lenses, fixed time windows
+- **Best** — blurdetect on both lenses with scene-aware pair selection
 
 ### Settings
 
@@ -195,12 +201,15 @@ Queue workflow:
 
 ## 360 Video
 
-For dual-fisheye cameras (DJI Osmo Action 360, Insta360 X3/X4, GoPro Max). This section has its own input/output paths separate from the standard extraction above.
+For dual-fisheye cameras (DJI Osmo Action 360, Insta360 X3/X4, GoPro Max).
 
-### Input and Output
-
-- **Input** — `.osv`, `.360`, or `.insv` container file (dual-fisheye video)
-- **Output** — Directory for extracted and reframed images
+- **Video Selection** now owns the extraction source choice:
+  - a single video file, or
+  - a graded front/back split-video pair
+- **360 Video** now focuses on:
+  - **Split Lenses** — raw lossless demux from a 360 container
+  - **Reframing** — fisheye/ERP to pinhole perspectives
+- **Metashape Session** at the bottom of the tab assembles a no-copy handoff manifest from finished clip folders
 
 ### Pipeline overview
 
@@ -222,17 +231,33 @@ For dual-fisheye cameras (DJI Osmo Action 360, Insta360 X3/X4, GoPro Max). This 
      │ back.mp4   │           │                │
      └────────────┘           └───────┬────────┘
                                       │
-                              ┌───────▼────────┐
-                              │ Output:        │
-                              │ perspectives/  │
-                              │   front_h0_y0  │
-                              │   front_h30_y0 │
-                              │   back_h0_y0   │
-                              │   ...          │
-                              └────────────────┘
+                   ┌────────────────▼────────────────┐
+                   │ Video Selection                 │
+                   │ • enable Split Lens Videos      │
+                   │ • analyze graded front/back     │
+                   │ • main Extract button writes    │
+                   │   clip_folder/front/frames      │
+                   │   clip_folder/back/frames       │
+                   └────────────────┬────────────────┘
+                                    │
+                 ┌──────────────────▼───────────────────┐
+                 │ Later: Metashape Session            │
+                 │ • scan clip folders                 │
+                 │ • validate frames/masks             │
+                 │ • write one no-copy session JSON    │
+                 └──────────────────────────────────────┘
 ```
 
-**Split Lenses** and **Reframe** are independent operations. You can do either or both.
+The raw dual-fisheye path now looks like this:
+
+- **Split Lenses** creates the front/back lens videos
+- grade those outside the GUI if needed
+- **Video Selection → Split Lens Videos** selects the graded pair as the extraction source
+- the standard **Extract** button writes one clip working folder with `front/frames` + `back/frames`
+- **Mask** can now write directly into `front/masks` + `back/masks`
+- **Metashape Session** writes one session manifest that references all approved clip folders without copying them
+
+**Reframing** is a separate path for pinhole-perspective extraction.
 
 ### Custom Calibration
 
@@ -252,9 +277,15 @@ JSON format:
 
 ### Split Lenses
 
-Lossless FFmpeg stream copy — extracts the front and back lens video streams from the 360 container without re-encoding. Use this when you want to work with raw 180° hemispheres (e.g., training on fisheye data directly).
+This subsection now does one thing:
 
-After splitting, the front lens is auto-loaded into Video Selection for immediate analysis.
+- **Split Lenses** — lossless demux from the source 360 container using the top **Video Selection** input/output
+
+After splitting, the GUI stops at the two lens videos. This is the handoff point for any external grading workflow such as DaVinci Resolve.
+
+### Reframing
+
+Collapsed by default. This subsection is only for pinhole-perspective extraction workflows and is separate from the raw split-lens Metashape path.
 
 ### Reframe to Pinhole Perspectives
 
@@ -268,7 +299,8 @@ This is the main 360 workflow. Converts dual-fisheye frames into standard perspe
 │  OSVHandler extracts frame pairs at the configured interval  │
 │  from both streams (front + back lens)                       │
 │                                                               │
-│  Output: fisheye_frames/front_NNNN.jpg + back_NNNN.jpg      │
+│  Output: clip_folder/front/frames/NNNN.jpg                  │
+│          clip_folder/back/frames/NNNN.jpg                   │
 └───────────────────────────┬──────────────────────────────────┘
                             │
                             ▼

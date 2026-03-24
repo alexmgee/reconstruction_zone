@@ -2,8 +2,10 @@
 Frame Extractor Module
 
 Extract frames from video with multiple selection modes.
+Writes an extraction manifest alongside frames for geotagging.
 """
 
+import json
 import os
 import subprocess
 import re
@@ -11,6 +13,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Callable, List
+
+MANIFEST_FILENAME = "extraction_manifest.json"
 
 _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
@@ -57,7 +61,8 @@ class FrameExtractor:
         output_dir: str,
         config: Optional[ExtractionConfig] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        dry_run: bool = False
+        dry_run: bool = False,
+        prefix_source: bool = True,
     ) -> ExtractionResult:
         """
         Extract frames from video.
@@ -68,6 +73,7 @@ class FrameExtractor:
             config: Extraction configuration
             progress_callback: Called with (current, total, message)
             dry_run: If True, only print command without executing
+            prefix_source: Prefix filenames with video stem (e.g. DJI_xxx_00001.jpg)
 
         Returns:
             ExtractionResult with extraction details
@@ -91,16 +97,19 @@ class FrameExtractor:
         if not dry_run:
             output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Filename prefix: "DJI_xxx_" or "" depending on flag
+        stem = video_path.stem + "_" if prefix_source else ""
+
         # Build ffmpeg command based on mode
         if config.mode == ExtractionMode.FIXED:
-            cmd = self._build_fixed_command(video_path, output_dir, config)
+            cmd = self._build_fixed_command(video_path, output_dir, config, stem)
         elif config.mode == ExtractionMode.SCENE:
-            cmd = self._build_scene_command(video_path, output_dir, config)
+            cmd = self._build_scene_command(video_path, output_dir, config, stem)
         elif config.mode == ExtractionMode.ADAPTIVE:
             # Adaptive mode uses fixed extraction then fills gaps
-            cmd = self._build_fixed_command(video_path, output_dir, config)
+            cmd = self._build_fixed_command(video_path, output_dir, config, stem)
         else:
-            cmd = self._build_fixed_command(video_path, output_dir, config)
+            cmd = self._build_fixed_command(video_path, output_dir, config, stem)
 
         if dry_run:
             print(f"Command: {' '.join(cmd)}")
@@ -137,6 +146,11 @@ class FrameExtractor:
             ext = config.output_format
             frames = sorted([f.name for f in output_dir.glob(f"*.{ext}")])
 
+            # Write extraction manifest for geotagging
+            self._write_manifest(
+                output_dir, frames, video_path, config
+            )
+
             if progress_callback:
                 progress_callback(100, 100, f"Extracted {len(frames)} frames")
 
@@ -160,7 +174,8 @@ class FrameExtractor:
         self,
         video_path: Path,
         output_dir: Path,
-        config: ExtractionConfig
+        config: ExtractionConfig,
+        stem: str = "",
     ) -> List[str]:
         """Build ffmpeg command for fixed interval extraction."""
         cmd = [self.ffmpeg_path, "-y"]
@@ -186,8 +201,8 @@ class FrameExtractor:
         elif config.output_format == "png":
             cmd.extend(["-compression_level", "6"])
 
-        # Output pattern
-        output_pattern = str(output_dir / f"%05d.{config.output_format}")
+        # Output pattern — prefixed with video stem when prefix_source=True
+        output_pattern = str(output_dir / f"{stem}%05d.{config.output_format}")
         cmd.append(output_pattern)
 
         return cmd
@@ -196,7 +211,8 @@ class FrameExtractor:
         self,
         video_path: Path,
         output_dir: Path,
-        config: ExtractionConfig
+        config: ExtractionConfig,
+        stem: str = "",
     ) -> List[str]:
         """Build ffmpeg command for scene detection extraction."""
         cmd = [self.ffmpeg_path, "-y"]
@@ -227,10 +243,45 @@ class FrameExtractor:
             cmd.extend(["-compression_level", "6"])
 
         # Output pattern
-        output_pattern = str(output_dir / f"%05d.{config.output_format}")
+        output_pattern = str(output_dir / f"{stem}%05d.{config.output_format}")
         cmd.append(output_pattern)
 
         return cmd
+
+    def _write_manifest(
+        self,
+        output_dir: Path,
+        frames: List[str],
+        video_path: Path,
+        config: ExtractionConfig,
+    ):
+        """Write extraction manifest mapping frames to source video + timestamps.
+
+        For fixed/adaptive modes, timestamp is computed from frame index and interval.
+        For scene mode, timestamps are approximate (interval-based estimate).
+        """
+        start = config.start_sec or 0.0
+        manifest = {
+            "video": str(video_path.absolute()),
+            "video_stem": video_path.stem,
+            "extraction_mode": config.mode.value,
+            "interval": config.interval,
+            "start_sec": start,
+            "end_sec": config.end_sec,
+            "frames": [],
+        }
+
+        for i, filename in enumerate(frames):
+            manifest["frames"].append({
+                "filename": filename,
+                "index": i + 1,
+                "time_sec": round(start + i * config.interval, 3),
+            })
+
+        manifest_path = output_dir / MANIFEST_FILENAME
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
 
     def estimate_frames(self, duration: float, config: ExtractionConfig) -> int:
         """Estimate number of frames that will be extracted."""
