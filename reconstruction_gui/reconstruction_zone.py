@@ -344,6 +344,28 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             r3, placeholder_text="(optional) objects to protect from masking")
         self.keep_prompts_entry.pack(side="left", fill="x", expand=True, padx=5)
 
+        # Multi-pass SAM3 prompts
+        mp_wrapper = ctk.CTkFrame(core, fg_color="transparent")
+        mp_wrapper.pack(fill="x", padx=6, pady=3)
+
+        mp_toggle_row = ctk.CTkFrame(mp_wrapper, fg_color="transparent")
+        mp_toggle_row.pack(fill="x")
+        self.multi_pass_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(mp_toggle_row, text="Multi-pass SAM3",
+                        variable=self.multi_pass_var,
+                        command=self._toggle_multi_pass,
+                        width=140).pack(side="left")
+        ctk.CTkLabel(mp_toggle_row, text="(union masks from multiple prompt passes)",
+                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
+        ctk.CTkButton(mp_toggle_row, text="+ Add Pass", width=80,
+                      command=self._add_multi_pass_row).pack(side="right", padx=2)
+        ctk.CTkButton(mp_toggle_row, text="Remove", width=70,
+                      command=self._remove_multi_pass_row).pack(side="right", padx=2)
+
+        self.multi_pass_entries = []
+        self.multi_pass_list_frame = ctk.CTkFrame(mp_wrapper, fg_color="transparent")
+        # Initially hidden — shown when checkbox is checked
+
         # Mask targets  (greyed out in Unified mode)
         targets_row = ctk.CTkFrame(core, fg_color="transparent")
         targets_row.pack(fill="x", padx=6, pady=3)
@@ -858,6 +880,31 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                      anchor="w").grid(row=0, column=0, sticky="w", padx=5, pady=(2, 0))
         self.log_textbox = ctk.CTkTextbox(console_frame, font=("Consolas", 10), height=80)
         self.log_textbox.grid(row=1, column=0, sticky="nsew", padx=5, pady=(0, 4))
+
+    def _toggle_multi_pass(self):
+        """Show/hide multi-pass list frame."""
+        if self.multi_pass_var.get():
+            self.multi_pass_list_frame.pack(fill="x", padx=5, pady=2)
+            if not self.multi_pass_entries:
+                self._add_multi_pass_row()
+        else:
+            self.multi_pass_list_frame.pack_forget()
+
+    def _add_multi_pass_row(self):
+        """Add a prompt + confidence row."""
+        row = ctk.CTkFrame(self.multi_pass_list_frame, fg_color="transparent")
+        prompt = ctk.CTkEntry(row, placeholder_text="e.g. human shadow", width=200)
+        prompt.pack(side="left", padx=2)
+        threshold = ctk.CTkEntry(row, placeholder_text="0.3", width=60)
+        threshold.pack(side="left", padx=2)
+        row.pack(fill="x", pady=1)
+        self.multi_pass_entries.append((prompt, threshold, row))
+
+    def _remove_multi_pass_row(self):
+        """Remove the last prompt row."""
+        if self.multi_pass_entries:
+            _, _, row = self.multi_pass_entries.pop()
+            row.destroy()
 
     def _toggle_preview_panel(self):
         if self._preview_visible:
@@ -1399,6 +1446,18 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 'inconsistency_threshold': float(self.colmap_flag_var.get()),
             }
 
+        # Collect multi-pass prompts
+        multi_pass = []
+        if self.multi_pass_var.get():
+            for prompt_entry, threshold_entry, _ in self.multi_pass_entries:
+                text = prompt_entry.get().strip()
+                if text:
+                    try:
+                        thresh = float(threshold_entry.get().strip() or "0.5")
+                    except ValueError:
+                        thresh = 0.5
+                    multi_pass.append((text, thresh))
+
         config_kwargs = dict(
             model=model_map.get(model_str),
             device=device,
@@ -1414,6 +1473,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             ensemble_iou_threshold=float(self.ens_iou_var.get()),
             rfdetr_model_size=self.rfdetr_size_var.get(),
             sam3_unified=self.sam3_unified_var.get(),
+            multi_pass_prompts=multi_pass,
             colmap_validate=colmap_enabled and bool(colmap_dir),
             colmap_dir=colmap_dir,
             colmap_config=colmap_config,
