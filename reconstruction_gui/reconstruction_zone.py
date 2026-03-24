@@ -447,9 +447,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         ctk.CTkCheckBox(sr1, text="Enable", variable=self.shadow_var,
                         width=80).pack(side="left")
         ctk.CTkLabel(sr1, text="Detector:").pack(side="left", padx=(12, 2))
-        self.shadow_detector_var = ctk.StringVar(value="targeted_person")
+        self.shadow_detector_var = ctk.StringVar(value="opseg")
         ctk.CTkOptionMenu(sr1, variable=self.shadow_detector_var,
-                          values=["targeted_person", "brightness",
+                          values=["opseg", "targeted_person", "brightness",
                                   "c1c2c3", "hybrid"],
                           width=140).pack(side="left", padx=2)
         ctk.CTkLabel(sr1, text="Verify:").pack(side="left", padx=(12, 2))
