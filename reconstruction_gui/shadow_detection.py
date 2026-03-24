@@ -48,6 +48,8 @@ class ShadowDetectorType(Enum):
     SDDNET = "sddnet"
     SILT = "silt"
     CAREAGA_INTRINSIC = "careaga"
+    # Tier 2 — Instance shadow detection (SAM 2.1 + Grounding DINO)
+    OPSEG_INSTANCE = "opseg"
 
 
 class ShadowSpatialMode(Enum):
@@ -96,7 +98,7 @@ class ShadowConfig:
     """Configuration for the shadow detection pipeline."""
 
     # Which detectors to run
-    primary_detector: ShadowDetectorType = ShadowDetectorType.BRIGHTNESS_HEURISTIC
+    primary_detector: ShadowDetectorType = ShadowDetectorType.OPSEG_INSTANCE
     verification_detector: Optional[ShadowDetectorType] = None
 
     # Spatial filtering
@@ -117,6 +119,9 @@ class ShadowConfig:
     device: str = "cpu"                     # Inherited from MaskConfig at runtime
     weights_dir: Optional[str] = None       # Default: ~/.prep360_shadow_weights/
 
+    # OpSeg-specific
+    grounding_dino_prompt: Optional[str] = None  # Auto-derived from remove prompts if None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'primary_detector': self.primary_detector.value,
@@ -134,6 +139,7 @@ class ShadowConfig:
             'model_checkpoint': self.model_checkpoint,
             'device': self.device,
             'weights_dir': self.weights_dir,
+            'grounding_dino_prompt': self.grounding_dino_prompt,
         }
 
     @classmethod
