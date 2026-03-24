@@ -301,9 +301,19 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         r1.pack(fill="x", padx=6, pady=3)
 
         ctk.CTkLabel(r1, text="Model:").pack(side="left", padx=(0, 2))
+        # Build model list based on distribution
+        try:
+            from prep360.distribution import is_gumroad as _is_gumroad_check
+        except ImportError:
+            def _is_gumroad_check(): return False
+        _all_models = ["auto", "yolo26", "rfdetr", "sam3", "fastsam"]
+        if _is_gumroad_check():
+            _model_values = [m for m in _all_models if m not in ("yolo26", "fastsam")]
+        else:
+            _model_values = _all_models
         self.model_var = ctk.StringVar(value="auto")
         ctk.CTkOptionMenu(r1, variable=self.model_var,
-                          values=["auto", "yolo26", "rfdetr", "sam3", "fastsam"],
+                          values=_model_values,
                           width=95).pack(side="left", padx=2)
 
         ctk.CTkLabel(r1, text="YOLO size:").pack(side="left", padx=(12, 2))
