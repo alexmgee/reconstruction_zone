@@ -1111,6 +1111,27 @@ class ShadowWeightManager:
             "size_mb": 200,
             "source": "NOT AVAILABLE — only backbone weights at github.com/hanyangclarence/SILT",
         },
+        "opseg_sam2": {
+            "filename": "sam2_shadow.pt",
+            "url": "https://modelscope.cn/models/deyang2000/SAM2_Shadow/resolve/master/sam2_shadow.pt",
+            "sha256": None,  # Verify after first download
+            "size_mb": 390,
+            "source": "ModelScope deyang2000/SAM2_Shadow (Apache 2.0)",
+        },
+        "sam2.1_base_plus": {
+            "filename": "sam2.1_hiera_base_plus.pt",
+            "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt",
+            "sha256": None,
+            "size_mb": 324,
+            "source": "Meta SAM 2.1 (Apache 2.0)",
+        },
+        "grounding_dino": {
+            "filename": "groundingdino_swint_ogc.pth",
+            "url": "https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth",
+            "sha256": None,
+            "size_mb": 694,
+            "source": "IDEA-Research GroundingDINO (Apache 2.0)",
+        },
     }
 
     @classmethod
