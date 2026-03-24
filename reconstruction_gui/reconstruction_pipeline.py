@@ -191,7 +191,11 @@ class MaskConfig:
         "selfie stick",
     ])
     keep_prompts: List[str] = field(default_factory=list)  # Objects to keep
-    
+
+    # Multi-pass SAM3 prompting — list of (prompt_text, confidence_threshold) tuples
+    # When non-empty, overrides remove_prompts and runs SAM3 once per tuple
+    multi_pass_prompts: List[tuple] = field(default_factory=list)
+
     # YOLO26 settings
     yolo_model_size: str = "n"  # n/s/m/l/x
     yolo_classes: List[int] = field(default_factory=lambda: [0, 24, 25, 26, 28])  # photographer preset
@@ -806,6 +810,43 @@ class SAM3Segmenter(BaseSegmenter):
 
         # Merge overlapping masks from same prompt
         return self._merge_similar_masks(results)
+
+    def _run_multi_pass(self, image, multi_pass_prompts, geometry=None):
+        """Run SAM3 once per (prompt, threshold) tuple, union all masks."""
+        if geometry is None:
+            geometry = ImageGeometry.PINHOLE
+
+        combined_mask = None
+        all_results = []
+
+        for prompt_text, threshold in multi_pass_prompts:
+            results = self.segment_image(
+                image,
+                prompts={'remove': [prompt_text]},
+                geometry=geometry
+            )
+            results = [r for r in results if r.confidence >= threshold]
+
+            for r in results:
+                if combined_mask is None:
+                    combined_mask = r.mask.copy()
+                else:
+                    combined_mask = np.maximum(combined_mask, r.mask)
+                all_results.append(r)
+
+        if combined_mask is not None:
+            max_conf = max(r.confidence for r in all_results)
+            return [MaskResult(
+                mask=combined_mask,
+                confidence=max_conf,
+                quality=self._evaluate_mask_quality(combined_mask, max_conf),
+                metadata={
+                    'class_name': 'multi_pass_fused',
+                    'passes': [(p, t) for p, t in multi_pass_prompts],
+                    'individual_results': len(all_results)
+                }
+            )]
+        return []
 
     def _merge_similar_masks(self, results: List[MaskResult]) -> List[MaskResult]:
         """Merge overlapping masks from the same prompt."""
@@ -1691,6 +1732,10 @@ class MaskingPipeline:
         geometry: ImageGeometry
     ) -> List[MaskResult]:
         """Segment image using single model or ensemble."""
+        if self.config.multi_pass_prompts and isinstance(self.segmenter, SAM3Segmenter):
+            return self.segmenter._run_multi_pass(
+                image, self.config.multi_pass_prompts, geometry
+            )
         if self.ensemble_segmenters:
             return self._ensemble_segment(image, prompts, geometry)
         return self.segmenter.segment_image(image, prompts, geometry)
