@@ -43,6 +43,12 @@ archive/
 # Skill files (Claude Code)
 *.skill
 
+# Superpowers plugin state
+.superpowers/
+
+# Temp files
+.tmp/
+
 # Environment
 .env
 *.env
