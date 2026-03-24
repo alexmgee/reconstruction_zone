@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
+from .extractor import MANIFEST_FILENAME
+
 # Hide console windows on Windows for subprocess calls
 _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
@@ -79,6 +81,7 @@ class SharpestExtractor:
         config: Optional[SharpestConfig] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        prefix_source: bool = True,
     ) -> SharpestResult:
         """Full pipeline: probe fps → blurdetect → parse → extract.
 
@@ -146,12 +149,18 @@ class SharpestExtractor:
                 return SharpestResult(success=False, error="Cancelled")
 
             # Step 4 — extract (85-100% of progress)
+            stem = video.stem + "_" if prefix_source else ""
             _progress(85, 100, f"Extracting {len(best_frames)} sharpest frames...")
             frame_paths = self._extract_frames(
                 str(video), best_frames, str(out), config,
+                stem=stem,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
             )
+
+            # Write extraction manifest for geotagging
+            start = config.start_sec or 0.0
+            self._write_manifest(out, frame_paths, video, config, best_frames, fps, start)
 
             return SharpestResult(
                 success=True,
@@ -405,19 +414,63 @@ class SharpestExtractor:
         except FileNotFoundError:
             return 0
 
+    @staticmethod
+    def _write_manifest(
+        output_dir: Path,
+        frame_paths: List[str],
+        video_path: Path,
+        config: SharpestConfig,
+        frame_numbers: List[int],
+        fps: float,
+        start_sec: float,
+    ):
+        """Write extraction manifest mapping frames to source video timestamps.
+
+        Uses exact frame numbers and FPS for precise timestamp computation,
+        unlike FrameExtractor which estimates from interval index.
+        """
+        manifest = {
+            "video": str(video_path.absolute()),
+            "video_stem": video_path.stem,
+            "extraction_mode": "sharpest",
+            "interval": config.interval,
+            "start_sec": start_sec,
+            "end_sec": config.end_sec,
+            "fps": fps,
+            "frames": [],
+        }
+
+        for i, path in enumerate(frame_paths):
+            filename = Path(path).name
+            # frame_numbers[i] is the source video frame index
+            frame_num = frame_numbers[i] if i < len(frame_numbers) else 0
+            time_sec = round(start_sec + frame_num / fps, 3)
+            manifest["frames"].append({
+                "filename": filename,
+                "index": i + 1,
+                "source_frame": frame_num,
+                "time_sec": time_sec,
+            })
+
+        manifest_path = output_dir / MANIFEST_FILENAME
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
+
     def _extract_frames(
         self,
         video_path: str,
         frame_numbers: List[int],
         output_dir: str,
         config: SharpestConfig,
+        stem: str = "",
         progress_callback: Optional[Callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> List[str]:
         """Extract only the selected frames."""
         out = Path(output_dir)
         ext = config.output_format
-        pattern = str(out / f"frame_%05d.{ext}")
+        pattern = str(out / f"{stem}%05d.{ext}")
         total_frames = len(frame_numbers)
 
         select_expr = "+".join(f"eq(n\\,{f})" for f in frame_numbers)
@@ -492,4 +545,4 @@ class SharpestExtractor:
                 filter_script_path.unlink()
 
         # Collect extracted files
-        return sorted(str(p) for p in out.glob(f"frame_*.{ext}"))
+        return sorted(str(p) for p in out.glob(f"{stem}*.{ext}"))

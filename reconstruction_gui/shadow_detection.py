@@ -42,6 +42,8 @@ class ShadowDetectorType(Enum):
     BRIGHTNESS_HEURISTIC = "brightness"
     CHROMATICITY_C1C2C3 = "c1c2c3"
     HYBRID_INTENSITY = "hybrid"
+    # Tier 1 — targeted (per-person search, no ML dependencies)
+    TARGETED_PERSON = "targeted_person"
     # Tier 1 — ML (PyTorch required, pretrained weights available)
     SDDNET = "sddnet"
     SILT = "silt"
@@ -401,6 +403,330 @@ class HybridIntensityChromaticityDetector(BaseShadowDetector):
             return np.zeros((h, w), dtype=np.uint8), 0.0
 
         return shadow_mask, 0.70
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tier 1 Targeted Detector
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TargetedPersonShadowDetector(BaseShadowDetector):
+    """Per-person targeted shadow search.
+
+    Instead of detecting ALL shadows globally and filtering, this detector
+    starts from each individual person detection and searches outward from
+    their feet for attached cast shadows. This inverts the usual approach:
+
+        Classical: detect everywhere → filter to near person  (misses weak shadows)
+        Targeted:  start at person → search outward            (finds weak shadows)
+
+    Works because constraining WHERE to look allows much more relaxed
+    thresholds. A 5-10% brightness drop that's invisible globally becomes
+    a strong signal when you know you're searching a shadow corridor
+    extending from a person's feet.
+
+    Pure NumPy/OpenCV. No model weights. Designed for outdoor fisheye/360
+    imagery with strong directional sunlight.
+    """
+
+    # Configurable parameters with sensible defaults for outdoor fisheye
+    DARKNESS_RATIO = 0.93       # Much more relaxed than classical 0.70
+    KERNEL_SCALE = 0.05         # Local mean kernel = 5% of image width
+    SEARCH_RADIUS_SCALE = 2.5   # Search corridor = 2.5x person height
+    MIN_SHADOW_FRACTION = 0.03  # Shadow must be >= 3% of person area
+    HUE_TOLERANCE = 20          # Degrees of hue stability
+    FOOT_BAND_FRACTION = 0.15   # Bottom 15% of person bbox = feet region
+
+    def initialize(self) -> None:
+        self._initialized = True
+
+    def detect(
+        self,
+        image: np.ndarray,
+        object_mask: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, float]:
+        """Fallback when individual masks aren't available.
+
+        Runs connected-component analysis on the combined object mask to
+        extract individual person regions, then searches each one.
+        """
+        h, w = image.shape[:2]
+        if object_mask is None or not np.any(object_mask):
+            return np.zeros((h, w), dtype=np.uint8), 0.0
+
+        # Split combined mask into individual components
+        obj_binary = (object_mask > 0).astype(np.uint8) * 255
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            obj_binary, connectivity=8
+        )
+
+        individual_masks = []
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < 500:  # Skip tiny fragments
+                continue
+            component = (labels == i).astype(np.uint8)
+            individual_masks.append(component)
+
+        if not individual_masks:
+            return np.zeros((h, w), dtype=np.uint8), 0.0
+
+        return self.detect_per_person(image, individual_masks, object_mask)
+
+    def detect_per_person(
+        self,
+        image: np.ndarray,
+        individual_masks: List[np.ndarray],
+        combined_mask: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, float]:
+        """Search for cast shadows attached to each person detection.
+
+        Args:
+            image: BGR image (H, W, 3) uint8
+            individual_masks: List of binary masks (H, W) uint8, one per person
+            combined_mask: Optional combined object mask for exclusion
+
+        Returns:
+            shadow_mask: Binary mask (H, W) uint8, 255 = shadow pixel
+            confidence: Float 0.0-1.0
+        """
+        h, w = image.shape[:2]
+
+        # Precompute image features once (shared across all persons)
+        # Use GRAYSCALE for intensity (not HSV V, which is max(R,G,B) and
+        # doesn't represent perceptual brightness on colored surfaces).
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float64)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float64)
+        H_chan = hsv[:, :, 0]
+        S = hsv[:, :, 1]
+
+        # Exclude fisheye black border from all searches
+        gray_u8 = gray.astype(np.uint8)
+        _, valid_roi = cv2.threshold(gray_u8, 10, 255, cv2.THRESH_BINARY)
+
+        # Build combined exclusion mask (don't search inside any person)
+        if combined_mask is not None:
+            exclusion = (combined_mask > 0).astype(np.uint8)
+        else:
+            exclusion = np.zeros((h, w), dtype=np.uint8)
+            for pm in individual_masks:
+                exclusion = np.maximum(exclusion, pm)
+
+        # ── Masked local mean: exclude objects from reference ──
+        # Standard cv2.blur includes person bodies and dark objects in the
+        # local mean, which drags it down and makes actual shadows appear
+        # BRIGHTER than the mean. Using a masked blur gives a clean "lit
+        # background surface" reference.
+        ksize = max(51, int(w * self.KERNEL_SCALE) | 1)  # Ensure odd
+        bg_valid = ((exclusion == 0) & (valid_roi > 0)).astype(np.float64)
+        gray_bg = gray * bg_valid
+        H_bg = H_chan * bg_valid
+        S_bg = S * bg_valid
+
+        gray_sum = cv2.blur(gray_bg, (ksize, ksize))
+        H_sum = cv2.blur(H_bg, (ksize, ksize))
+        S_sum = cv2.blur(S_bg, (ksize, ksize))
+        bg_count = cv2.blur(bg_valid, (ksize, ksize))
+
+        # Avoid division by zero in areas dominated by objects
+        safe_count = np.maximum(bg_count, 0.01)
+        local_mean_gray = gray_sum / safe_count
+        local_mean_H = H_sum / safe_count
+        local_mean_S = S_sum / safe_count
+
+        # Intensity ratio: grayscale vs background-only reference
+        ratio = gray / (local_mean_gray + 1e-6)
+
+        # Hue stability map (circular distance)
+        hue_diff = np.abs(H_chan - local_mean_H)
+        hue_diff = np.minimum(hue_diff, 180 - hue_diff)
+
+        # Use configurable darkness threshold
+        darkness_threshold = getattr(
+            self.config, 'targeted_darkness_ratio', self.DARKNESS_RATIO
+        )
+
+        # Shadow candidates: dark + hue-stable + within valid ROI
+        is_dark = ratio < darkness_threshold
+        hue_stable = hue_diff < self.HUE_TOLERANCE
+        candidates_bool = is_dark & hue_stable & (valid_roi > 0)
+
+        # Saturation check: shadows shouldn't spike saturation
+        sat_ratio = S / (local_mean_S + 1e-6)
+        candidates_bool &= (sat_ratio < 1.5)
+
+        candidates = candidates_bool.astype(np.uint8) * 255
+
+        # Light morphological cleanup on candidates
+        morph_k = np.ones((3, 3), np.uint8)
+        candidates = cv2.morphologyEx(candidates, cv2.MORPH_OPEN, morph_k)
+        candidates = cv2.morphologyEx(candidates, cv2.MORPH_CLOSE, morph_k)
+
+        # Search each person
+        all_shadows = np.zeros((h, w), dtype=np.uint8)
+        confidences = []
+
+        for person_mask in individual_masks:
+            shadow, conf = self._find_person_shadow(
+                person_mask, candidates, exclusion, h, w
+            )
+            if shadow is not None:
+                all_shadows = np.maximum(all_shadows, shadow)
+                confidences.append(conf)
+
+        if np.sum(all_shadows) == 0:
+            return np.zeros((h, w), dtype=np.uint8), 0.0
+
+        avg_conf = float(np.mean(confidences)) if confidences else 0.0
+        return all_shadows, avg_conf
+
+    def _find_person_shadow(
+        self,
+        person_mask: np.ndarray,
+        candidates: np.ndarray,
+        exclusion: np.ndarray,
+        h: int,
+        w: int,
+    ) -> Tuple[Optional[np.ndarray], float]:
+        """Search for a cast shadow attached to one person.
+
+        Strategy:
+        1. Find the person's feet (bottom edge of mask)
+        2. Create a search fan extending outward from feet
+        3. Find shadow candidates within the fan
+        4. Grow connected components from seeds touching the feet
+        """
+        person_ys, person_xs = np.where(person_mask > 0)
+        if len(person_ys) == 0:
+            return None, 0.0
+
+        # Person bounding box
+        y_min, y_max = int(person_ys.min()), int(person_ys.max())
+        x_min, x_max = int(person_xs.min()), int(person_xs.max())
+        person_height = y_max - y_min
+        person_width = x_max - x_min
+        person_area = int(np.sum(person_mask > 0))
+
+        if person_height < 20 or person_area < 200:
+            return None, 0.0  # Too small to reliably find shadow
+
+        # ── Step 1: Locate feet ──
+        # Feet = bottom portion of person mask
+        foot_band = max(10, int(person_height * self.FOOT_BAND_FRACTION))
+        foot_threshold_y = y_max - foot_band
+        foot_pixels_y = person_ys[person_ys >= foot_threshold_y]
+        foot_pixels_x = person_xs[person_ys >= foot_threshold_y]
+
+        if len(foot_pixels_y) == 0:
+            return None, 0.0
+
+        foot_center_x = int(np.median(foot_pixels_x))
+        foot_center_y = int(np.max(foot_pixels_y))
+
+        # ── Step 2: Create search fan ──
+        search_radius = int(person_height * self.SEARCH_RADIUS_SCALE)
+        search_mask = np.zeros((h, w), dtype=np.uint8)
+
+        # Wide fan: 240° arc centered below the person's feet
+        # In image space, shadows typically extend outward from feet
+        # Use ellipse for the fan shape — wider than tall to cover ground plane
+        cv2.ellipse(
+            search_mask,
+            (foot_center_x, foot_center_y),
+            (search_radius, search_radius),
+            0,        # rotation angle
+            -120,     # start angle (left of downward)
+            120,      # end angle (right of downward)
+            255,
+            -1,       # filled
+        )
+
+        # Also add a smaller upward fan for shadows cast behind (sun behind person)
+        upward_radius = int(search_radius * 0.6)
+        cv2.ellipse(
+            search_mask,
+            (foot_center_x, foot_center_y),
+            (upward_radius, upward_radius),
+            0,
+            -240,     # upward arc
+            -120,
+            255,
+            -1,
+        )
+
+        # Exclude all detected objects from search
+        search_mask[exclusion > 0] = 0
+
+        # ── Step 3: Shadow candidates in search region ──
+        search_candidates = cv2.bitwise_and(candidates, search_mask)
+
+        if np.sum(search_candidates) == 0:
+            return None, 0.0
+
+        # ── Step 4: Proximity-based seed finding ──
+        # The shadow may not start right at the person's feet — there can
+        # be a gap (e.g., person stands on grass, shadow falls on concrete
+        # beyond). Use proximity to the ENTIRE person mask, not just feet.
+        person_binary = person_mask * 255
+
+        # Stage A: tight proximity (0.15x person height) — high confidence
+        prox_tight = max(20, int(person_height * 0.15))
+        prox_kernel_t = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (prox_tight * 2 + 1, prox_tight * 2 + 1)
+        )
+        person_expanded_t = cv2.dilate(person_binary, prox_kernel_t)
+        person_expanded_t[exclusion > 0] = 0
+        seeds = cv2.bitwise_and(search_candidates, person_expanded_t)
+
+        if np.sum(seeds) == 0:
+            # Stage B: wider proximity (0.5x person height) — bridges gaps
+            prox_wide = max(50, int(person_height * 0.5))
+            prox_kernel_w = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (prox_wide * 2 + 1, prox_wide * 2 + 1)
+            )
+            person_expanded_w = cv2.dilate(person_binary, prox_kernel_w)
+            person_expanded_w[exclusion > 0] = 0
+            seeds = cv2.bitwise_and(search_candidates, person_expanded_w)
+            if np.sum(seeds) == 0:
+                return None, 0.0
+
+        # Grow: find all connected shadow components containing seeds
+        combined = cv2.bitwise_or(seeds, search_candidates)
+        num_labels, labels = cv2.connectedComponents(combined)
+        seed_labels = set(np.unique(labels[seeds > 0]))
+
+        shadow = np.zeros((h, w), dtype=np.uint8)
+        for label_id in seed_labels:
+            if label_id == 0:
+                continue
+            region = (labels == label_id).astype(np.uint8) * 255
+            shadow = np.maximum(
+                shadow, cv2.bitwise_and(region, search_candidates)
+            )
+
+        # ── Step 5: Validate ──
+        shadow_area = int(np.sum(shadow > 0))
+        min_area = max(
+            self.config.min_shadow_area,
+            int(person_area * self.MIN_SHADOW_FRACTION),
+        )
+
+        if shadow_area < min_area:
+            return None, 0.0
+
+        # Confidence based on shadow-to-person ratio and area
+        # Reasonable shadows are 0.2-3x person area
+        ratio = shadow_area / max(person_area, 1)
+        if ratio > 5.0:
+            # Suspiciously large — probably grabbing non-shadow dark areas
+            return None, 0.0
+        elif ratio > 3.0:
+            conf = 0.5
+        elif ratio > 0.1:
+            conf = 0.8
+        else:
+            conf = 0.6
+
+        return shadow, conf
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -902,6 +1228,7 @@ _DETECTOR_MAP: Dict[ShadowDetectorType, type] = {
     ShadowDetectorType.BRIGHTNESS_HEURISTIC: BrightnessHeuristicDetector,
     ShadowDetectorType.CHROMATICITY_C1C2C3: ChromaticityC1C2C3Detector,
     ShadowDetectorType.HYBRID_INTENSITY: HybridIntensityChromaticityDetector,
+    ShadowDetectorType.TARGETED_PERSON: TargetedPersonShadowDetector,
     ShadowDetectorType.SDDNET: SDDNetDetector,
     ShadowDetectorType.SILT: SILTDetector,
     ShadowDetectorType.CAREAGA_INTRINSIC: CareagaIntrinsicDetector,
@@ -972,12 +1299,18 @@ class ShadowPipeline:
         self,
         image: np.ndarray,
         object_mask: Optional[np.ndarray] = None,
+        individual_masks: Optional[List[np.ndarray]] = None,
     ) -> Optional[Any]:
         """Run the full shadow detection pipeline.
 
         Args:
             image: BGR input image (H, W, 3) uint8
             object_mask: Binary mask (H, W) of detected objects
+            individual_masks: Optional list of per-person binary masks (H, W)
+                              uint8. Used by TargetedPersonShadowDetector for
+                              per-person shadow search. If None, the detector
+                              falls back to splitting the combined object_mask
+                              via connected components.
 
         Returns:
             MaskResult with shadow mask, or None if no shadows detected.
@@ -991,7 +1324,16 @@ class ShadowPipeline:
         h, w = image.shape[:2]
 
         # Stage 1: Primary detection
-        shadow_mask, confidence = self.primary.detect(image, object_mask)
+        # If the detector supports per-person search, use it
+        if (
+            individual_masks
+            and isinstance(self.primary, TargetedPersonShadowDetector)
+        ):
+            shadow_mask, confidence = self.primary.detect_per_person(
+                image, individual_masks, object_mask
+            )
+        else:
+            shadow_mask, confidence = self.primary.detect(image, object_mask)
         if shadow_mask is None or np.sum(shadow_mask) == 0:
             return None
 

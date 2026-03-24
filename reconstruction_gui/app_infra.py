@@ -105,14 +105,42 @@ class AppInfrastructure:
 
     # ── browse helpers ──
 
+    def _entry_initialdir(self, entry_widget) -> Optional[str]:
+        """Best-effort starting directory based on the current entry value."""
+        try:
+            raw = entry_widget.get().strip()
+        except Exception:
+            return None
+        if not raw:
+            return None
+
+        path = Path(raw)
+        if path.is_dir():
+            return str(path)
+        if path.is_file():
+            return str(path.parent)
+
+        for candidate in [path.parent, *path.parents]:
+            if candidate and candidate.exists() and candidate.is_dir():
+                return str(candidate)
+        return None
+
     def _browse_dir_into(self, entry_widget, title: str = "Select Folder"):
-        path = filedialog.askdirectory(title=title)
+        kwargs = {"title": title}
+        initialdir = self._entry_initialdir(entry_widget)
+        if initialdir:
+            kwargs["initialdir"] = initialdir
+        path = filedialog.askdirectory(**kwargs)
         if path:
             entry_widget.delete(0, "end")
             entry_widget.insert(0, path)
 
     def _browse_folder_for(self, entry, callback=None):
-        folder = filedialog.askdirectory(title="Select Folder")
+        kwargs = {"title": "Select Folder"}
+        initialdir = self._entry_initialdir(entry)
+        if initialdir:
+            kwargs["initialdir"] = initialdir
+        folder = filedialog.askdirectory(**kwargs)
         if folder:
             entry.delete(0, "end")
             entry.insert(0, folder)
@@ -120,13 +148,17 @@ class AppInfrastructure:
                 callback()
 
     def _browse_video_for(self, entry):
-        path = filedialog.askopenfilename(
-            title="Select Video",
-            filetypes=[
+        kwargs = {
+            "title": "Select Video",
+            "filetypes": [
                 ("Video Files", "*.mp4 *.mov *.avi *.mkv *.360 *.insv *.osv"),
                 ("All Files", "*.*"),
             ],
-        )
+        }
+        initialdir = self._entry_initialdir(entry)
+        if initialdir:
+            kwargs["initialdir"] = initialdir
+        path = filedialog.askopenfilename(**kwargs)
         if path:
             entry.delete(0, "end")
             entry.insert(0, path)
@@ -134,7 +166,11 @@ class AppInfrastructure:
     def _browse_file_for(self, entry, title="Select File", filetypes=None):
         if filetypes is None:
             filetypes = [("All Files", "*.*")]
-        path = filedialog.askopenfilename(title=title, filetypes=filetypes)
+        kwargs = {"title": title, "filetypes": filetypes}
+        initialdir = self._entry_initialdir(entry)
+        if initialdir:
+            kwargs["initialdir"] = initialdir
+        path = filedialog.askopenfilename(**kwargs)
         if path:
             entry.delete(0, "end")
             entry.insert(0, path)

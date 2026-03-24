@@ -203,6 +203,8 @@ class MaskConfig:
     handle_distortion: bool = True
     pole_mask_expand: float = 1.2  # Expansion factor for pole regions
     nadir_mask_percent: float = 0.0  # Auto-mask bottom N% of equirect (0=off, 5-15 typical)
+    fisheye_circle_mask: bool = True   # Auto-mask corners + periphery of fisheye images
+    fisheye_margin_percent: float = 0.0  # % of circle radius to trim inward (0=corners only)
     
     # Shadow detection
     detect_shadows: bool = False  # Run shadow detection after person masking
@@ -266,6 +268,7 @@ class MaskConfig:
     # Output settings
     save_confidence_maps: bool = False
     save_review_images: bool = True
+    save_reject_review_images: bool = False
     output_format: str = "png"  # png, jpg, npy
     
     def to_dict(self) -> Dict:
@@ -290,6 +293,8 @@ class MaskConfig:
             'handle_distortion': self.handle_distortion,
             'pole_mask_expand': self.pole_mask_expand,
             'nadir_mask_percent': self.nadir_mask_percent,
+            'fisheye_circle_mask': self.fisheye_circle_mask,
+            'fisheye_margin_percent': self.fisheye_margin_percent,
             'detect_shadows': self.detect_shadows,
             'shadow_config': self.shadow_config,
             'sam_refine': self.sam_refine,
@@ -323,6 +328,7 @@ class MaskConfig:
             'torch_compile': self.torch_compile,
             'save_confidence_maps': self.save_confidence_maps,
             'save_review_images': self.save_review_images,
+            'save_reject_review_images': self.save_reject_review_images,
             'output_format': self.output_format
         }
     
@@ -368,6 +374,10 @@ class MaskResult:
     def needs_review(self) -> bool:
         """Check if mask needs human review."""
         return self.quality in [MaskQuality.REVIEW, MaskQuality.POOR]
+
+    def should_save_review_image(self, include_rejects: bool = False) -> bool:
+        """Check whether this result should get a review overlay image."""
+        return self.needs_review or (include_rejects and self.quality == MaskQuality.REJECT)
     
     @property
     def is_valid(self) -> bool:
@@ -382,7 +392,20 @@ class BaseSegmenter(ABC):
         self.config = config
         self.device = config.device
         self.model = None
-    
+        self._fisheye_circle_cache: Optional[Tuple[Tuple[int, int, float], np.ndarray]] = None
+
+    def _get_fisheye_circle_mask(
+        self, width: int, height: int, margin_percent: float
+    ) -> np.ndarray:
+        """Return cached fisheye circle mask (0=valid, 1=masked)."""
+        key = (width, height, margin_percent)
+        if self._fisheye_circle_cache is not None and self._fisheye_circle_cache[0] == key:
+            return self._fisheye_circle_cache[1]
+        from prep360.core.fisheye_reframer import generate_fisheye_circle_mask
+        circle = generate_fisheye_circle_mask(width, height, margin_percent=margin_percent)
+        self._fisheye_circle_cache = (key, circle)
+        return circle
+
     @abstractmethod
     def initialize(self):
         """Initialize the model."""
@@ -505,6 +528,14 @@ class BaseSegmenter(ABC):
                 nadir_rows = int(mask.shape[0] * self.config.nadir_mask_percent / 100.0)
                 if nadir_rows > 0:
                     mask[-nadir_rows:] = 1
+
+            # Auto-mask fisheye corners + periphery
+            if self.config.fisheye_circle_mask and geometry == ImageGeometry.FISHEYE:
+                circle = self._get_fisheye_circle_mask(
+                    mask.shape[1], mask.shape[0],
+                    self.config.fisheye_margin_percent,
+                )
+                mask = np.maximum(mask, circle)
 
         # Clean up small artifacts
         mask = self._morphological_cleanup(mask)
@@ -1816,13 +1847,30 @@ class MaskingPipeline:
         results = self._segment(image, custom_prompts, geometry)
 
         if not results:
-            # No masks found
+            # No model masks found. Still run the final geometry-aware
+            # postprocess so automatic masks like fisheye circle/corner
+            # masking or equirect nadir masking are applied.
             empty_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+            geometry_mask = self.segmenter.postprocess_mask(
+                empty_mask, geometry, final=True
+            )
             if self.vos_propagator is not None:
-                self.vos_propagator.step(image, empty_mask)
+                self.vos_propagator.step(image, geometry_mask)
             self._frame_counter += 1
+
+            if np.any(geometry_mask):
+                return MaskResult(
+                    mask=geometry_mask,
+                    confidence=1.0,
+                    quality=MaskQuality.GOOD,
+                    metadata={
+                        'message': 'No model masks found; geometry-only mask applied',
+                        'geometry_only_mask': True,
+                    }
+                )
+
             return MaskResult(
-                mask=empty_mask,
+                mask=geometry_mask,
                 confidence=0.0,
                 quality=MaskQuality.REJECT,
                 metadata={'message': 'No masks found'}
@@ -1867,7 +1915,13 @@ class MaskingPipeline:
         # Shadow detection: extend person masks to include their shadows
         if self.config.detect_shadows and np.any(combined_mask.mask):
             if self.shadow_pipeline is not None:
-                shadow_result = self.shadow_pipeline.run(image, combined_mask.mask)
+                # Pass individual detection masks for per-person shadow search
+                individual_masks = [
+                    r.mask for r in results if r.is_valid and np.any(r.mask)
+                ] if results else None
+                shadow_result = self.shadow_pipeline.run(
+                    image, combined_mask.mask, individual_masks
+                )
                 if shadow_result is not None:
                     combined_mask.mask = np.maximum(
                         combined_mask.mask, shadow_result.mask
@@ -2247,7 +2301,9 @@ class MaskingPipeline:
         start_frame: int = 0,
         end_frame: Optional[int] = None,
         skip_frames: int = 0,
-        save_review: bool = True
+        save_review: bool = True,
+        mask_dir: Path = None,
+        review_dir: Path = None,
     ) -> Dict[str, Any]:
         """
         Process video file.
@@ -2260,6 +2316,8 @@ class MaskingPipeline:
             end_frame: Ending frame
             skip_frames: Frames to skip
             save_review: Save frames needing review
+            mask_dir: Override mask output directory (default: output_dir/masks)
+            review_dir: Override review output directory (default: output_dir/review)
         
         Returns:
             Processing statistics
@@ -2269,12 +2327,17 @@ class MaskingPipeline:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create subdirectories
-        mask_dir = output_dir / "masks"
+        # Create output structure — use overrides if provided, otherwise
+        # default to subdirs inside output_dir.
+        if mask_dir is None:
+            mask_dir = output_dir / "masks"
+        mask_dir = Path(mask_dir)
         mask_dir.mkdir(exist_ok=True)
-        
+
         if save_review:
-            review_dir = output_dir / "review"
+            if review_dir is None:
+                review_dir = output_dir / "review"
+            review_dir = Path(review_dir)
             review_dir.mkdir(exist_ok=True)
         
         # Open video
@@ -2328,7 +2391,7 @@ class MaskingPipeline:
                 cv2.imwrite(str(mask_path), (1 - result.mask) * 255)
             
             # Handle review
-            if result.needs_review and save_review:
+            if result.should_save_review_image(self.config.save_reject_review_images) and save_review:
                 review_path = review_dir / f"review_{frame_idx:06d}.jpg"
                 
                 # Create review image with mask overlay
@@ -2417,7 +2480,10 @@ class MaskingPipeline:
         pattern: str = "*.jpg",
         recursive: bool = False,
         result_callback=None,
-        skip_existing: bool = False
+        skip_existing: bool = False,
+        cancel_event=None,
+        mask_dir: Path = None,
+        review_dir: Path = None,
     ) -> Dict[str, Any]:
         """
         Process directory of images.
@@ -2430,6 +2496,8 @@ class MaskingPipeline:
             recursive: Process recursively
             result_callback: Optional callable(stem, result) called after each image
             skip_existing: Skip images that already have a mask file
+            mask_dir: Override mask output directory (default: output_dir/masks)
+            review_dir: Override review output directory (default: output_dir/review)
 
         Returns:
             Processing statistics
@@ -2456,13 +2524,21 @@ class MaskingPipeline:
         
         logger.info(f"Found {len(image_files)} images")
         
-        # Create output structure
-        mask_dir = output_dir / "masks"
-        mask_dir.mkdir(exist_ok=True)
-        
-        if self.config.save_review_images:
+        # Create output structure — use overrides if provided, otherwise
+        # default to subdirs inside output_dir
+        if mask_dir is None:
+            if output_dir.name.lower() == "masks":
+                mask_dir = output_dir
+            else:
+                mask_dir = output_dir / "masks"
+        mask_dir = Path(mask_dir)
+        mask_dir.mkdir(parents=True, exist_ok=True)
+
+        if review_dir is None:
             review_dir = output_dir / "review"
-            review_dir.mkdir(exist_ok=True)
+        review_dir = Path(review_dir)
+        if self.config.save_review_images:
+            review_dir.mkdir(parents=True, exist_ok=True)
         
         # Process images
         stats = {
@@ -2475,6 +2551,16 @@ class MaskingPipeline:
         
         skipped = 0
         for img_path in tqdm(image_files, desc="Processing images"):
+            # Reset temporal state — directory images are independent, not
+            # sequential video frames, so temporal smoothing must not bleed
+            # masks from one viewpoint into another.
+            self.reset_sequence()
+
+            # Check for cancellation
+            if cancel_event is not None and cancel_event.is_set():
+                logger.info("Processing stopped by user")
+                break
+
             # Skip if mask already exists
             if skip_existing:
                 mask_name = f"{img_path.stem}.{self.config.output_format}"
@@ -2524,7 +2610,7 @@ class MaskingPipeline:
                 cv2.imwrite(str(inpaint_dir / f"{img_path.stem}.jpg"), inpainted)
 
             # Handle review
-            if result.needs_review and self.config.save_review_images:
+            if result.should_save_review_image(self.config.save_reject_review_images) and self.config.save_review_images:
                 review_path = review_dir / f"review_{img_path.stem}.jpg"
                 review_img = self._create_review_image(image, result.mask)
                 cv2.imwrite(str(review_path), review_img)
