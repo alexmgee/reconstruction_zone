@@ -22,6 +22,66 @@ class QueueItemStatus(Enum):
 
 
 @dataclass
+class ExtractionSettings:
+    """Per-item extraction settings captured at queue time."""
+    mode: str = "fixed"          # fixed, scene, adaptive, sharpest
+    interval: float = 2.0
+    quality: int = 95
+    format: str = "jpg"
+    start_sec: Optional[float] = None
+    end_sec: Optional[float] = None
+    blur_filter: bool = False
+    blur_percentile: int = 80
+    sky_filter: bool = False
+    lut_enabled: bool = False
+    lut_path: str = ""
+    lut_strength: float = 1.0
+    shadow: int = 50
+    highlight: int = 50
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ExtractionSettings":
+        return cls(
+            mode=data.get("mode", "fixed"),
+            interval=data.get("interval", 2.0),
+            quality=data.get("quality", 95),
+            format=data.get("format", "jpg"),
+            start_sec=data.get("start_sec"),
+            end_sec=data.get("end_sec"),
+            blur_filter=data.get("blur_filter", False),
+            blur_percentile=data.get("blur_percentile", 80),
+            sky_filter=data.get("sky_filter", False),
+            lut_enabled=data.get("lut_enabled", False),
+            lut_path=data.get("lut_path", ""),
+            lut_strength=data.get("lut_strength", 1.0),
+            shadow=data.get("shadow", 50),
+            highlight=data.get("highlight", 50),
+        )
+
+    def summary(self) -> str:
+        """One-line summary for console logging."""
+        parts = [self.mode, f"{self.interval:.1f}s", self.format, f"q{self.quality}"]
+        if self.start_sec is not None or self.end_sec is not None:
+            s = self.start_sec or 0
+            e = f"{self.end_sec}" if self.end_sec else "end"
+            parts.append(f"{s}-{e}")
+        if self.mode == "sharpest":
+            parts.append(f"keep {self.blur_percentile}%")
+        elif self.blur_filter:
+            parts.append(f"blur≤{self.blur_percentile}%")
+        if self.sky_filter:
+            parts.append("sky")
+        if self.lut_enabled:
+            parts.append("LUT")
+        if self.shadow != 50 or self.highlight != 50:
+            parts.append(f"sh{self.shadow}/hl{self.highlight}")
+        return ", ".join(parts)
+
+
+@dataclass
 class QueueItem:
     """A single item in the processing queue."""
     id: str
@@ -33,9 +93,10 @@ class QueueItem:
     error_message: str = ""
     added_time: str = ""
     completed_time: str = ""
+    settings: Optional[ExtractionSettings] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "id": self.id,
             "video_path": self.video_path,
             "filename": self.filename,
@@ -46,9 +107,15 @@ class QueueItem:
             "added_time": self.added_time,
             "completed_time": self.completed_time,
         }
+        if self.settings:
+            d["settings"] = self.settings.to_dict()
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "QueueItem":
+        settings = None
+        if "settings" in data and isinstance(data["settings"], dict):
+            settings = ExtractionSettings.from_dict(data["settings"])
         return cls(
             id=data.get("id", str(uuid.uuid4())),
             video_path=data.get("video_path", ""),
@@ -59,10 +126,11 @@ class QueueItem:
             error_message=data.get("error_message", ""),
             added_time=data.get("added_time", ""),
             completed_time=data.get("completed_time", ""),
+            settings=settings,
         )
 
     @classmethod
-    def create(cls, video_path: str) -> "QueueItem":
+    def create(cls, video_path: str, settings: Optional[ExtractionSettings] = None) -> "QueueItem":
         """Create a new queue item from a video path."""
         path = Path(video_path)
         return cls(
@@ -72,37 +140,7 @@ class QueueItem:
             status="pending",
             progress=0,
             added_time=datetime.now().isoformat(),
-        )
-
-
-@dataclass
-class QueueSettings:
-    """Settings for the extraction queue."""
-    output_dir: str = ""
-    interval: float = 2.0
-    mode: str = "fixed"
-    quality: int = 95
-    format: str = "jpg"
-    shadow: int = 50
-    highlight: int = 50
-    start_time: str = ""
-    end_time: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "QueueSettings":
-        return cls(
-            output_dir=data.get("output_dir", ""),
-            interval=data.get("interval", 2.0),
-            mode=data.get("mode", "fixed"),
-            quality=data.get("quality", 95),
-            format=data.get("format", "jpg"),
-            shadow=data.get("shadow", 50),
-            highlight=data.get("highlight", 50),
-            start_time=data.get("start_time", ""),
-            end_time=data.get("end_time", ""),
+            settings=settings,
         )
 
 
@@ -111,7 +149,6 @@ class VideoQueue:
 
     def __init__(self, save_path: Optional[str] = None):
         self.items: List[QueueItem] = []
-        self.settings = QueueSettings()
         self.save_path = save_path or str(Path.home() / ".prep360_queue.json")
         self._load()
 
@@ -124,7 +161,6 @@ class VideoQueue:
                     data = json.load(f)
 
                 self.items = [QueueItem.from_dict(item) for item in data.get("items", [])]
-                self.settings = QueueSettings.from_dict(data.get("settings", {}))
 
                 # Reset any "processing" items to "pending" (app was closed during processing)
                 for item in self.items:
@@ -133,22 +169,20 @@ class VideoQueue:
                         item.progress = 0
         except Exception:
             self.items = []
-            self.settings = QueueSettings()
 
     def save(self):
         """Save queue state to disk."""
         try:
             data = {
                 "items": [item.to_dict() for item in self.items],
-                "settings": self.settings.to_dict(),
             }
             with open(self.save_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception:
             pass
 
-    def add_video(self, video_path: str) -> Optional[QueueItem]:
-        """Add a video to the queue."""
+    def add_video(self, video_path: str, settings: Optional[ExtractionSettings] = None) -> Optional[QueueItem]:
+        """Add a video to the queue with optional per-item settings."""
         path = Path(video_path)
         if not path.exists():
             return None
@@ -158,20 +192,20 @@ class VideoQueue:
             if item.video_path == str(path.absolute()):
                 return None
 
-        item = QueueItem.create(video_path)
+        item = QueueItem.create(video_path, settings=settings)
         self.items.append(item)
         self.save()
         return item
 
-    def add_videos(self, video_paths: List[str]) -> int:
+    def add_videos(self, video_paths: List[str], settings: Optional[ExtractionSettings] = None) -> int:
         """Add multiple videos to the queue. Returns count added."""
         count = 0
         for path in video_paths:
-            if self.add_video(path):
+            if self.add_video(path, settings=settings):
                 count += 1
         return count
 
-    def add_folder(self, folder_path: str, extensions: List[str] = None) -> int:
+    def add_folder(self, folder_path: str, extensions: List[str] = None, settings: Optional[ExtractionSettings] = None) -> int:
         """Add all videos from a folder. Returns count added."""
         if extensions is None:
             extensions = ['.mp4', '.mov', '.avi', '.mkv', '.360', '.insv']
@@ -185,7 +219,7 @@ class VideoQueue:
             videos.extend(folder.glob(f"*{ext}"))
             videos.extend(folder.glob(f"*{ext.upper()}"))
 
-        return self.add_videos([str(v) for v in sorted(videos)])
+        return self.add_videos([str(v) for v in sorted(videos)], settings=settings)
 
     def remove_item(self, item_id: str) -> bool:
         """Remove an item from the queue."""

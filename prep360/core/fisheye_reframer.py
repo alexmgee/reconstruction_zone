@@ -441,11 +441,17 @@ class FisheyeReframer:
         frame_name: str = "frame",
         front_mask: Optional[np.ndarray] = None,
         back_mask: Optional[np.ndarray] = None,
+        station_dirs: bool = False,
     ) -> List[str]:
         """Extract all views and save as JPEGs.
 
-        If masks are provided, saves reframed masks as PNGs
-        in a sibling 'masks/' directory.
+        If masks are provided, saves reframed masks as PNGs.
+
+        If station_dirs is True, writes to separate subdirectories:
+          output_dir/images/{frame_name}/ for crops
+          output_dir/masks/{frame_name}/  for masks
+        If station_dirs is False (flat mode):
+          output_dir/ for crops, output_dir/../masks/ for masks.
 
         Returns list of saved file paths.
         """
@@ -453,11 +459,22 @@ class FisheyeReframer:
         out_path.mkdir(parents=True, exist_ok=True)
         saved = []
 
-        # Set up mask output directory if masks provided
+        # Station mode: images in output_dir/images/{frame}/, masks in output_dir/masks/{frame}/
+        # Flat mode: crops in output_dir, masks in output_dir/../masks/
+        if station_dirs:
+            image_out_dir = out_path / "images" / frame_name
+            image_out_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            image_out_dir = out_path
+
         mask_dir = None
         if front_mask is not None or back_mask is not None:
-            mask_dir = out_path.parent / "masks"
-            mask_dir.mkdir(parents=True, exist_ok=True)
+            if station_dirs:
+                mask_dir = out_path / "masks" / frame_name
+                mask_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                mask_dir = out_path.parent / "masks"
+                mask_dir.mkdir(parents=True, exist_ok=True)
 
         results = self.extract_all_views(
             front_image, back_image, config,
@@ -465,7 +482,7 @@ class FisheyeReframer:
         )
         for view, crop, mask_crop in results:
             filename = f"{frame_name}_{view.name}.jpg"
-            filepath = out_path / filename
+            filepath = image_out_dir / filename
             cv2.imwrite(
                 str(filepath), crop,
                 [cv2.IMWRITE_JPEG_QUALITY, config.quality],
@@ -473,7 +490,10 @@ class FisheyeReframer:
             saved.append(str(filepath))
 
             if mask_crop is not None and mask_dir is not None:
-                mask_filename = f"{frame_name}_{view.name}.png"
+                if station_dirs:
+                    mask_filename = f"{frame_name}_{view.name}_mask.png"
+                else:
+                    mask_filename = f"{frame_name}_{view.name}.png"
                 cv2.imwrite(str(mask_dir / mask_filename), mask_crop)
 
         return saved
@@ -507,6 +527,7 @@ def _process_frame_pair(args):
         front_path, back_path,
         calib_dict, config_dict,
         output_dir, frame_name,
+        station_dirs,
     ) = args
 
     # Reconstruct objects in worker process
@@ -526,6 +547,7 @@ def _process_frame_pair(args):
 
     saved = reframer.extract_and_save(
         front, back, config, output_dir, frame_name,
+        station_dirs=station_dirs,
     )
     return saved, None
 
@@ -607,6 +629,51 @@ def _calib_to_dict(calib: DualFisheyeCalibration) -> dict:
     }
 
 
+def _write_fisheye_metadata(output_dir: Path, frame_names: List[str],
+                            config: FisheyeViewConfig):
+    """Write reframe_metadata.json for station-aware fisheye output."""
+    import math
+    fovs = sorted(set(v.fov_deg for v in config.views))
+    intrinsics = {}
+    for fov in fovs:
+        f = config.crop_size / (2.0 * math.tan(math.radians(fov / 2.0)))
+        cx = config.crop_size / 2.0
+        intrinsics[f"{fov}"] = {
+            "model": "PINHOLE", "width": config.crop_size,
+            "height": config.crop_size,
+            "fx": round(f, 4), "fy": round(f, 4), "cx": cx, "cy": cx,
+        }
+
+    stations = []
+    for name in frame_names:
+        view_files = [f"{name}_{v.name}.jpg" for v in config.views]
+        stations.append({
+            "source_frame": name,
+            "image_directory": f"images/{name}/",
+            "mask_directory": f"masks/{name}/",
+            "views": view_files,
+        })
+
+    metadata = {
+        "reframe_config": {
+            "output_size": config.crop_size,
+            "jpeg_quality": config.quality,
+            "views": [
+                {"name": v.name, "yaw": v.yaw_deg, "pitch": v.pitch_deg,
+                 "fov": v.fov_deg, "source_lens": v.source_lens}
+                for v in config.views
+            ],
+        },
+        "pinhole_intrinsics": intrinsics if len(fovs) > 1 else intrinsics[f"{fovs[0]}"],
+        "mask_template": "{filename}_mask.png",
+        "stations": stations,
+    }
+
+    meta_path = output_dir / "reframe_metadata.json"
+    with open(meta_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+
 def batch_extract(
     frame_pairs: List[Tuple[str, str]],
     config: FisheyeViewConfig,
@@ -615,6 +682,7 @@ def batch_extract(
     mask_dir: Optional[str] = None,
     num_workers: int = 1,
     progress_callback=None,
+    station_dirs: bool = False,
 ) -> Tuple[int, List[str]]:
     """Extract perspective views from multiple fisheye frame pairs.
 
@@ -627,6 +695,8 @@ def batch_extract(
         num_workers: Parallel workers (1 = sequential, recommended
                      since remap tables are large).
         progress_callback: Called with (current, total, message).
+        station_dirs: If True, write per-frame subdirectories for Metashape
+            stations, and emit reframe_metadata.json.
 
     Returns:
         (total_crops_saved, list_of_errors)
@@ -646,10 +716,12 @@ def batch_extract(
 
     total_saved = 0
     errors = []
+    frame_names = []
 
     if num_workers > 1:
         args_list = [
-            (front, back, calib_dict, config_dict, output_dir, f"frame_{i:05d}")
+            (front, back, calib_dict, config_dict, output_dir,
+             f"frame_{i:05d}", station_dirs)
             for i, (front, back) in enumerate(frame_pairs)
         ]
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
@@ -660,6 +732,7 @@ def batch_extract(
                     errors.append(error)
                 else:
                     total_saved += len(saved)
+                frame_names.append(f"frame_{i:05d}")
                 if progress_callback:
                     progress_callback(i + 1, len(frame_pairs), f"pair {i+1}")
     else:
@@ -687,14 +760,21 @@ def batch_extract(
                 if back_stem in mask_map:
                     back_mask = cv2.imread(mask_map[back_stem], cv2.IMREAD_GRAYSCALE)
 
+            frame_name = f"frame_{i:05d}"
             saved = reframer.extract_and_save(
-                front, back, config, output_dir, f"frame_{i:05d}",
+                front, back, config, output_dir, frame_name,
                 front_mask=front_mask, back_mask=back_mask,
+                station_dirs=station_dirs,
             )
             total_saved += len(saved)
+            frame_names.append(frame_name)
 
             if progress_callback:
                 progress_callback(i + 1, len(frame_pairs), f"pair {i+1}")
+
+    # Write station metadata
+    if station_dirs and len(errors) == 0:
+        _write_fisheye_metadata(Path(output_dir), frame_names, config)
 
     return total_saved, errors
 
@@ -861,6 +941,73 @@ def main():
     except Exception as e:
         print(f"Error: {e}")
         return 1
+
+
+# --- Fisheye circle mask generation ---
+
+def generate_fisheye_circle_mask(
+    width: int,
+    height: int,
+    fov_degrees: float = 190.0,
+    margin_percent: float = 0.0,
+) -> np.ndarray:
+    """Generate a validity mask for a fisheye image.
+
+    Creates a binary mask (0=valid, 1=masked) that blocks:
+    1. Black corners outside the inscribed image circle
+    2. Optionally the outermost ``margin_percent`` of the circle radius
+
+    For a typical dual-fisheye sensor (3840x3840, ~190° FOV), the
+    image circle fills edge-to-edge.  The mask radius is::
+
+        r_mask = min(width, height) / 2 * (1 - margin_percent / 100)
+
+    Args:
+        width:  Image width in pixels.
+        height: Image height in pixels.
+        fov_degrees: Lens FOV (informational — the image circle is
+            assumed to be inscribed in the shorter dimension).
+        margin_percent: Percentage of circle radius to trim from the
+            outer edge.  0 = only black corners.  5 = conservative
+            trim of worst distortion.  10 = aggressive.
+
+    Returns:
+        uint8 mask, shape (height, width).  1 = masked, 0 = valid.
+    """
+    mask = np.ones((height, width), dtype=np.uint8)
+
+    cx, cy = width / 2.0, height / 2.0
+    # Image circle inscribed in the shorter dimension
+    r_full = min(width, height) / 2.0
+    r_valid = r_full * (1.0 - margin_percent / 100.0)
+
+    # Draw filled white circle (valid=0) on the black (masked=1) canvas
+    cv2.circle(mask, (int(cx), int(cy)), int(r_valid), 0, thickness=-1)
+
+    return mask
+
+
+def save_fisheye_circle_mask(
+    output_path: Union[str, Path],
+    width: int,
+    height: int,
+    fov_degrees: float = 190.0,
+    margin_percent: float = 0.0,
+) -> Path:
+    """Generate and save a fisheye circle mask to disk.
+
+    Saves as a single-channel PNG (0=valid, 255=masked) suitable for
+    import into Metashape and other SfM tools.
+
+    Returns the path written.
+    """
+    mask_01 = generate_fisheye_circle_mask(width, height, fov_degrees, margin_percent)
+    # SfM tools expect 0/255, not 0/1
+    mask_255 = mask_01 * 255
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out), mask_255)
+    return out
 
 
 if __name__ == "__main__":

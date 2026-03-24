@@ -30,6 +30,11 @@ from .fisheye_reframer import (
 )
 from .bridge_extractor import BridgeExtractor, BridgeRequest, BridgeResult, BridgeFrameInfo
 from .sharpest_extractor import SharpestExtractor, SharpestConfig, SharpestResult
+from .paired_split_video_extractor import (
+    PairedSplitVideoExtractor,
+    PairedSplitConfig,
+    PairedSplitResult,
+)
 
 __all__ = [
     "VideoAnalyzer",
@@ -82,4 +87,7 @@ __all__ = [
     "SharpestExtractor",
     "SharpestConfig",
     "SharpestResult",
+    "PairedSplitVideoExtractor",
+    "PairedSplitConfig",
+    "PairedSplitResult",
 ]

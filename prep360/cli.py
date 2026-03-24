@@ -78,14 +78,61 @@ def cmd_extract(args):
         args.output,
         config,
         progress_callback=progress,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        prefix_source=not args.no_prefix,
     )
 
+    if not result.success:
+        print(f"Error: {result.error}", file=sys.stderr)
+        return 1
+
+    print(f"Extracted {result.frame_count} frames to {result.output_dir}")
+
+    # Auto-geotag if SRT available
+    if not args.dry_run:
+        from .core.srt_parser import find_srt_for_video
+        srt_path = args.srt or find_srt_for_video(args.video)
+        if srt_path:
+            print(f"\nSRT found: {Path(srt_path).name}")
+            from .core.geotagger import geotag_from_manifest
+            geo = geotag_from_manifest(args.output, srt_path, progress)
+            if geo.success:
+                print(f"Geotagged {geo.tagged_count}/{geo.total_frames} frames")
+            else:
+                for err in geo.errors:
+                    print(f"Geotag warning: {err}", file=sys.stderr)
+
+    return 0
+
+
+def cmd_geotag(args):
+    """Geotag extracted frames using SRT telemetry."""
+    from .core.geotagger import geotag_from_manifest, geotag_from_interval, MANIFEST_FILENAME
+
+    def progress(curr, total, msg):
+        print(f"[{curr}/{total}] {msg}")
+
+    manifest_exists = (Path(args.frames) / MANIFEST_FILENAME).exists()
+
+    if manifest_exists:
+        result = geotag_from_manifest(args.frames, args.srt, progress)
+    elif args.interval:
+        result = geotag_from_interval(
+            args.frames, args.srt, args.interval, args.start or 0.0, progress
+        )
+    else:
+        print("No extraction manifest found. Use --interval to specify extraction interval.",
+              file=sys.stderr)
+        return 1
+
     if result.success:
-        print(f"Extracted {result.frame_count} frames to {result.output_dir}")
+        print(f"Geotagged {result.tagged_count}/{result.total_frames} frames")
+        if result.skipped_count:
+            print(f"Skipped {result.skipped_count} (no GPS data)")
         return 0
     else:
-        print(f"Error: {result.error}", file=sys.stderr)
+        for err in result.errors:
+            print(f"Error: {err}", file=sys.stderr)
         return 1
 
 
@@ -121,11 +168,13 @@ def cmd_reframe(args):
         args.input,
         args.output,
         num_workers=args.workers,
-        progress_callback=progress
+        progress_callback=progress,
+        station_dirs=args.stations,
     )
 
     if result.success:
-        print(f"Reframed {result.input_count} images -> {result.output_count} views")
+        mode = "station dirs" if args.stations else "flat"
+        print(f"Reframed {result.input_count} images -> {result.output_count} views ({mode})")
         return 0
     else:
         print(f"Errors: {len(result.errors)}", file=sys.stderr)
@@ -596,6 +645,9 @@ def main():
     p.add_argument("--format", "-f", choices=["jpg", "png"], default="jpg")
     p.add_argument("--scene-threshold", type=float, default=0.3)
     p.add_argument("--dry-run", "-n", action="store_true")
+    p.add_argument("--srt", help="DJI SRT telemetry file (auto-detected if omitted)")
+    p.add_argument("--no-prefix", action="store_true",
+                   help="Don't prefix filenames with video stem")
 
     # reframe
     p = subparsers.add_parser("reframe", help="Reframe equirectangular images")
@@ -607,6 +659,8 @@ def main():
     p.add_argument("--workers", "-w", type=int, default=4, help="Parallel workers")
     p.add_argument("--info", action="store_true", help="Show preset info")
     p.add_argument("--list-presets", action="store_true", help="List presets")
+    p.add_argument("--stations", action="store_true",
+                   help="Station-aware output: per-source subdirectories for Metashape")
 
     # lut
     p = subparsers.add_parser("lut", help="Apply LUT color correction")
@@ -705,6 +759,14 @@ def main():
     p.add_argument("--info", action="store_true",
                    help="Parse XML and show project info only")
 
+    # geotag
+    p = subparsers.add_parser("geotag", help="Geotag frames using DJI SRT telemetry")
+    p.add_argument("frames", help="Directory containing extracted frames")
+    p.add_argument("--srt", required=True, help="DJI SRT telemetry file")
+    p.add_argument("--interval", type=float,
+                   help="Extraction interval (only needed if no manifest exists)")
+    p.add_argument("--start", type=float, help="Start time offset (with --interval)")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -723,6 +785,7 @@ def main():
         "pipeline": cmd_pipeline,
         "segment": cmd_segment,
         "colmap": cmd_colmap,
+        "geotag": cmd_geotag,
     }
 
     return commands[args.command](args)

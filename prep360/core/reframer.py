@@ -5,6 +5,7 @@ Convert equirectangular images to multiple pinhole perspective views
 using a ring-based configuration system.
 """
 
+import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -297,6 +298,7 @@ def _process_single_image(args):
         config,
         frame_idx,
         mask_path,
+        station_dirs,
     ) = args
 
     # Load image
@@ -317,11 +319,22 @@ def _process_single_image(args):
     output_dir = Path(output_dir)
     output_files = []
 
-    # Mask output directory (sibling of image output dir)
+    # Station mode: images in output_dir/images/{stem}/, masks in output_dir/masks/{stem}/
+    # Flat mode: crops in output_dir, masks in output_dir/../masks/
+    if station_dirs:
+        image_out_dir = output_dir / "images" / stem
+        image_out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        image_out_dir = output_dir
+
     mask_dir = None
     if mask is not None:
-        mask_dir = output_dir.parent / "masks"
-        mask_dir.mkdir(parents=True, exist_ok=True)
+        if station_dirs:
+            mask_dir = output_dir / "masks" / stem
+            mask_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            mask_dir = output_dir.parent / "masks"
+            mask_dir.mkdir(parents=True, exist_ok=True)
 
     # Process all views
     views = config.get_all_views()
@@ -336,7 +349,7 @@ def _process_single_image(args):
 
         # Output filename
         out_name = f"{stem}_{view_name}.jpg"
-        out_path = output_dir / out_name
+        out_path = image_out_dir / out_name
 
         # Save with quality setting
         cv2.imwrite(
@@ -357,10 +370,61 @@ def _process_single_image(args):
                 mode="nearest"
             )
             mask_persp = (mask_persp > 0).astype(np.uint8) * 255
-            mask_out = f"{stem}_{view_name}.png"
+            if station_dirs:
+                mask_out = f"{stem}_{view_name}_mask.png"
+            else:
+                mask_out = f"{stem}_{view_name}.png"
             cv2.imwrite(str(mask_dir / mask_out), mask_persp)
 
     return output_files, None
+
+
+def compute_pinhole_intrinsics(fov_deg: float, crop_size: int) -> dict:
+    """Compute pinhole camera intrinsics from FOV and output size."""
+    f = crop_size / (2.0 * math.tan(math.radians(fov_deg / 2.0)))
+    cx = crop_size / 2.0
+    cy = crop_size / 2.0
+    return {"model": "PINHOLE", "width": crop_size, "height": crop_size,
+            "fx": round(f, 4), "fy": round(f, 4), "cx": cx, "cy": cy}
+
+
+def _write_reframe_metadata(output_dir: Path, images: list, config: "ViewConfig"):
+    """Write reframe_metadata.json for station-aware output."""
+    views = config.get_all_views()
+
+    # Collect unique FOVs — most configs use one, but mixed-FOV is possible
+    fovs = sorted(set(fov for _, _, fov, _ in views))
+    intrinsics = {f"{fov}": compute_pinhole_intrinsics(fov, config.output_size)
+                  for fov in fovs}
+
+    stations = []
+    for img in images:
+        stem = img.stem
+        view_files = [f"{stem}_{name}.jpg" for _, _, _, name in views]
+        stations.append({
+            "source_image": img.name,
+            "image_directory": f"images/{stem}/",
+            "mask_directory": f"masks/{stem}/",
+            "views": view_files,
+        })
+
+    metadata = {
+        "reframe_config": {
+            "output_size": config.output_size,
+            "jpeg_quality": config.jpeg_quality,
+            "views": [
+                {"name": name, "yaw": yaw, "pitch": pitch, "fov": fov}
+                for yaw, pitch, fov, name in views
+            ],
+        },
+        "pinhole_intrinsics": intrinsics if len(fovs) > 1 else intrinsics[f"{fovs[0]}"],
+        "mask_template": "{filename}_mask.png",
+        "stations": stations,
+    }
+
+    meta_path = output_dir / "reframe_metadata.json"
+    with open(meta_path, "w") as f:
+        json.dump(metadata, f, indent=2)
 
 
 @dataclass
@@ -384,6 +448,7 @@ class Reframer:
         image_path: str,
         output_dir: str,
         mask_path: Optional[str] = None,
+        station_dirs: bool = False,
     ) -> Tuple[List[str], Optional[str]]:
         """
         Reframe a single equirectangular image.
@@ -391,7 +456,7 @@ class Reframer:
         Returns:
             (list of output filenames, error message or None)
         """
-        args = (image_path, output_dir, self.config, 0, mask_path)
+        args = (image_path, output_dir, self.config, 0, mask_path, station_dirs)
         return _process_single_image(args)
 
     def reframe_batch(
@@ -401,6 +466,7 @@ class Reframer:
         mask_dir: Optional[str] = None,
         num_workers: int = 4,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        station_dirs: bool = False,
     ) -> ReframeResult:
         """
         Reframe all equirectangular images in a directory.
@@ -411,6 +477,8 @@ class Reframer:
             mask_dir: Optional directory containing masks (matched by stem name)
             num_workers: Number of parallel workers
             progress_callback: Called with (current, total, message)
+            station_dirs: If True, write per-source subdirectories for Metashape
+                stations, and emit reframe_metadata.json
 
         Returns:
             ReframeResult with operation details
@@ -450,7 +518,8 @@ class Reframer:
         # Prepare arguments for parallel processing
         args_list = [
             (str(img), str(output_path), self.config, i,
-             mask_map.get(img.stem) if mask_dir else None)
+             mask_map.get(img.stem) if mask_dir else None,
+             station_dirs)
             for i, img in enumerate(images)
         ]
 
@@ -478,6 +547,10 @@ class Reframer:
 
                 if progress_callback:
                     progress_callback(i + 1, len(images), images[i].name)
+
+        # Write station metadata JSON
+        if station_dirs and len(errors) == 0:
+            _write_reframe_metadata(output_path, images, self.config)
 
         return ReframeResult(
             success=len(errors) == 0,
