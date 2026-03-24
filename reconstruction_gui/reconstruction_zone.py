@@ -1429,6 +1429,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 'chromaticity_threshold': float(self.shadow_chroma_var.get()),
                 'device': device,
             }
+            # Auto-derive Grounding DINO prompt for OpSeg from remove prompts
+            if det == "opseg" and remove_prompts:
+                shadow_config['grounding_dino_prompt'] = " . ".join(remove_prompts)
 
         sam_refine_config = None
         sam_refine_enabled = self.sam_refine_var.get()

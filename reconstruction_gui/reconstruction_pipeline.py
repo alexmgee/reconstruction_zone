@@ -1478,6 +1478,32 @@ class MaskingPipeline:
                 from shadow_detection import ShadowPipeline, ShadowConfig
                 shadow_cfg = ShadowConfig.from_dict(self.config.shadow_config)
                 shadow_cfg.device = self.config.device
+
+                # Auto-derive Grounding DINO prompt from remove_prompts (for OpSeg)
+                if (
+                    shadow_cfg.primary_detector.value == "opseg"
+                    and shadow_cfg.grounding_dino_prompt is None
+                    and self.config.remove_prompts
+                ):
+                    shadow_cfg.grounding_dino_prompt = " . ".join(
+                        self.config.remove_prompts
+                    )
+
+                # Log download warning for OpSeg first-use
+                if shadow_cfg.primary_detector.value == "opseg":
+                    from shadow_detection import ShadowWeightManager
+                    wdir = ShadowWeightManager.weights_dir()
+                    needed = []
+                    for key in ("opseg_sam2", "sam2.1_base_plus", "grounding_dino"):
+                        info = ShadowWeightManager.REGISTRY.get(key, {})
+                        if not (wdir / info.get("filename", "")).exists():
+                            needed.append(f"{key} (~{info.get('size_mb', '?')} MB)")
+                    if needed:
+                        logger.info(
+                            f"OpSeg: downloading {len(needed)} weight file(s) "
+                            f"(first use only): {', '.join(needed)}"
+                        )
+
                 self.shadow_pipeline = ShadowPipeline(shadow_cfg)
                 self.shadow_pipeline.initialize()
                 logger.info(f"Shadow pipeline: {shadow_cfg.primary_detector.value}")
