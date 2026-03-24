@@ -47,17 +47,7 @@ class ShadowDetectorType(Enum):
     # Tier 1 — ML (PyTorch required, pretrained weights available)
     SDDNET = "sddnet"
     SILT = "silt"
-    # Tier 2 — near-term (additional dependencies)
-    SHADOW_ADAPTER = "shadow_adapter"
-    FDRNET = "fdrnet"
     CAREAGA_INTRINSIC = "careaga"
-    SHADOWFORMER = "shadowformer"
-    RASM = "rasm"
-    # Tier 3 — future
-    FAST_INST_SHADOW = "fast_inst"
-    TICA = "tica"
-    SOFT_SHADOW = "soft_shadow"
-    META_SHADOW = "meta_shadow"
 
 
 class ShadowSpatialMode(Enum):
@@ -1232,7 +1222,6 @@ _DETECTOR_MAP: Dict[ShadowDetectorType, type] = {
     ShadowDetectorType.SDDNET: SDDNetDetector,
     ShadowDetectorType.SILT: SILTDetector,
     ShadowDetectorType.CAREAGA_INTRINSIC: CareagaIntrinsicDetector,
-    # Tier 2/3 added here as implemented
 }
 
 
