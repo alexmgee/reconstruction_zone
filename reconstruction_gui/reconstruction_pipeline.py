@@ -46,6 +46,12 @@ else:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Distribution gate — Gumroad builds exclude certain models
+try:
+    from prep360.distribution import is_gumroad as _is_gumroad
+except ImportError:
+    def _is_gumroad(): return False
+
 # Try importing segmentation models in order of preference
 try:
     # SAM3 - Primary model (November 2025, Meta)
@@ -59,6 +65,8 @@ except ImportError:
 
 try:
     # FastSAM - Fast fallback
+    if _is_gumroad():
+        raise ImportError("FastSAM excluded from Gumroad build")
     from ultralytics import FastSAM
     HAS_FASTSAM = True
 except ImportError:
@@ -81,6 +89,8 @@ except ImportError:
 
 try:
     # YOLO26 - Production recommendation for class-based detection
+    if _is_gumroad():
+        raise ImportError("YOLO excluded from Gumroad build")
     from ultralytics import YOLO
     HAS_YOLO = True
 except ImportError:
