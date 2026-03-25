@@ -48,8 +48,6 @@ class ShadowDetectorType(Enum):
     SDDNET = "sddnet"
     SILT = "silt"
     CAREAGA_INTRINSIC = "careaga"
-    # Tier 2 — Instance shadow detection (SAM 2.1 + Grounding DINO)
-    OPSEG_INSTANCE = "opseg"
 
 
 class ShadowSpatialMode(Enum):
@@ -98,7 +96,7 @@ class ShadowConfig:
     """Configuration for the shadow detection pipeline."""
 
     # Which detectors to run
-    primary_detector: ShadowDetectorType = ShadowDetectorType.OPSEG_INSTANCE
+    primary_detector: ShadowDetectorType = ShadowDetectorType.BRIGHTNESS_HEURISTIC
     verification_detector: Optional[ShadowDetectorType] = None
 
     # Spatial filtering
@@ -119,9 +117,6 @@ class ShadowConfig:
     device: str = "cpu"                     # Inherited from MaskConfig at runtime
     weights_dir: Optional[str] = None       # Default: ~/.prep360_shadow_weights/
 
-    # OpSeg-specific
-    grounding_dino_prompt: Optional[str] = None  # Auto-derived from remove prompts if None
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             'primary_detector': self.primary_detector.value,
@@ -139,7 +134,6 @@ class ShadowConfig:
             'model_checkpoint': self.model_checkpoint,
             'device': self.device,
             'weights_dir': self.weights_dir,
-            'grounding_dino_prompt': self.grounding_dino_prompt,
         }
 
     @classmethod
@@ -1066,260 +1060,6 @@ class CareagaIntrinsicDetector(BaseShadowDetector):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# OpSeg Instance Shadow Detection (SAM 2.1 + Grounding DINO)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class OpSegDetector(BaseShadowDetector):
-    """Instance shadow detection via OpSeg (IJCNN 2025).
-
-    Fine-tuned SAM 2.1 base+ on the SOBA dataset for shadow detection.
-    Uses Grounding DINO for automatic object detection -> prompt generation.
-    Hungarian algorithm matches detected objects to their shadows.
-
-    Returns a merged binary shadow mask containing only shadows cast by
-    objects that overlap the input object_mask (instance pairing filter).
-    """
-
-    # IoU threshold for matching OpSeg-detected objects to pipeline object_mask
-    OBJECT_IOU_THRESHOLD = 0.15
-
-    # Default Grounding DINO prompt when no remove prompts are available
-    DEFAULT_GDINO_PROMPT = "person . car . vehicle . animal . object"
-
-    # Grounding DINO detection thresholds
-    GDINO_BOX_THRESHOLD = 0.3
-    GDINO_TEXT_THRESHOLD = 0.25
-
-    def __init__(self, config: ShadowConfig):
-        super().__init__(config)
-        self.sam2_predictor = None
-        self.gdino_model = None
-        self._gdino_config_path = None
-
-    @property
-    def requires_gpu(self) -> bool:
-        return True
-
-    def initialize(self) -> None:
-        """Load SAM 2.1 with OpSeg weights and Grounding DINO."""
-        import torch
-
-        # --- Grounding DINO ---
-        try:
-            from groundingdino.util.inference import load_model
-        except ImportError:
-            raise ImportError(
-                "groundingdino not installed. Install with: pip install groundingdino-py"
-            )
-
-        gdino_weights = ShadowWeightManager.ensure_weights(
-            "grounding_dino",
-            ShadowWeightManager.REGISTRY["grounding_dino"]["filename"],
-        )
-
-        # GroundingDINO config file — shipped inside the groundingdino package
-        import groundingdino
-        gdino_pkg = Path(groundingdino.__file__).parent
-        self._gdino_config_path = str(
-            gdino_pkg / "config" / "GroundingDINO_SwinT_OGC.py"
-        )
-
-        self.gdino_model = load_model(
-            self._gdino_config_path, str(gdino_weights)
-        )
-        logger.info(f"Grounding DINO loaded from {gdino_weights.name}")
-
-        # --- SAM 2.1 with OpSeg fine-tuned weights ---
-        try:
-            from sam2.build_sam import build_sam2
-            from sam2.sam2_image_predictor import SAM2ImagePredictor
-        except ImportError:
-            raise ImportError(
-                "segment-anything-2 not installed. Install with: pip install segment-anything-2"
-            )
-
-        # Download base checkpoint + OpSeg fine-tuned weights
-        base_weights = ShadowWeightManager.ensure_weights(
-            "sam2.1_base_plus",
-            ShadowWeightManager.REGISTRY["sam2.1_base_plus"]["filename"],
-        )
-        opseg_weights = ShadowWeightManager.ensure_weights(
-            "opseg_sam2",
-            ShadowWeightManager.REGISTRY["opseg_sam2"]["filename"],
-        )
-
-        # Build SAM 2.1 base+ model, then load OpSeg fine-tuned weights on top
-        device = self.device if torch.cuda.is_available() else "cpu"
-
-        # SAM 2.1 config — build_sam2() uses Hydra config resolution.
-        # The config name must match what sam2 package registers.
-        # VERIFY AT IMPLEMENTATION TIME: run `python -c "from sam2.build_sam import build_sam2; help(build_sam2)"`
-        # and check sam2 package's configs/ directory for the exact config name.
-        # Common names: "sam2.1_hiera_b+.yaml" or "configs/sam2.1/sam2.1_hiera_b+.yaml"
-        sam2_config = "sam2.1_hiera_b+.yaml"
-
-        sam2_model = build_sam2(
-            sam2_config,
-            str(base_weights),
-            device=device,
-        )
-
-        # Load OpSeg fine-tuned weights on top of base
-        opseg_state = torch.load(str(opseg_weights), map_location=device, weights_only=True)
-        sam2_model.load_state_dict(opseg_state, strict=False)
-        logger.info(f"OpSeg weights loaded from {opseg_weights.name}")
-
-        self.sam2_predictor = SAM2ImagePredictor(sam2_model)
-        self._initialized = True
-        logger.info("OpSeg detector initialized (SAM 2.1 + Grounding DINO)")
-
-    def detect(
-        self,
-        image: np.ndarray,
-        object_mask: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, float]:
-        """Detect instance shadows and merge those matching the object mask.
-
-        Args:
-            image: BGR image (H, W, 3) uint8
-            object_mask: Binary mask (H, W) uint8 of objects from main pipeline.
-                         If None, all detected shadows are merged (standalone mode).
-
-        Returns:
-            (shadow_mask, confidence) — binary mask (H, W) uint8 0/1, mean confidence.
-        """
-        if not self._initialized:
-            raise RuntimeError("OpSegDetector not initialized. Call initialize() first.")
-
-        import torch
-        from groundingdino.util.inference import predict as gdino_predict
-
-        h, w = image.shape[:2]
-
-        # 1. Build Grounding DINO prompt
-        prompt = self.config.grounding_dino_prompt or self.DEFAULT_GDINO_PROMPT
-        logger.debug(f"OpSeg Grounding DINO prompt: '{prompt}'")
-
-        # 2. Run Grounding DINO — expects RGB PIL or tensor
-        # Convert BGR numpy to RGB for GDINO
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        # Grounding DINO needs a normalized tensor image
-        from torchvision import transforms as T
-        transform = T.Compose([
-            T.ToPILImage(),
-            T.Resize((800,), max_size=1333),
-            T.ToTensor(),
-            T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
-        image_tensor = transform(image_rgb)
-
-        boxes, logits, phrases = gdino_predict(
-            model=self.gdino_model,
-            image=image_tensor,
-            caption=prompt,
-            box_threshold=self.GDINO_BOX_THRESHOLD,
-            text_threshold=self.GDINO_TEXT_THRESHOLD,
-        )
-
-        if len(boxes) == 0:
-            logger.info("OpSeg: Grounding DINO found no objects")
-            return np.zeros((h, w), dtype=np.uint8), 0.0
-
-        logger.info(f"OpSeg: Grounding DINO found {len(boxes)} object(s): {phrases}")
-
-        # Convert normalized boxes (cx, cy, w, h) to pixel xyxy
-        boxes_pixel = boxes.clone()
-        boxes_pixel[:, 0] = (boxes[:, 0] - boxes[:, 2] / 2) * w  # x1
-        boxes_pixel[:, 1] = (boxes[:, 1] - boxes[:, 3] / 2) * h  # y1
-        boxes_pixel[:, 2] = (boxes[:, 0] + boxes[:, 2] / 2) * w  # x2
-        boxes_pixel[:, 3] = (boxes[:, 1] + boxes[:, 3] / 2) * h  # y2
-
-        # 3. For each box, run SAM 2.1 → (object_region, shadow_region) pair
-        # Set image once for all boxes
-        from PIL import Image
-        pil_image = Image.fromarray(image_rgb)
-        self.sam2_predictor.set_image(pil_image)
-
-        surviving_shadows = []
-        confidences = []
-
-        for i, box in enumerate(boxes_pixel):
-            box_np = box.cpu().numpy()
-
-            # SAM 2.1 predict with box prompt → returns masks for object + shadow
-            # OpSeg fine-tune produces 2 masks per box: object region and shadow region
-            masks, scores, _ = self.sam2_predictor.predict(
-                box=box_np,
-                multimask_output=True,
-            )
-
-            if masks is None or len(masks) < 2:
-                logger.debug(f"OpSeg: Box {i} returned <2 masks, skipping")
-                continue
-
-            # OpSeg convention: mask[0] = object region, mask[1] = shadow region
-            object_region = (masks[0] > 0).astype(np.uint8)
-            shadow_region = (masks[1] > 0).astype(np.uint8)
-
-            if np.sum(shadow_region) == 0:
-                continue
-
-            # 4. Instance pairing filter
-            if object_mask is not None:
-                iou = self._compute_iou(object_region, object_mask)
-                if iou < self.OBJECT_IOU_THRESHOLD:
-                    logger.debug(
-                        f"OpSeg: Box {i} ({phrases[i]}) IoU={iou:.3f} < "
-                        f"{self.OBJECT_IOU_THRESHOLD}, shadow discarded"
-                    )
-                    continue
-                logger.debug(
-                    f"OpSeg: Box {i} ({phrases[i]}) IoU={iou:.3f} — shadow kept"
-                )
-
-            surviving_shadows.append(shadow_region)
-            confidences.append(float(scores[1]) if len(scores) > 1 else float(scores[0]))
-
-        # 5. Merge surviving shadow regions
-        if not surviving_shadows:
-            logger.info("OpSeg: No shadows survived instance filter")
-            return np.zeros((h, w), dtype=np.uint8), 0.0
-
-        merged = np.zeros((h, w), dtype=np.uint8)
-        for s in surviving_shadows:
-            merged = np.maximum(merged, s)
-
-        mean_conf = sum(confidences) / len(confidences) if confidences else 0.0
-        logger.info(
-            f"OpSeg: {len(surviving_shadows)} shadow(s) merged, "
-            f"confidence={mean_conf:.3f}"
-        )
-
-        return merged, mean_conf
-
-    @staticmethod
-    def _compute_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
-        """Compute IoU between two binary masks."""
-        a = mask_a > 0
-        b = mask_b > 0
-        intersection = np.sum(a & b)
-        union = np.sum(a | b)
-        return float(intersection / union) if union > 0 else 0.0
-
-    def cleanup(self) -> None:
-        self.sam2_predictor = None
-        self.gdino_model = None
-        self._initialized = False
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except ImportError:
-            pass
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Weight Manager
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1364,27 +1104,6 @@ class ShadowWeightManager:
             "sha256": None,
             "size_mb": 200,
             "source": "NOT AVAILABLE — only backbone weights at github.com/hanyangclarence/SILT",
-        },
-        "opseg_sam2": {
-            "filename": "sam2_shadow.pt",
-            "url": "https://modelscope.cn/models/deyang2000/SAM2_Shadow/resolve/master/sam2_shadow.pt",
-            "sha256": None,  # Verify after first download
-            "size_mb": 390,
-            "source": "ModelScope deyang2000/SAM2_Shadow (Apache 2.0)",
-        },
-        "sam2.1_base_plus": {
-            "filename": "sam2.1_hiera_base_plus.pt",
-            "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt",
-            "sha256": None,
-            "size_mb": 324,
-            "source": "Meta SAM 2.1 (Apache 2.0)",
-        },
-        "grounding_dino": {
-            "filename": "groundingdino_swint_ogc.pth",
-            "url": "https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth",
-            "sha256": None,
-            "size_mb": 694,
-            "source": "IDEA-Research GroundingDINO (Apache 2.0)",
         },
     }
 
@@ -1503,7 +1222,6 @@ _DETECTOR_MAP: Dict[ShadowDetectorType, type] = {
     ShadowDetectorType.SDDNET: SDDNetDetector,
     ShadowDetectorType.SILT: SILTDetector,
     ShadowDetectorType.CAREAGA_INTRINSIC: CareagaIntrinsicDetector,
-    ShadowDetectorType.OPSEG_INSTANCE: OpSegDetector,
 }
 
 

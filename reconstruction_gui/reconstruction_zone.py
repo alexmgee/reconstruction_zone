@@ -447,9 +447,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         ctk.CTkCheckBox(sr1, text="Enable", variable=self.shadow_var,
                         width=80).pack(side="left")
         ctk.CTkLabel(sr1, text="Detector:").pack(side="left", padx=(12, 2))
-        self.shadow_detector_var = ctk.StringVar(value="opseg")
+        self.shadow_detector_var = ctk.StringVar(value="targeted_person")
         ctk.CTkOptionMenu(sr1, variable=self.shadow_detector_var,
-                          values=["opseg", "targeted_person", "brightness",
+                          values=["targeted_person", "brightness",
                                   "c1c2c3", "hybrid"],
                           width=140).pack(side="left", padx=2)
         ctk.CTkLabel(sr1, text="Verify:").pack(side="left", padx=(12, 2))
@@ -1429,9 +1429,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 'chromaticity_threshold': float(self.shadow_chroma_var.get()),
                 'device': device,
             }
-            # Auto-derive Grounding DINO prompt for OpSeg from remove prompts
-            if det == "opseg" and remove_prompts:
-                shadow_config['grounding_dino_prompt'] = " . ".join(remove_prompts)
 
         sam_refine_config = None
         sam_refine_enabled = self.sam_refine_var.get()
