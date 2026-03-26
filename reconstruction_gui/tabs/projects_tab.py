@@ -58,6 +58,16 @@ def _build_list_panel(app, parent):
         command=lambda: _on_new_project(app),
     )
     app._proj_new_btn.pack(side="right")
+    app._proj_scan_btn = ctk.CTkButton(
+        header, text="Scan", width=60,
+        command=lambda: _open_scan_dialog(app),
+    )
+    app._proj_scan_btn.pack(side="right", padx=(0, 4))
+    app._proj_export_btn = ctk.CTkButton(
+        header, text="Export", width=60,
+        command=lambda: _open_export_dialog(app),
+    )
+    app._proj_export_btn.pack(side="right", padx=(0, 4))
 
     # -- Search bar --
     app._proj_search_var = tk.StringVar()
@@ -618,3 +628,211 @@ def _do_delete(app, project_id):
     _refresh_project_list(app)
     app._proj_detail_scroll.pack_forget()
     app._proj_empty_label.place(relx=0.5, rely=0.5, anchor="center")
+
+
+# ── Drive Scanner Dialog ──
+
+def _open_scan_dialog(app):
+    """Dialog for scanning drives/directories for projects."""
+    import threading
+    from project_scanner import scan_directory
+
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Scan for Projects")
+    dialog.geometry("600x500")
+    dialog.transient(app)
+    dialog.grab_set()
+
+    # Path entry + browse
+    path_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+    path_frame.pack(fill="x", padx=16, pady=(16, 4))
+    ctk.CTkLabel(path_frame, text="Scan root:").pack(side="left")
+    scan_entry = ctk.CTkEntry(path_frame)
+    scan_entry.pack(side="left", fill="x", expand=True, padx=(8, 4))
+    scan_entry.insert(0, "D:\\")
+
+    def _browse_scan():
+        p = filedialog.askdirectory(title="Select root to scan")
+        if p:
+            scan_entry.delete(0, "end")
+            scan_entry.insert(0, p)
+
+    ctk.CTkButton(path_frame, text="Browse", width=70, command=_browse_scan).pack(side="right")
+
+    # Status + results
+    status_label = ctk.CTkLabel(dialog, text="", text_color="#9ca3af")
+    status_label.pack(fill="x", padx=16, pady=(4, 4))
+
+    results_frame = ctk.CTkScrollableFrame(dialog)
+    results_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+    scan_results = []
+    result_widgets = []
+
+    def _run_scan():
+        root = scan_entry.get().strip()
+        if not root:
+            return
+
+        # Clear previous results
+        for w in result_widgets:
+            w.destroy()
+        result_widgets.clear()
+        scan_results.clear()
+
+        status_label.configure(text="Scanning...")
+        scan_btn.configure(state="disabled")
+
+        def _scan_thread():
+            results = scan_directory(
+                root, max_depth=5,
+                progress_callback=lambda msg: dialog.after(
+                    0, lambda m=msg: status_label.configure(text=m)
+                ),
+            )
+            dialog.after(0, lambda: _display_scan_results(results))
+
+        def _display_scan_results(results):
+            scan_results.clear()
+            scan_results.extend(results)
+            status_label.configure(text=f"Found {len(results)} project clusters")
+            scan_btn.configure(state="normal")
+
+            for res in results:
+                row = ctk.CTkFrame(results_frame)
+                row.pack(fill="x", pady=(0, 4))
+
+                title = res.suggested_title()
+                has_psx = "PSX" if res.psx_path else "no PSX"
+                img_info = f"{len(res.image_dirs)} img dirs"
+                mask_info = f"{len(res.mask_dirs)} mask dirs"
+
+                ctk.CTkLabel(
+                    row, text=f"{title}  ({has_psx}, {img_info}, {mask_info})",
+                    font=("Consolas", 11), anchor="w",
+                ).pack(side="left", fill="x", expand=True, padx=4, pady=4)
+
+                ctk.CTkButton(
+                    row, text="Import", width=70,
+                    command=lambda r=res: _import_scan_result(app, r, dialog),
+                ).pack(side="right", padx=4, pady=4)
+
+                result_widgets.append(row)
+
+        threading.Thread(target=_scan_thread, daemon=True).start()
+
+    scan_btn = ctk.CTkButton(dialog, text="Scan", command=_run_scan)
+    scan_btn.pack(padx=16, pady=(0, 8))
+
+
+def _import_scan_result(app, scan_result, dialog):
+    """Create a project from a scan result."""
+    from project_store import ProjectSource
+
+    title = scan_result.suggested_title()
+    proj = app._project_store.create_project(title)
+
+    if scan_result.psx_path:
+        proj.metashape_path = scan_result.psx_path
+
+    for img_dir in scan_result.image_dirs:
+        count = scan_result.image_counts.get(img_dir, 0)
+        label = Path(img_dir).name
+        proj.sources.append(ProjectSource(
+            label=label, path=img_dir, media_type="images", file_count=count,
+        ))
+
+    for msk_dir in scan_result.mask_dirs:
+        label = Path(msk_dir).name
+        proj.sources.append(ProjectSource(
+            label=label, path=msk_dir, media_type="masks",
+        ))
+
+    for vid in scan_result.video_files:
+        proj.sources.append(ProjectSource(
+            label=Path(vid).name, path=vid, media_type="video",
+        ))
+
+    proj.set_stage("captured", "done")
+    app._project_store.save()
+    _refresh_project_list(app)
+    _show_project_detail(app, proj.id)
+    dialog.destroy()
+
+
+# ── Export Dialog ──
+
+def _open_export_dialog(app):
+    """Dialog for exporting the project index."""
+    from project_exporters import export_markdown, export_html, export_json
+
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Export Project Index")
+    dialog.geometry("450x280")
+    dialog.transient(app)
+    dialog.grab_set()
+
+    ctk.CTkLabel(dialog, text="Export Format:", anchor="w").pack(
+        fill="x", padx=16, pady=(16, 4),
+    )
+    format_var = tk.StringVar(value="all")
+    for label, val in [("All formats", "all"), ("Markdown", "md"), ("HTML", "html"), ("JSON", "json")]:
+        ctk.CTkRadioButton(
+            dialog, text=label, variable=format_var, value=val,
+        ).pack(anchor="w", padx=24, pady=2)
+
+    ctk.CTkLabel(dialog, text="Output directory:", anchor="w").pack(
+        fill="x", padx=16, pady=(12, 4),
+    )
+    dir_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+    dir_frame.pack(fill="x", padx=16)
+    dir_entry = ctk.CTkEntry(dir_frame)
+    dir_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+    dir_entry.insert(0, str(Path(app._project_store.store_path).parent))
+    ctk.CTkButton(
+        dir_frame, text="Browse", width=70,
+        command=lambda: _browse_export_dir(dir_entry),
+    ).pack(side="right")
+
+    include_archived = tk.BooleanVar(value=False)
+    ctk.CTkCheckBox(
+        dialog, text="Include archived projects", variable=include_archived,
+    ).pack(anchor="w", padx=16, pady=(8, 4))
+
+    def _do_export():
+        out_dir = Path(dir_entry.get().strip())
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fmt = format_var.get()
+        archived = include_archived.get()
+        store = app._project_store
+
+        exported = []
+        if fmt in ("all", "md"):
+            p = export_markdown(store, str(out_dir / "project_index.md"), archived)
+            exported.append(p)
+        if fmt in ("all", "html"):
+            p = export_html(store, str(out_dir / "project_index.html"), archived)
+            exported.append(p)
+        if fmt in ("all", "json"):
+            p = export_json(store, str(out_dir / "project_index.json"), archived)
+            exported.append(p)
+
+        dialog.destroy()
+        app.log(f"Exported {len(exported)} file(s) to {out_dir}")
+
+        # Open the HTML in browser if it was generated
+        html_path = out_dir / "project_index.html"
+        if html_path.exists():
+            import webbrowser
+            webbrowser.open(str(html_path))
+
+    ctk.CTkButton(dialog, text="Export", command=_do_export).pack(
+        padx=16, pady=(12, 16),
+    )
+
+
+def _browse_export_dir(entry):
+    p = filedialog.askdirectory(title="Select export directory")
+    if p:
+        entry.delete(0, "end")
+        entry.insert(0, p)
