@@ -5,10 +5,11 @@ Reconstruction Zone
 Unified photogrammetry prep GUI. Double-click to launch.
 
 Tabs:
-  Prepare — video analysis, frame extraction (queue), reframe, fisheye, LUT, filters
-  Mask    — multi-model masking pipeline (YOLO, SAM, shadow, ensemble)
-  Review  — paginated thumbnail grid, large preview, OpenCV editor launch
-  Gaps    — spatial gap detection, bridge frame extraction
+  Projects — central registry for photogrammetry projects, lifecycle tracking
+  Prepare  — video analysis, frame extraction (queue), reframe, fisheye, LUT, filters
+  Mask     — multi-model masking pipeline (YOLO, SAM, shadow, ensemble)
+  Review   — paginated thumbnail grid, large preview, OpenCV editor launch
+  Gaps     — spatial gap detection, bridge frame extraction
 
 No CLI arguments required. All configuration via the GUI.
 """
@@ -85,6 +86,7 @@ from widgets import Section as _Section, CollapsibleSection as _CollapsibleSecti
 from app_infra import AppInfrastructure
 from tabs.source_tab import build_source_tab
 from tabs.gaps_tab import build_gaps_tab
+from tabs.projects_tab import build_projects_tab
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -190,6 +192,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
     def _on_close(self):
         """Fast shutdown — kill subprocesses, clear caches, destroy widgets."""
+        # Persist tracker store path
+        if hasattr(self, '_project_store') and self._project_store:
+            self._prefs["tracker_store_path"] = str(self._project_store.store_path)
+            self._save_prefs()
         # Signal any running extraction/processing threads to stop
         self.cancel_flag.set()
         if self._editor_proc is not None and self._editor_proc.poll() is None:
@@ -215,6 +221,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Left: tabview (settings tabs only)
         self.tabs = ctk.CTkTabview(self._main_frame, command=self._on_tab_change)
         self.tabs.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=0)
+        self.tabs.add("Projects")
         self.tabs.add("Extract")
         self.tabs.add("Mask")
         self.tabs.add("Review")
@@ -226,6 +233,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._preview_panel.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
         self._build_preview_panel()
 
+        build_projects_tab(self, self.tabs.tab("Projects"))
         build_source_tab(self, self.tabs.tab("Extract"))
         self._build_process_tab()
         self._build_review_tab()
