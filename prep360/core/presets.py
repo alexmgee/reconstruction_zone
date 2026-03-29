@@ -25,7 +25,7 @@ class Preset:
     # Extraction settings
     extraction_interval: float = 2.0
     extraction_max_gap: float = 3.0
-    extraction_mode: str = "fixed"  # fixed, adaptive, scene
+    extraction_mode: str = "fixed"  # fixed, scene, sharpest
     extraction_quality: int = 95
 
     # Reframe settings
