@@ -46,6 +46,7 @@ class SharpestConfig:
     output_format: str = "jpg"       # jpg or png
     start_sec: Optional[float] = None
     end_sec: Optional[float] = None
+    tier: str = "best"               # "fast", "balanced", or "best"
 
 
 @dataclass
@@ -105,6 +106,15 @@ class SharpestExtractor:
 
         out.mkdir(parents=True, exist_ok=True)
 
+        # Route by tier
+        tier = config.tier.lower()
+        if tier == "fast":
+            return self._extract_fast(
+                video_path=str(video), output_dir=str(out), config=config,
+                progress_callback=progress_callback, cancel_check=cancel_check,
+                prefix_source=prefix_source,
+            )
+
         def _progress(cur, tot, msg):
             if progress_callback:
                 progress_callback(cur, tot, msg)
@@ -135,6 +145,7 @@ class SharpestExtractor:
             _progress(85, 100, "Selecting sharpest frames...")
             best_frames = self._parse_best_frames(
                 metadata_path, chunk_size, config.scene_threshold,
+                scene_aware=(tier == "best"),
             )
             total_analyzed = self._count_analyzed_frames(metadata_path)
 
@@ -175,6 +186,154 @@ class SharpestExtractor:
                 metadata_path.unlink(missing_ok=True)
 
     # ── internals ────────────────────────────────────────────────────
+
+    def _extract_fast(
+        self,
+        video_path: str,
+        output_dir: str,
+        config: SharpestConfig,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        prefix_source: bool = True,
+    ) -> SharpestResult:
+        """Fast tier: OpenCV Laplacian variance, no scene awareness.
+
+        Reads every frame with cv2.VideoCapture, scores sharpness via
+        Laplacian variance, picks the sharpest frame per interval window,
+        then re-reads and writes only the winners.
+        """
+        import cv2
+
+        out = Path(output_dir)
+        video = Path(video_path)
+
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return SharpestResult(success=False, error=f"Cannot open video: {video_path}")
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            cap.release()
+            return SharpestResult(success=False, error="Could not determine video FPS")
+
+        total_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        window_size = max(1, int(fps * config.interval))
+
+        # Determine frame range from start_sec / end_sec
+        start_frame = int((config.start_sec or 0.0) * fps)
+        if config.end_sec is not None:
+            end_frame = min(int(config.end_sec * fps), total_frame_count)
+        else:
+            end_frame = total_frame_count
+
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        # Pass 1: score every frame
+        scores: list = []  # (frame_number, sharpness)
+        frames_in_range = end_frame - start_frame
+        frame_idx = start_frame
+
+        def _progress(cur, tot, msg):
+            if progress_callback:
+                progress_callback(cur, tot, msg)
+
+        while frame_idx < end_frame:
+            if cancel_check and cancel_check():
+                cap.release()
+                return SharpestResult(success=False, error="Cancelled")
+
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # Downscale for consistent scoring
+            if config.scale_width and gray.shape[1] > config.scale_width:
+                scale = config.scale_width / gray.shape[1]
+                new_h = int(gray.shape[0] * scale)
+                gray = cv2.resize(gray, (config.scale_width, new_h))
+
+            sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+            scores.append((frame_idx, sharpness))
+
+            # Progress: scoring occupies 0-85%
+            if frames_in_range > 0 and (frame_idx - start_frame) % max(1, frames_in_range // 100) == 0:
+                pct = int((frame_idx - start_frame) / frames_in_range * 85)
+                _progress(pct, 100, f"Scoring: frame {frame_idx - start_frame}/{frames_in_range}")
+
+            frame_idx += 1
+
+        cap.release()
+
+        if not scores:
+            return SharpestResult(success=False, error="No frames scored")
+
+        # Pick sharpest per window
+        best_frames: List[int] = []
+        for i in range(0, len(scores), window_size):
+            window = scores[i : i + window_size]
+            winner = max(window, key=lambda x: x[1])
+            best_frames.append(winner[0])
+
+        if not best_frames:
+            return SharpestResult(
+                success=False, total_frames_analyzed=len(scores),
+                error="No frames selected",
+            )
+
+        if cancel_check and cancel_check():
+            return SharpestResult(success=False, error="Cancelled")
+
+        # Pass 2: re-open video, seek to winners, write frames
+        stem = video.stem + "_" if prefix_source else ""
+        ext = config.output_format
+
+        cap2 = cv2.VideoCapture(video_path)
+        if not cap2.isOpened():
+            return SharpestResult(success=False, error=f"Cannot re-open video: {video_path}")
+
+        frame_paths: List[str] = []
+        total_to_extract = len(best_frames)
+        for idx, fnum in enumerate(best_frames):
+            if cancel_check and cancel_check():
+                cap2.release()
+                return SharpestResult(success=False, error="Cancelled")
+
+            cap2.set(cv2.CAP_PROP_POS_FRAMES, fnum)
+            ret, frame = cap2.read()
+            if not ret:
+                continue
+
+            filename = f"{stem}{idx + 1:05d}.{ext}"
+            filepath = out / filename
+
+            if ext in ("jpg", "jpeg"):
+                cv2.imwrite(str(filepath), frame,
+                            [cv2.IMWRITE_JPEG_QUALITY, config.quality])
+            else:
+                cv2.imwrite(str(filepath), frame)
+
+            frame_paths.append(str(filepath))
+
+            # Progress: extraction occupies 85-100%
+            pct = 85 + int((idx + 1) / total_to_extract * 15)
+            _progress(pct, 100, f"Extracting: {idx + 1}/{total_to_extract} frames")
+
+        cap2.release()
+
+        # Write manifest
+        start = config.start_sec or 0.0
+        self._write_manifest(out, frame_paths, video, config, best_frames, fps, start)
+
+        return SharpestResult(
+            success=True,
+            total_frames_analyzed=len(scores),
+            frames_extracted=len(frame_paths),
+            output_dir=str(out),
+            frame_paths=frame_paths,
+        )
 
     def _probe_fps(self, video_path: str) -> float:
         """Get video FPS via ffprobe."""
@@ -319,13 +478,14 @@ class SharpestExtractor:
         metadata_path: Path,
         chunk_size: int,
         scene_threshold: float = 0.3,
+        scene_aware: bool = True,
     ) -> List[int]:
-        """Parse blurdetect metadata with scene-aware chunk splitting.
+        """Parse blurdetect metadata with optional scene-aware chunk splitting.
 
         1. Collect ``(frame, blur, scene_score)`` from metadata.
         2. Divide into interval-based chunks of *chunk_size*.
-        3. If a frame inside a chunk has ``scene_score >= threshold``,
-           split the chunk at that boundary.
+        3. If *scene_aware* and a frame inside a chunk has
+           ``scene_score >= threshold``, split the chunk at that boundary.
         4. Pick the lowest-blur frame from each (sub-)chunk.
         """
         pat_frame = re.compile(r"frame:(\d+)")
@@ -379,7 +539,10 @@ class SharpestExtractor:
         best: List[int] = []
         for i in range(0, len(frame_data), chunk_size):
             chunk = frame_data[i : i + chunk_size]
-            sub_chunks = self._split_at_scenes(chunk, scene_threshold)
+            if scene_aware:
+                sub_chunks = self._split_at_scenes(chunk, scene_threshold)
+            else:
+                sub_chunks = [chunk]
             for sc in sub_chunks:
                 winner = min(sc, key=lambda x: x[1])
                 best.append(winner[0])
