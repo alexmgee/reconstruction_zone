@@ -22,7 +22,6 @@ _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name ==
 class ExtractionMode(Enum):
     """Frame extraction modes."""
     FIXED = "fixed"          # Extract at exact intervals
-    ADAPTIVE = "adaptive"    # Interval with max gap enforcement
     SCENE = "scene"          # Scene detection based
 
 
@@ -105,9 +104,6 @@ class FrameExtractor:
             cmd = self._build_fixed_command(video_path, output_dir, config, stem)
         elif config.mode == ExtractionMode.SCENE:
             cmd = self._build_scene_command(video_path, output_dir, config, stem)
-        elif config.mode == ExtractionMode.ADAPTIVE:
-            # Adaptive mode uses fixed extraction then fills gaps
-            cmd = self._build_fixed_command(video_path, output_dir, config, stem)
         else:
             cmd = self._build_fixed_command(video_path, output_dir, config, stem)
 

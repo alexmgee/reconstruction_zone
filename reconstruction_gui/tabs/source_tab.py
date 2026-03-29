@@ -143,7 +143,6 @@ class SourceAnalysisSummary:
 _MODE_INFO = {
     "fixed":    ("Fixed Interval",   "Extract one frame every N seconds"),
     "scene":    ("Scene Detection",   "Extract at scene cuts + interval baseline"),
-    "adaptive": ("Adaptive Density",  "More frames in high-motion segments"),
     "sharpest": ("Sharpest Frame",    "Pick the sharpest frame per time window"),
 }
 _LABEL_TO_MODE = {info[0]: key for key, info in _MODE_INFO.items()}

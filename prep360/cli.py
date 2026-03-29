@@ -638,7 +638,7 @@ def main():
     p.add_argument("video", help="Input video file")
     p.add_argument("output", help="Output directory")
     p.add_argument("--interval", "-i", type=float, default=2.0, help="Interval in seconds")
-    p.add_argument("--mode", "-m", choices=["fixed", "scene", "adaptive"], default="fixed")
+    p.add_argument("--mode", "-m", choices=["fixed", "scene"], default="fixed")
     p.add_argument("--start", type=float, help="Start time in seconds")
     p.add_argument("--end", type=float, help="End time in seconds")
     p.add_argument("--quality", "-q", type=int, default=95, help="JPEG quality")
