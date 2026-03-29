@@ -895,8 +895,15 @@ def _build_extract_section(app, parent):
         text_color="gray", font=ctk.CTkFont(size=11))
     app.extract_estimate_label.pack(fill="x", padx=8, pady=(4, 0))
 
+    # -- Post-Processing (collapsible parent) --
+    pp_sec = CollapsibleSection(c, "Post-Processing",
+                                subtitle="filters applied after frame extraction",
+                                expanded=False)
+    pp_sec.pack(fill="x", pady=(4, 0), padx=2)
+    pp = pp_sec.content
+
     # -- Color & LUT (collapsible) --
-    lut_sec = CollapsibleSection(c, "Color & LUT", expanded=False)
+    lut_sec = CollapsibleSection(pp, "Color & LUT", expanded=False)
     lut_sec.pack(fill="x", pady=(6, 0), padx=2)
     app.extract_lut_section = lut_sec
 
@@ -955,7 +962,7 @@ def _build_extract_section(app, parent):
                  text_color="gray", font=ctk.CTkFont(size=10)).pack(anchor="w")
 
     # -- Sky Filter (collapsible) --
-    sky_sec = CollapsibleSection(c, "Sky Filter", expanded=False)
+    sky_sec = CollapsibleSection(pp, "Sky Filter", expanded=False)
     sky_sec.pack(fill="x", pady=(4, 0), padx=2)
 
     app.extract_sky_enabled_var = ctk.BooleanVar(value=False)
@@ -986,7 +993,7 @@ def _build_extract_section(app, parent):
                   ).pack(side="left", fill="x", expand=True, padx=(4, 4))
 
     # -- Blur Filter (collapsible) --
-    blur_sec = CollapsibleSection(c, "Blur Filter", expanded=False)
+    blur_sec = CollapsibleSection(pp, "Blur Filter", expanded=False)
     blur_sec.pack(fill="x", pady=(4, 0), padx=2)
 
     app.extract_blur_enabled_var = ctk.BooleanVar(value=False)
@@ -1006,6 +1013,56 @@ def _build_extract_section(app, parent):
 
     ctk.CTkLabel(blur_sec.content, text="Percent of sharpest frames to keep",
                  text_color="gray", font=ctk.CTkFont(size=10)).pack(anchor="w")
+
+    # -- Motion Selection (inside Post-Processing) --
+    motion_sec = CollapsibleSection(pp, "Motion Selection",
+                                     subtitle="filter by camera movement between frames",
+                                     expanded=False)
+    motion_sec.pack(fill="x", pady=(4, 0), padx=2)
+    mc = motion_sec.content
+
+    app.extract_motion_enabled_var = ctk.BooleanVar(value=False)
+    motion_cb = ctk.CTkCheckBox(mc, text="Filter by sharpness + optical flow",
+                    variable=app.extract_motion_enabled_var)
+    motion_cb.pack(pady=3, padx=6, anchor="w")
+    Tooltip(motion_cb,
+            "After extraction, filter frames to keep only sharp\n"
+            "frames with sufficient camera motion between them.\n"
+            "Removes redundant near-identical frames.")
+
+    sharp_frame = ctk.CTkFrame(mc, fg_color="transparent")
+    sharp_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(sharp_frame, text="Sharpness:", width=70, anchor="w").pack(side="left")
+    app.extract_sharpness_var = ctk.DoubleVar(value=50.0)
+    app.extract_sharpness_label = ctk.CTkLabel(sharp_frame, text="50", width=35,
+                                               font=("Consolas", 11))
+    app.extract_sharpness_label.pack(side="right")
+    ctk.CTkSlider(sharp_frame, from_=10, to=200,
+                  variable=app.extract_sharpness_var,
+                  command=lambda v: app.extract_sharpness_label.configure(
+                      text=f"{int(v)}")
+                  ).pack(side="left", fill="x", expand=True, padx=(6, 4))
+    Tooltip(sharp_frame,
+            "Minimum Laplacian sharpness score.\n"
+            "Frames below this are discarded as blurry.\n"
+            "50 is a safe default; raise for high-quality datasets.")
+
+    flow_frame = ctk.CTkFrame(mc, fg_color="transparent")
+    flow_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(flow_frame, text="Target Flow:", width=70, anchor="w").pack(side="left")
+    app.extract_flow_var = ctk.DoubleVar(value=10.0)
+    app.extract_flow_label = ctk.CTkLabel(flow_frame, text="10", width=35,
+                                          font=("Consolas", 11))
+    app.extract_flow_label.pack(side="right")
+    ctk.CTkSlider(flow_frame, from_=2, to=30,
+                  variable=app.extract_flow_var,
+                  command=lambda v: app.extract_flow_label.configure(
+                      text=f"{int(v)}")
+                  ).pack(side="left", fill="x", expand=True, padx=(6, 4))
+    Tooltip(flow_frame,
+            "Target optical flow magnitude between kept frames.\n"
+            "Higher = more camera movement required between frames.\n"
+            "10 works well for typical walking/driving captures.")
 
     # -- Primary action: Extract / Add to Queue / Stop --
     action_row = ctk.CTkFrame(c, fg_color="transparent")
@@ -2321,54 +2378,6 @@ def _build_fisheye_section(app, parent):
             "Lower = more frames, longer processing, bigger dataset.\n"
             "2.0s is a good default for walking-speed capture.")
 
-    # Motion-aware selection (collapsible)
-    motion_sec = CollapsibleSection(rc, "Motion-Aware Selection",
-                                     subtitle="keep sharpest frames with enough motion",
-                                     expanded=False)
-    motion_sec.pack(fill="x", padx=2, pady=(4, 0))
-    mc = motion_sec.content
-
-    app.fisheye_motion_var = ctk.BooleanVar(value=False)
-    motion_cb = ctk.CTkCheckBox(mc, text="Enable",
-                    variable=app.fisheye_motion_var, width=80)
-    motion_cb.pack(pady=3, padx=6, anchor="w")
-    Tooltip(motion_cb,
-            "After extracting frames at the interval rate, filter\n"
-            "to keep only sharp frames with sufficient camera motion.\n"
-            "Reduces redundant/blurry frames in your dataset.")
-
-    sharp_frame = ctk.CTkFrame(mc, fg_color="transparent")
-    sharp_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(sharp_frame, text="Sharpness:", width=70, anchor="w").pack(side="left")
-    app.fisheye_sharpness_var = ctk.DoubleVar(value=50.0)
-    app.fisheye_sharpness_label = ctk.CTkLabel(sharp_frame, text="50", width=35,
-                                               font=("Consolas", 11))
-    app.fisheye_sharpness_label.pack(side="right")
-    sharp_slider = ctk.CTkSlider(sharp_frame, from_=10, to=200,
-                                  variable=app.fisheye_sharpness_var,
-                                  command=lambda v: app.fisheye_sharpness_label.configure(
-                                      text=f"{int(v)}"))
-    sharp_slider.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    Tooltip(sharp_slider, "Minimum Laplacian sharpness score.\n"
-            "Frames below this are discarded as blurry.\n"
-            "50 is a safe default; raise for high-quality datasets.")
-
-    flow_frame = ctk.CTkFrame(mc, fg_color="transparent")
-    flow_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(flow_frame, text="Target Flow:", width=70, anchor="w").pack(side="left")
-    app.fisheye_flow_var = ctk.DoubleVar(value=10.0)
-    app.fisheye_flow_label = ctk.CTkLabel(flow_frame, text="10", width=35,
-                                          font=("Consolas", 11))
-    app.fisheye_flow_label.pack(side="right")
-    flow_slider = ctk.CTkSlider(flow_frame, from_=2, to=30,
-                                 variable=app.fisheye_flow_var,
-                                 command=lambda v: app.fisheye_flow_label.configure(
-                                     text=f"{int(v)}"))
-    flow_slider.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    Tooltip(flow_slider, "Target optical flow magnitude between kept frames.\n"
-            "Higher = more camera movement required between frames.\n"
-            "10 works well for typical walking/driving captures.")
-
     # Station-aware output checkbox
     app.station_dirs_var = ctk.BooleanVar(value=True)
     app.fisheye_station_cb = ctk.CTkCheckBox(rc, text="Station dirs (for Metashape)",
@@ -2817,11 +2826,11 @@ def _fisheye_worker(
             return
 
         # Optional motion selection (only when extracting from video)
-        if has_video and app.fisheye_motion_var.get():
+        if has_video and app.extract_motion_enabled_var.get():
             app.log("\nRunning motion-aware selection...")
             selector = MotionSelector(
-                min_sharpness=app.fisheye_sharpness_var.get(),
-                target_flow=app.fisheye_flow_var.get(),
+                min_sharpness=app.extract_sharpness_var.get(),
+                target_flow=app.extract_flow_var.get(),
             )
             sel_result = selector.select_from_paths(front, max_frames=len(front))
             app.log(sel_result.summary())
