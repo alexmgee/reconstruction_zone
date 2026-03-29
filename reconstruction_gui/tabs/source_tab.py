@@ -148,24 +148,24 @@ _MODE_INFO = {
 _LABEL_TO_MODE = {info[0]: key for key, info in _MODE_INFO.items()}
 _MODE_TO_LABEL = {key: info[0] for key, info in _MODE_INFO.items()}
 
-_PAIRED_SHARPEST_TIER_INFO = {
-    "fast": ("Fast", "Quick pair scoring from both lenses"),
-    "balanced": ("Balanced", "Blurdetect on both lenses, fixed time windows"),
-    "best": ("Best", "Blurdetect on both lenses with scene-aware pair selection"),
+_TIER_INFO = {
+    "fast": ("Fast", "Laplacian sharpness scoring (fastest, no scene awareness)"),
+    "balanced": ("Balanced", "FFmpeg blurdetect analysis (accurate, no scene awareness)"),
+    "best": ("Best", "FFmpeg blurdetect with scene-aware chunk splitting (most thorough)"),
 }
-_PAIRED_TIER_LABEL_TO_KEY = {info[0]: key for key, info in _PAIRED_SHARPEST_TIER_INFO.items()}
-_PAIRED_TIER_KEY_TO_LABEL = {key: info[0] for key, info in _PAIRED_SHARPEST_TIER_INFO.items()}
+_TIER_KEY_TO_LABEL = {k: v[0] for k, v in _TIER_INFO.items()}
+_TIER_LABEL_TO_KEY = {v: k for k, v in _TIER_KEY_TO_LABEL.items()}
 
 def _get_mode_value(app) -> str:
     """Map the display label back to the internal mode value."""
     return _LABEL_TO_MODE.get(app.extract_mode_var.get(), "fixed")
 
 
-def _get_paired_sharpest_tier_value(app) -> str:
-    """Map the paired sharpest tier label back to the internal mode value."""
+def _get_tier_value(app) -> str:
+    """Map the tier dropdown label back to the internal tier key."""
     var = getattr(app, "extract_sharpest_tier_var", None)
-    label = var.get() if var is not None else _PAIRED_TIER_KEY_TO_LABEL["best"]
-    return _PAIRED_TIER_LABEL_TO_KEY.get(label, "best")
+    label = var.get() if var is not None else _TIER_KEY_TO_LABEL["best"]
+    return _TIER_LABEL_TO_KEY.get(label, "best")
 
 
 def _snapshot_settings(app) -> "ExtractionSettings":
@@ -353,26 +353,26 @@ def _update_source_mode_ui(app):
 
 
 def _update_sharpest_tier_ui(app):
-    if not hasattr(app, "extract_sharpest_tier_row"):
+    combo = getattr(app, "extract_tier_combo", None)
+    if combo is None:
         return
 
-    show = _split_source_enabled(app) and _get_mode_value(app) == "sharpest"
-    row = app.extract_sharpest_tier_row
-    desc = getattr(app, "extract_sharpest_tier_desc", None)
+    is_sharpest = _get_mode_value(app) == "sharpest"
 
-    if show:
-        if not row.winfo_manager():
-            row.pack(fill="x", pady=3, padx=6, after=app.extract_mode_desc)
-        if desc and not desc.winfo_manager():
-            desc.pack(fill="x", padx=12, pady=(0, 2), after=row)
-        tier = _get_paired_sharpest_tier_value(app)
-        if desc:
-            desc.configure(text=_PAIRED_SHARPEST_TIER_INFO[tier][1])
-    else:
-        if row.winfo_manager():
-            row.pack_forget()
-        if desc and desc.winfo_manager():
-            desc.pack_forget()
+    # Enable/disable the tier combo
+    combo.configure(state="readonly" if is_sharpest else "disabled")
+
+    # Update description
+    desc = getattr(app, "extract_sharpest_tier_desc", None)
+    if desc:
+        if is_sharpest:
+            tier = _get_tier_value(app)
+            desc.configure(text=_TIER_INFO[tier][1])
+            if not desc.winfo_manager():
+                desc.pack(fill="x", padx=12, pady=(0, 2), after=app.extract_mode_desc)
+        else:
+            if desc.winfo_manager():
+                desc.pack_forget()
 
 
 def _update_estimate(app, *_args):
@@ -395,7 +395,7 @@ def _update_estimate(app, *_args):
 
     mode = _get_mode_value(app)
     interval = app.extract_interval_var.get()
-    paired_tier = _get_paired_sharpest_tier_value(app) if getattr(info, "pair_mode", False) else ""
+    paired_tier = _get_tier_value(app) if getattr(info, "pair_mode", False) else ""
 
     # frame count estimate
     if mode == "scene" or (
@@ -822,36 +822,30 @@ def _build_extract_section(app, parent):
                     command=lambda v: _on_mode_change(app, v),
                     ).pack(side="left", padx=(6, 0))
 
+    # Tier dropdown on same row, initially disabled
+    ctk.CTkLabel(mode_frame, text="Tier:", width=35, anchor="e").pack(side="left", padx=(12, 0))
+    app.extract_sharpest_tier_var = ctk.StringVar(value="Best")
+    app.extract_tier_combo = ctk.CTkComboBox(
+        mode_frame, variable=app.extract_sharpest_tier_var,
+        values=["Fast", "Balanced", "Best"],
+        state="disabled", width=110,
+        command=lambda _v: _update_sharpest_tier_ui(app),
+    )
+    app.extract_tier_combo.pack(side="left", padx=(4, 0))
+    Tooltip(app.extract_tier_combo,
+            "Fast: Laplacian sharpness (fastest).\n"
+            "Balanced: FFmpeg blurdetect (accurate).\n"
+            "Best: blurdetect + scene-aware (most thorough).")
+
     app.extract_mode_desc = ctk.CTkLabel(
         c, text=_MODE_INFO["fixed"][1], text_color="#9ca3af",
         font=ctk.CTkFont(size=10), anchor="w")
     app.extract_mode_desc.pack(fill="x", padx=12, pady=(0, 2))
 
-    app.extract_sharpest_tier_row = ctk.CTkFrame(c, fg_color="transparent")
-    ctk.CTkLabel(app.extract_sharpest_tier_row, text="Tier:", width=60, anchor="w").pack(side="left")
-    app.extract_sharpest_tier_var = ctk.StringVar(value=_PAIRED_TIER_KEY_TO_LABEL["best"])
-    tier_combo = ctk.CTkComboBox(
-        app.extract_sharpest_tier_row,
-        variable=app.extract_sharpest_tier_var,
-        values=list(_PAIRED_TIER_KEY_TO_LABEL.values()),
-        state="readonly",
-        width=160,
-        command=lambda _v: _update_sharpest_tier_ui(app),
-    )
-    tier_combo.pack(side="left", padx=(6, 0))
-    Tooltip(
-        tier_combo,
-        "Fast: quickest pair scoring.\n"
-        "Balanced: blurdetect on both lenses.\n"
-        "Best: blurdetect + scene-aware pair selection.",
-    )
     app.extract_sharpest_tier_desc = ctk.CTkLabel(
-        c,
-        text=_PAIRED_SHARPEST_TIER_INFO["best"][1],
-        text_color="#9ca3af",
-        font=ctk.CTkFont(size=10),
-        anchor="w",
-    )
+        c, text="", text_color="#9ca3af",
+        font=ctk.CTkFont(size=10), anchor="w")
+    # Starts hidden — _update_sharpest_tier_ui will show it when needed
 
     int_frame = ctk.CTkFrame(c, fg_color="transparent")
     int_frame.pack(fill="x", pady=3, padx=6)
@@ -2611,7 +2605,7 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
     """Extract shared frame pairs from graded split lens videos."""
     settings = _snapshot_settings(app)
     mode = settings.mode
-    sharpest_tier = _get_paired_sharpest_tier_value(app)
+    sharpest_tier = _get_tier_value(app)
     if mode not in {"fixed", "sharpest"}:
         app.log(
             "Error: Split lens paired extraction currently supports only "
@@ -2621,7 +2615,7 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
 
     clip_root = Path(output_dir)
     settings_summary = (
-        f"sharpest/{_PAIRED_TIER_KEY_TO_LABEL[sharpest_tier].lower()}, "
+        f"sharpest/{_TIER_KEY_TO_LABEL[sharpest_tier].lower()}, "
         f"{settings.interval:.1f}s windows, {settings.format}, q{settings.quality}, "
         + (
             "quick shared pair scoring, then pair extraction"
