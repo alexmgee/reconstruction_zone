@@ -263,16 +263,24 @@ class PairedSplitVideoExtractor:
         scene_threshold: float,
         scene_aware: bool,
         use_blur_scores: bool,
+        log: Optional[Callable[[str], None]] = None,
     ) -> tuple[list[int], list[float], list[float]]:
+        def _log(msg):
+            if log:
+                log(msg)
+
         selected_indices: list[int] = []
         front_scores: list[float] = []
         back_scores: list[float] = []
         current_chunk: list[dict[str, float]] = []
         current_chunk_index: Optional[int] = None
+        total_chunks = 0
 
         def _flush_chunk(chunk_entries: list[dict[str, float]]) -> None:
+            nonlocal total_chunks
             if not chunk_entries:
                 return
+            total_chunks += 1
             sub_chunks = (
                 self._split_pair_chunk_at_scenes(chunk_entries, scene_threshold)
                 if scene_aware else
@@ -301,6 +309,7 @@ class PairedSplitVideoExtractor:
             current_chunk.append(entry)
 
         _flush_chunk(current_chunk)
+        _log(f"  Selection: {len(selected_indices)} winners from {total_chunks} chunks")
         return selected_indices, front_scores, back_scores
 
     def _select_fast_frame_indices(
@@ -313,7 +322,12 @@ class PairedSplitVideoExtractor:
         shared_fps: float,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        log: Optional[Callable[[str], None]] = None,
     ) -> tuple[list[int], list[float], list[float]]:
+        def _log(msg):
+            if log:
+                log(msg)
+
         front_cap = back_cap = None
         try:
             front_cap, _, _ = self._open_video(front_video)
@@ -359,6 +373,15 @@ class PairedSplitVideoExtractor:
                     )
                     progress_callback(int(raw_pct * 80), 100, msg)
 
+            if paired_entries:
+                front_vals = [e["front_score"] for e in paired_entries]
+                back_vals = [e["back_score"] for e in paired_entries]
+                imbalances = [abs(e["front_score"] - e["back_score"]) for e in paired_entries]
+                _log(f"  Fast scoring: {len(paired_entries)} frame pairs")
+                _log(f"  Front sharpness: min={min(front_vals):.1f} max={max(front_vals):.1f} mean={sum(front_vals)/len(front_vals):.1f}")
+                _log(f"  Back sharpness:  min={min(back_vals):.1f} max={max(back_vals):.1f} mean={sum(back_vals)/len(back_vals):.1f}")
+                _log(f"  Imbalance: min={min(imbalances):.1f} max={max(imbalances):.1f} mean={sum(imbalances)/len(imbalances):.1f}")
+
             if not paired_entries:
                 raise RuntimeError("Fast pair analysis found no overlapping frames")
 
@@ -371,6 +394,7 @@ class PairedSplitVideoExtractor:
                 scene_threshold=0.0,
                 scene_aware=False,
                 use_blur_scores=False,
+                log=_log,
             )
         finally:
             if front_cap is not None:
@@ -392,8 +416,12 @@ class PairedSplitVideoExtractor:
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         duration_sec: float = 0.0,
+        _log: Optional[Callable[[str], None]] = None,
     ) -> tuple[list[int], list[float], list[float]]:
         """Analyze both videos with blurdetect and pick the best shared frame indices."""
+
+        if _log is None:
+            _log = lambda _msg: None
 
         tier = (config.sharpest_tier or "best").lower()
         if tier not in {"fast", "balanced", "best"}:
@@ -409,6 +437,7 @@ class PairedSplitVideoExtractor:
                 shared_fps,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
+                log=_log,
             )
 
         front_data = self._run_blurdetect_analysis(
@@ -455,6 +484,12 @@ class PairedSplitVideoExtractor:
                 }
             )
 
+        if paired_entries:
+            _log(f"  Paired blurdetect: {len(paired_entries)} matched frames")
+            if tier == "best":
+                scene_count = sum(1 for e in paired_entries if e.get("scene_score", 0) >= config.scene_threshold)
+                _log(f"  Scene changes: {scene_count}")
+
         if not paired_entries:
             raise RuntimeError("No overlapping front/back blur metadata was found")
 
@@ -468,6 +503,7 @@ class PairedSplitVideoExtractor:
             scene_threshold=config.scene_threshold,
             scene_aware=(tier == "best"),
             use_blur_scores=True,
+            log=_log,
         )
 
     def _extract_selected_pairs(
@@ -550,7 +586,9 @@ class PairedSplitVideoExtractor:
         config: Optional[PairedSplitConfig] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        log: Optional[Callable[[str], None]] = None,
     ) -> PairedSplitResult:
+        _log = log or (lambda _msg: None)
         if config is None:
             config = PairedSplitConfig()
 
@@ -628,6 +666,7 @@ class PairedSplitVideoExtractor:
                     progress_callback=progress_callback,
                     cancel_check=cancel_check,
                     duration_sec=effective_duration,
+                    log=_log,
                 )
 
             if not selected_frame_indices:
