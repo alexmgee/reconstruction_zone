@@ -368,17 +368,14 @@ def _update_sharpest_tier_ui(app):
     # Enable/disable the tier combo
     combo.configure(state="readonly" if is_sharpest else "disabled")
 
-    # Update tier description (inline on mode row, right of tier combo)
+    # Update tier description (always packed, toggle text to show/hide)
     desc = getattr(app, "extract_sharpest_tier_desc", None)
     if desc:
         if is_sharpest:
             tier = _get_tier_value(app)
             desc.configure(text=_TIER_INFO[tier][1])
-            if not desc.winfo_manager():
-                desc.pack(side="left", padx=(8, 0))
         else:
-            if desc.winfo_manager():
-                desc.pack_forget()
+            desc.configure(text="")
 
 
 def _update_estimate(app, *_args):
@@ -842,11 +839,13 @@ def _build_extract_section(app, parent):
             "Controls how sharpness is measured and\n"
             "how time windows are handled.")
 
-    # Tier description inline on mode row, right of combo (wraps to 2 lines)
+    # Tier description inline on mode row, right of combo
+    # Fixed height (3 lines @ size 10) so the row doesn't shift when text appears
     app.extract_sharpest_tier_desc = ctk.CTkLabel(
         mode_frame, text="", text_color="#9ca3af",
-        font=ctk.CTkFont(size=10), anchor="w", justify="left")
-    # Starts hidden — _update_sharpest_tier_ui will pack/forget it
+        font=ctk.CTkFont(size=10), anchor="w", justify="left",
+        height=42)
+    app.extract_sharpest_tier_desc.pack(side="left", padx=(8, 0))
 
     app.extract_mode_desc = ctk.CTkLabel(
         c, text=_MODE_INFO["fixed"][1], text_color="#9ca3af",
