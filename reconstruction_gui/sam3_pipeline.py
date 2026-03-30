@@ -287,6 +287,9 @@ class SAM3VideoPipeline:
 
                 outputs = response.get("outputs", {})
 
+                frames_with_det = 0
+                batch_objects = 0
+
                 for frame_idx in frame_indices:
                     frame_data = outputs.get(frame_idx, {})
                     original_file = name_map.get(frame_idx)
@@ -314,12 +317,20 @@ class SAM3VideoPipeline:
                     if n_objects > 0:
                         stats['frames_with_detections'] += 1
                         stats['total_objects'] += n_objects
+                        frames_with_det += 1
+                        batch_objects += n_objects
 
                     # Save mask
                     stem = original_file.stem
                     mask_path = masks_dir / f"{stem}.{self.config.output_format}"
                     cv2.imwrite(str(mask_path), combined)
                     stats['processed_frames'] += 1
+
+                logger.info(
+                    f"  Batch {batch_start}-{batch_end-1}: "
+                    f"{frames_with_det}/{len(frame_indices)} frames with objects, "
+                    f"{batch_objects} total objects"
+                )
 
                 if progress_callback:
                     progress_callback(batch_end, n_frames, "Retrieving masks...")
@@ -336,9 +347,10 @@ class SAM3VideoPipeline:
             if prepared_dir != frames_path and prepared_dir.exists():
                 shutil.rmtree(prepared_dir, ignore_errors=True)
 
+        det_pct = stats['frames_with_detections'] / max(n_frames, 1) * 100
         logger.info(
-            f"SAM3 pipeline complete: {stats['processed_frames']}/{stats['total_frames']} frames, "
-            f"{stats['total_objects']} total detections"
+            f"SAM3 video complete: {stats['processed_frames']}/{n_frames} frames processed, "
+            f"{stats['frames_with_detections']} with detections ({det_pct:.0f}%)"
         )
         return stats
 
