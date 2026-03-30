@@ -230,6 +230,7 @@ class BridgeExtractor:
         stream_index: Optional[int] = None,
         video_duration: Optional[float] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
+        log: Optional[Callable[[str], None]] = None,
     ) -> BridgeResult:
         """Extract bridge frames for all gaps in a report.
 
@@ -248,11 +249,20 @@ class BridgeExtractor:
         Returns:
             BridgeResult with all extracted frames and metadata.
         """
+        def _log(msg):
+            if log:
+                log(msg)
+
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
         # Plan extraction
         requests = self.plan(gap_report, video_path, video_duration)
+
+        _log(f"Bridge extraction: {len(requests)} gaps planned from {len(gap_report.gaps)} total")
+        for req in requests:
+            _log(f"  Gap {req.gap_index} ({req.gap.gap_type}): {req.start_sec:.1f}s–{req.end_sec:.1f}s "
+                 f"(padding={req.padding_sec:.1f}s, target={req.target_frames} frames)")
 
         if not requests:
             if progress_callback:
@@ -302,6 +312,8 @@ class BridgeExtractor:
                 stream_index=stream_index,
             )
 
+            _log(f"  Gap {req.gap_index}: selected {len(result.selected_frames)}/{req.target_frames} frames")
+
             for fs in result.selected_frames:
                 info = BridgeFrameInfo(
                     path=fs.path,
@@ -334,6 +346,10 @@ class BridgeExtractor:
             output_dir=str(out_path),
         )
 
+        _log(f"Bridge extraction complete: {len(all_frames)} frames from {len(requests)} gaps")
+        if total_reframed:
+            _log(f"  Reframed: {total_reframed} perspective crops")
+
         # Save report
         result.save(str(out_path / "bridge_report.json"))
 
@@ -350,6 +366,7 @@ class BridgeExtractor:
         output_dir: str,
         video_duration: Optional[float] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
+        log: Optional[Callable[[str], None]] = None,
     ) -> List[BridgeFrameInfo]:
         """Extract bridge frames for a single gap.
 
