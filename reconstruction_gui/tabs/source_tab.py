@@ -2801,6 +2801,7 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         ),
         progress_callback=paired_progress,
         cancel_check=lambda: app.cancel_flag.is_set(),
+        log=app.log,
     )
 
     extract_elapsed = time.perf_counter() - t_extract
