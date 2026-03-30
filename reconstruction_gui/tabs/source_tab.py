@@ -149,9 +149,9 @@ _LABEL_TO_MODE = {info[0]: key for key, info in _MODE_INFO.items()}
 _MODE_TO_LABEL = {key: info[0] for key, info in _MODE_INFO.items()}
 
 _TIER_INFO = {
-    "fast": ("Fast", "Laplacian sharpness scoring (fastest, no scene awareness)"),
-    "balanced": ("Balanced", "FFmpeg blurdetect analysis (accurate, no scene awareness)"),
-    "best": ("Best", "FFmpeg blurdetect with scene-aware chunk splitting (most thorough)"),
+    "fast": ("Fast", "Score each frame with OpenCV Laplacian variance, pick sharpest per window. Fastest — pure Python, no ffmpeg analysis pass."),
+    "balanced": ("Balanced", "Analyze blur with ffmpeg blurdetect (more accurate than Laplacian for motion blur), pick sharpest per window. No scene-cut detection."),
+    "best": ("Best", "Analyze blur with ffmpeg blurdetect and detect scene cuts. Splits time windows at scene boundaries so both sides of a cut get a sharp representative frame."),
 }
 _TIER_KEY_TO_LABEL = {k: v[0] for k, v in _TIER_INFO.items()}
 _TIER_LABEL_TO_KEY = {v: k for k, v in _TIER_KEY_TO_LABEL.items()}
@@ -839,9 +839,14 @@ def _build_extract_section(app, parent):
     )
     app.extract_tier_combo.pack(side="left", padx=(4, 0))
     Tooltip(app.extract_tier_combo,
-            "Fast: Laplacian sharpness (fastest).\n"
-            "Balanced: FFmpeg blurdetect (accurate).\n"
-            "Best: blurdetect + scene-aware (most thorough).")
+            "Controls how sharpness is measured before picking winners.\n\n"
+            "Fast: OpenCV Laplacian variance — quickest, good enough\n"
+            "for stable footage with no abrupt scene changes.\n\n"
+            "Balanced: ffmpeg blurdetect — better at catching motion\n"
+            "blur, but no scene-cut awareness.\n\n"
+            "Best: ffmpeg blurdetect + scene detection — splits time\n"
+            "windows at scene cuts so you get a sharp frame from\n"
+            "both sides of a transition.")
 
     app.extract_mode_desc = ctk.CTkLabel(
         c, text=_MODE_INFO["fixed"][1], text_color="#9ca3af",
