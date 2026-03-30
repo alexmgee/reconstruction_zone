@@ -31,7 +31,7 @@ Usage:
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -163,6 +163,7 @@ class MotionSelector:
         frame_paths: List[str],
         max_frames: Optional[int] = None,
         progress_callback=None,
+        log: Optional[Callable[[str], None]] = None,
     ) -> SelectionResult:
         """Select optimal frames from a list of image paths.
 
@@ -174,6 +175,8 @@ class MotionSelector:
         Returns:
             SelectionResult with selected frames and scores.
         """
+        _log = log if log is not None else lambda _: None
+
         if not frame_paths:
             return SelectionResult(0, 0, 0, [], [])
 
@@ -194,6 +197,12 @@ class MotionSelector:
             if progress_callback:
                 progress_callback(i + 1, len(frame_paths), f"scoring {Path(path).name}")
 
+        _log(f"  Sharpness scoring: {len(all_scores)} frames")
+        if all_scores:
+            sharp_vals = [f.sharpness for f in all_scores]
+            _log(f"  Sharpness: min={min(sharp_vals):.1f} max={max(sharp_vals):.1f} "
+                 f"mean={sum(sharp_vals)/len(sharp_vals):.1f}")
+
         # Phase 2: Reject blurry frames
         sharpness_rejected = 0
         candidates = []
@@ -202,6 +211,8 @@ class MotionSelector:
                 candidates.append(fs)
             else:
                 sharpness_rejected += 1
+
+        _log(f"  Rejected for blur: {sharpness_rejected} (threshold={self.min_sharpness:.1f})")
 
         if not candidates:
             return SelectionResult(
@@ -219,8 +230,13 @@ class MotionSelector:
             if progress_callback:
                 progress_callback(i + 1, len(candidates), f"flow {Path(fs.path).name}")
 
+        flow_vals = [f.flow_from_prev for f in candidates if f.flow_from_prev > 0]
+        if flow_vals:
+            _log(f"  Optical flow ({len(flow_vals)} pairs): min={min(flow_vals):.1f} "
+                 f"max={max(flow_vals):.1f} mean={sum(flow_vals)/len(flow_vals):.1f}")
+
         # Phase 4: Greedy selection maintaining target baseline
-        selected = self._greedy_select(candidates, max_frames)
+        selected = self._greedy_select(candidates, max_frames, log=log)
 
         return SelectionResult(
             total_candidates=len(all_scores),
@@ -385,6 +401,7 @@ class MotionSelector:
         self,
         candidates: List[FrameScore],
         max_frames: Optional[int],
+        log: Optional[Callable[[str], None]] = None,
     ) -> List[FrameScore]:
         """Greedy frame selection maintaining target motion baseline.
 
@@ -396,6 +413,8 @@ class MotionSelector:
         - Skip if accumulated flow > max_flow (too much motion)
         - Continue until we hit max_frames or run out of candidates
         """
+        _log = log if log is not None else lambda _: None
+
         if not candidates:
             return []
 
@@ -409,12 +428,17 @@ class MotionSelector:
         accumulated_flow = 0.0
         window = []  # frames since last selection
 
+        skipped_low_flow = 0
+        forced_high_flow = 0
+        normal_select = 0
+
         for i in range(1, len(candidates)):
             fs = candidates[i]
             accumulated_flow += fs.flow_from_prev
 
             # Too little motion — skip (too similar to last selected)
             if accumulated_flow < self.min_flow:
+                skipped_low_flow += 1
                 continue
 
             window.append((fs, accumulated_flow))
@@ -426,6 +450,7 @@ class MotionSelector:
                 best_fs = best[0]
                 best_fs.selected = True
                 selected.append(best_fs)
+                normal_select += 1
 
                 # Reset accumulation from the selected frame's position
                 # Approximate: use remaining flow after selected frame
@@ -445,11 +470,18 @@ class MotionSelector:
                 best_fs = best[0]
                 best_fs.selected = True
                 selected.append(best_fs)
+                forced_high_flow += 1
                 accumulated_flow = 0.0
                 window = []
 
                 if max_frames is not None and len(selected) >= max_frames:
                     break
+
+        _log(f"  Greedy selection: {len(selected)} kept from {len(candidates)} candidates")
+        _log(f"    Normal picks: {normal_select}, Forced (high flow): {forced_high_flow}, "
+             f"Skipped (low flow): {skipped_low_flow}")
+        _log(f"    Target flow: {self.target_flow:.1f}, "
+             f"Min: {self.min_flow:.1f}, Max: {self.max_flow:.1f}")
 
         return selected
 
