@@ -26,7 +26,8 @@ Usage:
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Union
+import time
+from typing import Callable, List, Optional, Tuple, Dict, Union
 from concurrent.futures import ProcessPoolExecutor
 
 import cv2
@@ -683,6 +684,7 @@ def batch_extract(
     num_workers: int = 1,
     progress_callback=None,
     station_dirs: bool = False,
+    log: Optional[Callable[[str], None]] = None,
 ) -> Tuple[int, List[str]]:
     """Extract perspective views from multiple fisheye frame pairs.
 
@@ -701,7 +703,16 @@ def batch_extract(
     Returns:
         (total_crops_saved, list_of_errors)
     """
+    def _log(msg):
+        if log:
+            log(msg)
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    _log(f"Fisheye reframer: {len(frame_pairs)} pairs, {config.total_views()} views each")
+    _log(f"  Calibration: FOV={calibration.front.fov_degrees:.0f}\u00b0 "
+         f"(RMS front={calibration.front.rms_error:.3f}, back={calibration.back.rms_error:.3f})")
+    _log(f"  Crop: {config.crop_size}x{config.crop_size}, quality={config.quality}")
 
     # Build mask lookup by stem name
     mask_map = {}
@@ -710,6 +721,7 @@ def batch_extract(
         for ext in ['*.png', '*.jpg', '*.jpeg', '*.PNG', '*.JPG', '*.JPEG']:
             for m in mask_path.glob(ext):
                 mask_map[m.stem] = str(m)
+        _log(f"  Masks: {len(mask_map)} found in {mask_dir}")
 
     calib_dict = _calib_to_dict(calibration)
     config_dict = _config_to_dict(config)
@@ -717,6 +729,7 @@ def batch_extract(
     total_saved = 0
     errors = []
     frame_names = []
+    t0 = time.perf_counter()
 
     if num_workers > 1:
         args_list = [
@@ -771,6 +784,14 @@ def batch_extract(
 
             if progress_callback:
                 progress_callback(i + 1, len(frame_pairs), f"pair {i+1}")
+
+    elapsed = time.perf_counter() - t0
+    _log(f"Fisheye reframing complete: {len(frame_pairs)} pairs \u2192 {total_saved} crops "
+         f"({elapsed:.1f}s, {elapsed/max(len(frame_pairs),1):.2f}s/pair)")
+    if errors:
+        _log(f"  Errors: {len(errors)}")
+        for err in errors[:3]:
+            _log(f"    {err}")
 
     # Write station metadata
     if station_dirs and len(errors) == 0:

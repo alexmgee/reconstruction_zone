@@ -3003,6 +3003,7 @@ def _fisheye_worker(
             mask_dir=masks_dir,
             num_workers=1, progress_callback=rf_progress,
             station_dirs=station_dirs,
+            log=app.log,
         )
 
         lines = [
@@ -3076,6 +3077,7 @@ def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config, station
         num_workers=1,
         progress_callback=rf_progress,
         station_dirs=station_dirs,
+        log=app.log,
     )
 
     lines = [
