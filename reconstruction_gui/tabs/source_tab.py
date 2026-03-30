@@ -1494,14 +1494,23 @@ def _extract_single_worker(app, video_path, base_output):
             mode_display = f"sharpest (tier: {tier})"
         else:
             mode_display = mode_str
-        app.log(f"Mode: {mode_display}, Interval: {interval}s")
+        app.log(f"Mode: {mode_display}, Interval: {interval:.1f}s")
         app.log(f"Format: {fmt} q{quality}"
                 + (f", Time range: {start or '0:00'}\u2013{end or 'end'}" if start or end else ""))
+
+        _last_logged_pct = [-1]  # mutable for closure
 
         def progress(curr, total, msg):
             if total > 0 and hasattr(app, "extract_progress_bar"):
                 app.after(0, lambda p=curr/total: app.extract_progress_bar.set(p))
             if msg:
+                # Throttle log output: only log at 10% intervals for analysis,
+                # but always log non-percentage messages (extraction progress, etc.)
+                pct = int(curr / total * 100) if total > 0 else -1
+                if pct >= 0 and "Analyzing:" in msg:
+                    if pct // 10 == _last_logged_pct[0] // 10 and pct != 0:
+                        return  # skip — same 10% band
+                    _last_logged_pct[0] = pct
                 app.after(0, lambda m=msg: app.log(m))
 
         used_sharpest = False
