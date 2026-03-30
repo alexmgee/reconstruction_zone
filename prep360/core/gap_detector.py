@@ -28,7 +28,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -510,6 +510,7 @@ class GapDetector:
         metashape_xml: Optional[str] = None,
         xmp_dir: Optional[str] = None,
         source_images_dir: Optional[str] = None,
+        log: Optional[Callable[[str], None]] = None,
     ) -> GapReport:
         """Complete gap analysis on a reconstruction.
 
@@ -525,6 +526,10 @@ class GapDetector:
                                Used to detect failed images (present
                                in source but not in reconstruction).
         """
+        def _log(msg):
+            if log:
+                log(msg)
+
         # Parse cameras from the provided source
         if metashape_xml is not None:
             cameras = self.parse_metashape_cameras(metashape_xml)
@@ -552,6 +557,8 @@ class GapDetector:
                 "Provide one of: colmap_dir, metashape_xml, or xmp_dir"
             )
 
+        _log(f"Gap analysis: {len(cameras)} cameras aligned")
+
         aligned_names = {c.name for c in cameras}
 
         # Detect failed images
@@ -566,9 +573,14 @@ class GapDetector:
             )
             failed_images = [n for n in all_source if n not in aligned_names]
             total_images = len(all_source)
+            if failed_images:
+                _log(f"  Failed images: {len(failed_images)} of {total_images} not in reconstruction")
 
         # Cluster into components
         components, labels = self.detect_components(cameras)
+        comp_sizes = ', '.join(str(len(c)) for c in components)
+        _log(f"  Components: {len(components)} (sizes: {comp_sizes})")
+        _log(f"  Clustering: eps={self.cluster_eps:.1f}, sparse_threshold={self.sparse_threshold:.1f}")
 
         # Find inter-component gaps
         gaps = self.find_gaps(components)
@@ -576,10 +588,21 @@ class GapDetector:
         # Find sparse regions within the largest component
         if components:
             sparse_gaps = self.find_sparse_regions(components[0])
+            disc_count = len(gaps)  # before adding sparse
             gaps.extend(sparse_gaps)
+        else:
+            sparse_gaps = []
+            disc_count = len(gaps)
+        _log(f"  Gaps found: {disc_count} disconnected, {len(sparse_gaps)} sparse")
 
         # Sort all gaps by severity
         gaps.sort(key=lambda g: g.severity, reverse=True)
+
+        for i, gap in enumerate(gaps):
+            ts_str = ""
+            if gap.estimated_timestamps:
+                ts_str = f", time={gap.estimated_timestamps[0]:.1f}\u2013{gap.estimated_timestamps[1]:.1f}s"
+            _log(f"  Gap {i}: {gap.gap_type}, severity={gap.severity:.2f}, extent={gap.extent:.2f}{ts_str}")
 
         return GapReport(
             num_components=len(components),
