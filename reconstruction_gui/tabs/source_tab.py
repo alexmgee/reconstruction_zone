@@ -1295,70 +1295,118 @@ def _run_post_processing(app, settings, output_dir):
     Applies: LUT, shadow/highlight, sky filter, blur filter, motion selection.
     Reads settings from the ExtractionSettings object (not app GUI vars).
     Deletes rejected frames in-place.
+
+    Returns dict with pipeline stats:
+        {"initial": N, "after_sky": N, "after_blur": N, "after_motion": N,
+         "steps": [("step_name", duration_sec), ...]}
     """
+    import time
     import cv2
     from pathlib import Path
 
     ext_patterns = ("*.jpg", "*.jpeg", "*.png")
-    images = sorted(
-        p for pat in ext_patterns for p in Path(output_dir).glob(pat)
-    )
-    if not images:
-        return
 
-    ext = images[0].suffix.lstrip(".")
+    def _count():
+        return len([p for pat in ext_patterns for p in Path(output_dir).glob(pat)])
+
+    def _images():
+        return sorted(p for pat in ext_patterns for p in Path(output_dir).glob(pat))
+
+    initial_count = _count()
+    if initial_count == 0:
+        return {"initial": 0, "steps": []}
+
+    ext = _images()[0].suffix.lstrip(".")
     quality = settings.quality
+    used_sharpest = (settings.mode == "sharpest")
+    stats = {"initial": initial_count, "steps": []}
+
+    # Log which filters are active
+    parts = []
+    if settings.lut_enabled and settings.lut_path:
+        parts.append(f"LUT={Path(settings.lut_path).name}")
+    else:
+        parts.append("LUT=off")
+    if settings.shadow != 50 or settings.highlight != 50:
+        parts.append(f"Shadow/HL={settings.shadow}/{settings.highlight}")
+    else:
+        parts.append("Shadow/HL=off")
+    parts.append(f"Sky={'on' if settings.sky_filter else 'off'}")
+    if settings.blur_filter and not used_sharpest:
+        parts.append(f"Blur=on({settings.blur_percentile}%)")
+    else:
+        parts.append("Blur=off" if not used_sharpest else "Blur=skip(sharpest)")
+    if settings.motion_enabled:
+        parts.append(f"Motion=on(sharp\u2265{settings.motion_sharpness:.0f}, flow\u2265{settings.motion_flow:.0f})")
+    else:
+        parts.append("Motion=off")
+    app.log(f"Post-processing: {', '.join(parts)}")
 
     # LUT
     if settings.lut_enabled and settings.lut_path and Path(settings.lut_path).exists():
-        app.log(f"  Applying LUT: {Path(settings.lut_path).name}")
+        t0 = time.perf_counter()
+        app.log(f"  Applying LUT: {Path(settings.lut_path).name} (strength {settings.lut_strength:.0%})")
         processor = LUTProcessor()
-        for img_path in images:
+        count = 0
+        for img_path in _images():
             if app.cancel_flag.is_set():
-                return
+                return stats
             img = cv2.imread(str(img_path))
             if img is not None:
                 processed = processor.apply_lut(img, settings.lut_path, settings.lut_strength)
                 params = [cv2.IMWRITE_JPEG_QUALITY, quality] if ext in ("jpg", "jpeg") else []
                 cv2.imwrite(str(img_path), processed, params)
+                count += 1
+        elapsed = time.perf_counter() - t0
+        app.log(f"  LUT applied to {count} frames ({elapsed:.1f}s)")
+        stats["after_lut"] = _count()
+        stats["steps"].append(("lut", elapsed))
 
     # Shadow / highlight
     if settings.shadow != 50 or settings.highlight != 50:
-        app.log("  Applying shadow/highlight adjustments...")
+        t0 = time.perf_counter()
+        app.log(f"  Applying shadow={settings.shadow}, highlight={settings.highlight}...")
         from prep360.core.adjustments import apply_shadow_highlight
-        for img_path in images:
+        count = 0
+        for img_path in _images():
             if app.cancel_flag.is_set():
-                return
+                return stats
             img = cv2.imread(str(img_path))
             if img is not None:
                 adjusted = apply_shadow_highlight(img, settings.shadow, settings.highlight)
                 params = [cv2.IMWRITE_JPEG_QUALITY, quality] if ext in ("jpg", "jpeg") else []
                 cv2.imwrite(str(img_path), adjusted, params)
+                count += 1
+        elapsed = time.perf_counter() - t0
+        app.log(f"  Shadow/highlight applied to {count} frames ({elapsed:.1f}s)")
+        stats["steps"].append(("shadow_hl", elapsed))
 
     # Sky filter
     if settings.sky_filter:
-        app.log("  Running sky filter...")
+        t0 = time.perf_counter()
+        app.log(f"  Sky filter: brightness\u2265{settings.sky_brightness:.2f}, keypoints\u2264{settings.sky_keypoints}...")
         sky_cfg = SkyFilterConfig(
             brightness_threshold=settings.sky_brightness,
             keypoint_threshold=settings.sky_keypoints,
         )
         sky = SkyFilter(sky_cfg)
-        images = sorted(p for pat in ext_patterns for p in Path(output_dir).glob(pat))
         removed = 0
-        for img_path in images:
+        for img_path in _images():
             if app.cancel_flag.is_set():
-                return
+                return stats
             m = sky.analyze_image(str(img_path))
             if m.is_sky:
                 img_path.unlink()
                 removed += 1
-        if removed:
-            app.log(f"  Removed {removed} sky-dominated images")
+        after = _count()
+        elapsed = time.perf_counter() - t0
+        app.log(f"  Sky filter: removed {removed}, kept {after} ({elapsed:.1f}s)")
+        stats["after_sky"] = after
+        stats["steps"].append(("sky", elapsed))
 
     # Blur filter (skip if sharpest mode was used — already pre-filtered)
-    used_sharpest = (settings.mode == "sharpest")
     if settings.blur_filter and not used_sharpest and not app.cancel_flag.is_set():
-        app.log("  Running blur filter...")
+        t0 = time.perf_counter()
         from prep360.core.blur_filter import BlurFilter, BlurFilterConfig
         bf = BlurFilter(BlurFilterConfig(percentile=float(settings.blur_percentile), workers=4))
         scores = bf.analyze_batch(str(output_dir))
@@ -1373,12 +1421,18 @@ def _run_post_processing(app, settings, output_dir):
                     if p.exists():
                         p.unlink()
                         removed += 1
-            if removed:
-                app.log(f"  Removed {removed} blurry frames (kept top {settings.blur_percentile}%)")
+            after = _count()
+            elapsed = time.perf_counter() - t0
+            app.log(f"  Blur filter: scored {len(scores)} frames, "
+                    f"cutoff={cutoff:.1f}, removed {removed} (kept {after}) ({elapsed:.1f}s)")
+            app.log(f"    Scores: min={min(vals):.1f} max={max(vals):.1f} "
+                    f"mean={np.mean(vals):.1f} median={np.median(vals):.1f}")
+            stats["after_blur"] = after
+            stats["steps"].append(("blur", elapsed))
 
     # Motion selection
     if settings.motion_enabled and not app.cancel_flag.is_set():
-        app.log("  Running motion-aware selection...")
+        t0 = time.perf_counter()
         from prep360.core.motion_selector import MotionSelector
         selector = MotionSelector(
             min_sharpness=settings.motion_sharpness,
@@ -1386,20 +1440,37 @@ def _run_post_processing(app, settings, output_dir):
         )
         images = sorted(str(p) for pat in ext_patterns for p in Path(output_dir).glob(pat))
         sel_result = selector.select_from_paths(images)
-        app.log(f"  {sel_result.summary()}")
         selected_set = {f.path for f in sel_result.selected_frames}
         removed = 0
         for p in images:
             if p not in selected_set:
                 Path(p).unlink()
                 removed += 1
-        if removed:
-            app.log(f"  Removed {removed} redundant frames via motion selection")
+        after = _count()
+        elapsed = time.perf_counter() - t0
+        app.log(f"  Motion selection: {sel_result.total_candidates} candidates, "
+                f"{sel_result.sharpness_rejected} rejected blur, "
+                f"selected {sel_result.selected_count} ({elapsed:.1f}s)")
+        if sel_result.selected_frames:
+            sharp_vals = [f.sharpness for f in sel_result.selected_frames]
+            flow_vals = [f.flow_from_prev for f in sel_result.selected_frames if f.flow_from_prev > 0]
+            app.log(f"    Sharpness: min={min(sharp_vals):.1f} max={max(sharp_vals):.1f} "
+                    f"mean={sum(sharp_vals)/len(sharp_vals):.1f}")
+            if flow_vals:
+                app.log(f"    Flow: min={min(flow_vals):.1f} max={max(flow_vals):.1f} "
+                        f"mean={sum(flow_vals)/len(flow_vals):.1f}")
+        stats["after_motion"] = after
+        stats["steps"].append(("motion", elapsed))
+
+    return stats
 
 
 def _extract_single_worker(app, video_path, base_output):
     """Run extraction for a single video directly — no queue involvement."""
     try:
+        import time
+        t_start = time.perf_counter()
+
         video_name = Path(video_path).stem
         output_dir = Path(base_output) / video_name
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1414,10 +1485,18 @@ def _extract_single_worker(app, video_path, base_output):
         start_sec = _parse_time(start) if start else None
         end_sec = _parse_time(end) if end else None
 
+        # Detailed header
         app.log(f"\n{'='*50}")
         app.log(f"Processing: {Path(video_path).name}")
         app.log(f"Output: {output_dir}")
-        app.log(f"Mode: {mode_str}, Interval: {interval}s")
+        if mode_str == "sharpest":
+            tier = _get_tier_value(app)
+            mode_display = f"sharpest (tier: {tier})"
+        else:
+            mode_display = mode_str
+        app.log(f"Mode: {mode_display}, Interval: {interval}s")
+        app.log(f"Format: {fmt} q{quality}"
+                + (f", Time range: {start or '0:00'}\u2013{end or 'end'}" if start or end else ""))
 
         def progress(curr, total, msg):
             if total > 0 and hasattr(app, "extract_progress_bar"):
@@ -1426,6 +1505,8 @@ def _extract_single_worker(app, video_path, base_output):
                 app.after(0, lambda m=msg: app.log(m))
 
         used_sharpest = False
+        app.log(f"\nExtraction...")
+        t_extract = time.perf_counter()
 
         if mode_str == "sharpest":
             used_sharpest = True
@@ -1478,13 +1559,18 @@ def _extract_single_worker(app, video_path, base_output):
                 progress_callback=progress,
             )
 
+        extract_elapsed = time.perf_counter() - t_extract
+
         if app.cancel_flag.is_set():
             app.log("Cancelled")
             return
 
         if result.success:
+            app.log(f"  {result.frame_count} frames extracted ({extract_elapsed:.1f}s)")
+
             settings = _snapshot_settings(app)
-            _run_post_processing(app, settings, output_dir)
+            pp_stats = _run_post_processing(app, settings, output_dir)
+
             # Recount after filtering
             ext = fmt
             final_count = len(list(output_dir.glob(f"*.{ext}")))
@@ -1492,7 +1578,19 @@ def _extract_single_worker(app, video_path, base_output):
             # SRT geotag (after all filters so we only tag surviving frames)
             _maybe_geotag(app, video_path, output_dir)
 
-            app.log(f"Done: {final_count} frames extracted")
+            total_elapsed = time.perf_counter() - t_start
+
+            # Pipeline breakdown: "95 extracted → blur→76 → motion→68"
+            trail = [f"{result.frame_count} extracted"]
+            if pp_stats:
+                for key in ("after_sky", "after_blur", "after_motion"):
+                    if key in pp_stats:
+                        label = key.replace("after_", "")
+                        trail.append(f"{label}\u2192{pp_stats[key]}")
+
+            app.log(f"\nDone: {final_count} frames "
+                    f"({' \u2192 '.join(trail)}) in {total_elapsed:.1f}s")
+            app.log(f"{'='*50}")
         else:
             app.log(f"Error: {result.error}")
 
@@ -1690,6 +1788,11 @@ def _run_extract_queue(app):
 
 def _extract_queue_worker(app):
     try:
+        import time
+        t_queue_start = time.perf_counter()
+        items_done = 0
+        total_frames = 0
+
         while app.extract_queue_processing and not app.cancel_flag.is_set():
             item = app.video_queue.get_next_pending()
             if not item:
@@ -1699,6 +1802,7 @@ def _extract_queue_worker(app):
             app.video_queue.set_processing(item.id)
             app.after(0, lambda: _queue_refresh(app))
 
+            t_item = time.perf_counter()
             app.log(f"\n{'='*50}")
             app.log(f"Processing: {item.filename}")
 
@@ -1730,6 +1834,8 @@ def _extract_queue_worker(app):
                 app.log(f"Output: {output_dir}")
                 app.log(f"Settings: {s.summary()}")
 
+                app.log(f"\nExtraction...")
+                t_extract = time.perf_counter()
                 used_sharpest = False
 
                 if mode_str == "sharpest":
@@ -1784,21 +1890,37 @@ def _extract_queue_worker(app):
                         progress_callback=progress,
                     )
 
+                extract_elapsed = time.perf_counter() - t_extract
+
                 if app.cancel_flag.is_set():
                     app.video_queue.set_cancelled(item.id)
                     app.log(f"Cancelled: {item.filename}")
                     break
 
                 if result.success:
-                    _run_post_processing(app, s, output_dir)
+                    app.log(f"  {result.frame_count} frames extracted ({extract_elapsed:.1f}s)")
+
+                    pp_stats = _run_post_processing(app, s, output_dir)
                     ext = s.format
                     final_count = len(list(output_dir.glob(f"*.{ext}")))
 
                     # SRT geotag (after all filters)
                     _maybe_geotag(app, item.video_path, output_dir)
 
+                    item_elapsed = time.perf_counter() - t_item
                     app.video_queue.set_done(item.id, final_count)
-                    app.log(f"Done: {final_count} frames extracted")
+
+                    trail = [f"{result.frame_count} extracted"]
+                    if pp_stats:
+                        for key in ("after_sky", "after_blur", "after_motion"):
+                            if key in pp_stats:
+                                label = key.replace("after_", "")
+                                trail.append(f"{label}\u2192{pp_stats[key]}")
+
+                    app.log(f"\nDone: {final_count} frames "
+                            f"({' \u2192 '.join(trail)}) in {item_elapsed:.1f}s")
+                    items_done += 1
+                    total_frames += final_count
                 else:
                     app.video_queue.set_error(item.id, result.error or "Unknown error")
                     app.log(f"Error: {result.error}")
@@ -1811,9 +1933,10 @@ def _extract_queue_worker(app):
 
             app.after(0, lambda: _queue_refresh(app))
 
+        queue_elapsed = time.perf_counter() - t_queue_start
         stats = app.video_queue.get_stats()
         app.log(f"\n{'='*50}")
-        app.log("Queue processing complete")
+        app.log(f"Queue complete: {items_done} items, {total_frames} frames in {queue_elapsed:.1f}s")
         app.log(f"Done: {stats['done']}, Errors: {stats['error']}, Cancelled: {stats['cancelled']}")
 
     except Exception as e:
@@ -2575,6 +2698,9 @@ def _split_lenses_worker(app, osv_path, output_dir):
 
 def _paired_split_video_worker(app, front_video, back_video, output_dir):
     """Extract shared frame pairs from graded split lens videos."""
+    import time
+    t_start = time.perf_counter()
+
     settings = _snapshot_settings(app)
     mode = settings.mode
     sharpest_tier = _get_tier_value(app)
@@ -2623,6 +2749,8 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         if not app.cancel_flag.is_set():
             app.log(f"  [{current}/{total}] {msg}")
 
+    app.log(f"\nExtraction...")
+    t_extract = time.perf_counter()
     extractor = PairedSplitVideoExtractor()
     result = extractor.extract(
         front_video,
@@ -2641,9 +2769,13 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         cancel_check=lambda: app.cancel_flag.is_set(),
     )
 
+    extract_elapsed = time.perf_counter() - t_extract
+
     if not result.success:
         app.log(f"Error: {result.error}")
         return
+
+    app.log(f"  {result.pair_count} pairs extracted ({extract_elapsed:.1f}s)")
 
     # Run post-processing on both front and back frame directories
     settings = _snapshot_settings(app)
@@ -2651,10 +2783,14 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
                                   ("back", clip_root / "back" / "frames")]:
         if lens_dir.exists() and any(lens_dir.iterdir()):
             app.log(f"\nPost-processing {lens_label} frames...")
-            _run_post_processing(app, settings, lens_dir)
+            pp_stats = _run_post_processing(app, settings, lens_dir)
+            final = len(list(lens_dir.glob("*.*")))
+            app.log(f"  {lens_label}: {final} frames after post-processing")
+
+    total_elapsed = time.perf_counter() - t_start
 
     summary = "\n".join([
-        "Paired extraction complete",
+        f"Paired extraction complete ({total_elapsed:.1f}s)",
         f"  Frame pairs:   {result.pair_count}",
         f"  Front frames:  {clip_root / 'front' / 'frames'}",
         f"  Back frames:   {clip_root / 'back' / 'frames'}",
