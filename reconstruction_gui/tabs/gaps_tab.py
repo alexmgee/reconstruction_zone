@@ -214,7 +214,7 @@ def _gap_analysis_worker(app, source_path):
         if images_dir:
             kwargs["source_images_dir"] = images_dir
 
-        report = detector.analyze(**kwargs)
+        report = detector.analyze(**kwargs, log=app.log)
         app._last_gap_report = report
 
         summary = report.summary()
@@ -371,6 +371,7 @@ def _bridge_worker(app, video_path, output_dir):
             reframer=reframer,
             view_config=view_config,
             progress_callback=progress,
+            log=app.log,
         )
 
         summary = result.summary()
