@@ -1391,16 +1391,39 @@ def _run_post_processing(app, settings, output_dir):
         )
         sky = SkyFilter(sky_cfg)
         removed = 0
+        sky_metrics = {}
         for img_path in _images():
             if app.cancel_flag.is_set():
                 return stats
             m = sky.analyze_image(str(img_path))
+            sky_metrics[img_path.name] = m
             if m.is_sky:
                 img_path.unlink()
                 removed += 1
         after = _count()
         elapsed = time.perf_counter() - t0
         app.log(f"  Sky filter: removed {removed}, kept {after} ({elapsed:.1f}s)")
+        # Voting diagnostic
+        if sky_metrics:
+            from collections import Counter
+            vote_counts = Counter()
+            borderline = []
+            for name, m in sky_metrics.items():
+                votes = sum([
+                    m.brightness > sky_cfg.brightness_threshold,
+                    m.saturation < sky_cfg.saturation_threshold,
+                    m.keypoint_count < sky_cfg.keypoint_threshold,
+                    m.edge_density < sky_cfg.edge_threshold,
+                ])
+                vote_counts[votes] += 1
+                if votes == 2:
+                    borderline.append((name, m))
+            app.log(f"    Votes (criteria met): {', '.join(f'{k}/4={v}' for k, v in sorted(vote_counts.items()))}")
+            if borderline:
+                app.log(f"    Borderline (2/4 \u2014 one vote from sky): {len(borderline)}")
+                for name, m in borderline[:3]:
+                    app.log(f"      {name}: bright={m.brightness:.2f} sat={m.saturation:.2f} "
+                            f"kp={m.keypoint_count} edge={m.edge_density:.3f}")
         stats["after_sky"] = after
         stats["steps"].append(("sky", elapsed))
 
