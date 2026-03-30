@@ -149,9 +149,9 @@ _LABEL_TO_MODE = {info[0]: key for key, info in _MODE_INFO.items()}
 _MODE_TO_LABEL = {key: info[0] for key, info in _MODE_INFO.items()}
 
 _TIER_INFO = {
-    "fast": ("Fast", "Score each frame with OpenCV Laplacian variance, pick sharpest per window.\nFastest — pure Python, no ffmpeg analysis pass."),
-    "balanced": ("Balanced", "Analyze blur with ffmpeg blurdetect (more accurate for motion blur),\npick sharpest per window. No scene-cut detection."),
-    "best": ("Best", "Analyze blur with ffmpeg blurdetect and detect scene cuts. Splits time\nwindows at scene boundaries so both sides get a sharp representative."),
+    "fast": ("Fast", "Score each frame with OpenCV Laplacian\nvariance, pick sharpest per window.\nFastest — no ffmpeg analysis pass."),
+    "balanced": ("Balanced", "Analyze blur with ffmpeg blurdetect\n(more accurate for motion blur).\nNo scene-cut detection."),
+    "best": ("Best", "ffmpeg blurdetect + scene detection.\nSplits time windows at scene boundaries\nso both sides get a sharp representative."),
 }
 _TIER_KEY_TO_LABEL = {k: v[0] for k, v in _TIER_INFO.items()}
 _TIER_LABEL_TO_KEY = {v: k for k, v in _TIER_KEY_TO_LABEL.items()}
@@ -368,14 +368,14 @@ def _update_sharpest_tier_ui(app):
     # Enable/disable the tier combo
     combo.configure(state="readonly" if is_sharpest else "disabled")
 
-    # Update tier description (own row below mode desc)
+    # Update tier description (inline on mode row, right of tier combo)
     desc = getattr(app, "extract_sharpest_tier_desc", None)
     if desc:
         if is_sharpest:
             tier = _get_tier_value(app)
             desc.configure(text=_TIER_INFO[tier][1])
             if not desc.winfo_manager():
-                desc.pack(fill="x", padx=12, pady=(0, 2), after=app.extract_mode_desc)
+                desc.pack(side="left", padx=(8, 0))
         else:
             if desc.winfo_manager():
                 desc.pack_forget()
@@ -842,16 +842,16 @@ def _build_extract_section(app, parent):
             "Controls how sharpness is measured and\n"
             "how time windows are handled.")
 
+    # Tier description inline on mode row, right of combo (wraps to 2 lines)
+    app.extract_sharpest_tier_desc = ctk.CTkLabel(
+        mode_frame, text="", text_color="#9ca3af",
+        font=ctk.CTkFont(size=10), anchor="w", justify="left")
+    # Starts hidden — _update_sharpest_tier_ui will pack/forget it
+
     app.extract_mode_desc = ctk.CTkLabel(
         c, text=_MODE_INFO["fixed"][1], text_color="#9ca3af",
         font=ctk.CTkFont(size=10), anchor="w")
     app.extract_mode_desc.pack(fill="x", padx=12, pady=(0, 2))
-
-    # Tier description on its own row below mode desc — shown/hidden dynamically
-    app.extract_sharpest_tier_desc = ctk.CTkLabel(
-        c, text="", text_color="#9ca3af",
-        font=ctk.CTkFont(size=10), anchor="w", justify="left")
-    # Starts hidden — _update_sharpest_tier_ui will pack/forget it
 
     int_frame = ctk.CTkFrame(c, fg_color="transparent")
     int_frame.pack(fill="x", pady=3, padx=6)
