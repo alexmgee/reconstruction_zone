@@ -1439,7 +1439,7 @@ def _run_post_processing(app, settings, output_dir):
             target_flow=settings.motion_flow,
         )
         images = sorted(str(p) for pat in ext_patterns for p in Path(output_dir).glob(pat))
-        sel_result = selector.select_from_paths(images)
+        sel_result = selector.select_from_paths(images, log=app.log)
         selected_set = {f.path for f in sel_result.selected_frames}
         removed = 0
         for p in images:
@@ -2950,7 +2950,7 @@ def _fisheye_worker(
                 min_sharpness=app.extract_sharpness_var.get(),
                 target_flow=app.extract_flow_var.get(),
             )
-            sel_result = selector.select_from_paths(front, max_frames=len(front))
+            sel_result = selector.select_from_paths(front, max_frames=len(front), log=app.log)
             app.log(sel_result.summary())
             idx_set = {fs.index for fs in sel_result.selected_frames}
             front = [f for i, f in enumerate(front) if i in idx_set]
