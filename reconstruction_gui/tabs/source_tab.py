@@ -2581,8 +2581,10 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
     sharpest_tier = _get_tier_value(app)
     if mode not in {"fixed", "sharpest"}:
         app.log(
-            "Error: Split lens paired extraction currently supports only "
-            "Fixed Interval and Sharpest Frame."
+            "Error: Split lens paired extraction supports only "
+            "Fixed Interval and Sharpest Frame modes.\n"
+            "Scene Detection produces variable-rate output that "
+            "cannot guarantee synchronized front/back pairs."
         )
         return
 
