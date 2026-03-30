@@ -83,6 +83,7 @@ class SharpestExtractor:
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         prefix_source: bool = True,
+        log: Optional[Callable[[str], None]] = None,
     ) -> SharpestResult:
         """Full pipeline: probe fps → blurdetect → parse → extract.
 
@@ -95,6 +96,10 @@ class SharpestExtractor:
         Returns:
             SharpestResult with extraction details.
         """
+        def _log(msg):
+            if log:
+                log(msg)
+
         if config is None:
             config = SharpestConfig()
 
@@ -112,7 +117,7 @@ class SharpestExtractor:
             return self._extract_fast(
                 video_path=str(video), output_dir=str(out), config=config,
                 progress_callback=progress_callback, cancel_check=cancel_check,
-                prefix_source=prefix_source,
+                prefix_source=prefix_source, log=log,
             )
 
         def _progress(cur, tot, msg):
@@ -127,6 +132,9 @@ class SharpestExtractor:
         duration_sec = self._probe_duration(str(video))
 
         chunk_size = max(1, round(fps * config.interval))
+
+        _log(f"  Tier: {tier}, analysis width: {config.scale_width}px")
+        _log(f"  FPS: {fps:.2f}, chunk size: {chunk_size} frames ({config.interval:.1f}s windows)")
 
         # Step 2 — blurdetect (0-85% of progress)
         _progress(0, 100, f"Running blurdetect (chunk={chunk_size} frames)...")
@@ -145,7 +153,7 @@ class SharpestExtractor:
             _progress(85, 100, "Selecting sharpest frames...")
             best_frames = self._parse_best_frames(
                 metadata_path, chunk_size, config.scene_threshold,
-                scene_aware=(tier == "best"),
+                scene_aware=(tier == "best"), log=log,
             )
             total_analyzed = self._count_analyzed_frames(metadata_path)
 
@@ -195,6 +203,7 @@ class SharpestExtractor:
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         prefix_source: bool = True,
+        log: Optional[Callable[[str], None]] = None,
     ) -> SharpestResult:
         """Fast tier: OpenCV Laplacian variance, no scene awareness.
 
@@ -203,6 +212,11 @@ class SharpestExtractor:
         then re-reads and writes only the winners.
         """
         import cv2
+        import time
+
+        def _log(msg):
+            if log:
+                log(msg)
 
         out = Path(output_dir)
         video = Path(video_path)
@@ -232,6 +246,7 @@ class SharpestExtractor:
         # Pass 1: score every frame
         scores: list = []  # (frame_number, sharpness)
         frames_in_range = end_frame - start_frame
+        t_score = time.perf_counter()
         frame_idx = start_frame
 
         def _progress(cur, tot, msg):
@@ -270,12 +285,20 @@ class SharpestExtractor:
         if not scores:
             return SharpestResult(success=False, error="No frames scored")
 
+        sharp_vals = [s for _, s in scores]
+        _log(f"  Laplacian scoring: {len(scores)} frames ({time.perf_counter() - t_score:.1f}s)")
+        _log(f"  Sharpness: min={min(sharp_vals):.1f} max={max(sharp_vals):.1f} "
+             f"mean={sum(sharp_vals)/len(sharp_vals):.1f}")
+
         # Pick sharpest per window
         best_frames: List[int] = []
         for i in range(0, len(scores), window_size):
             window = scores[i : i + window_size]
             winner = max(window, key=lambda x: x[1])
             best_frames.append(winner[0])
+
+        _log(f"  Windows: {len(best_frames)} winners from {len(range(0, len(scores), window_size))} windows "
+             f"(window_size={window_size} frames)")
 
         if not best_frames:
             return SharpestResult(
@@ -479,6 +502,7 @@ class SharpestExtractor:
         chunk_size: int,
         scene_threshold: float = 0.3,
         scene_aware: bool = True,
+        log: Optional[Callable[[str], None]] = None,
     ) -> List[int]:
         """Parse blurdetect metadata with optional scene-aware chunk splitting.
 
@@ -488,6 +512,10 @@ class SharpestExtractor:
            ``scene_score >= threshold``, split the chunk at that boundary.
         4. Pick the lowest-blur frame from each (sub-)chunk.
         """
+        def _log(msg):
+            if log:
+                log(msg)
+
         pat_frame = re.compile(r"frame:(\d+)")
         pat_blur = re.compile(r"lavfi\.blur=([0-9.]+)")
         pat_scene = re.compile(r"lavfi\.scene_score=([0-9.]+)")
@@ -535,6 +563,13 @@ class SharpestExtractor:
         if not frame_data:
             return []
 
+        blur_vals = [b for _, b, _ in frame_data]
+        _log(f"  Blurdetect: {len(frame_data)} frames scored")
+        _log(f"  Blur scores: min={min(blur_vals):.4f} max={max(blur_vals):.4f} "
+             f"mean={sum(blur_vals)/len(blur_vals):.4f}")
+        scene_count = sum(1 for _, _, s in frame_data if s >= scene_threshold)
+        _log(f"  Scene changes detected: {scene_count}")
+
         # Build interval chunks, then split at scene boundaries
         best: List[int] = []
         for i in range(0, len(frame_data), chunk_size):
@@ -546,6 +581,12 @@ class SharpestExtractor:
             for sc in sub_chunks:
                 winner = min(sc, key=lambda x: x[1])
                 best.append(winner[0])
+
+        total_chunks = len(range(0, len(frame_data), chunk_size))
+        if scene_aware and scene_count > 0:
+            _log(f"  Chunks: {total_chunks} intervals → {len(best)} winners ({scene_count} scene splits)")
+        else:
+            _log(f"  Chunks: {total_chunks} intervals → {len(best)} winners")
 
         return best
 
