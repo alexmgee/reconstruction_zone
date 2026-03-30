@@ -110,6 +110,16 @@ class SkyFilter:
         score = sum([bright_check, sat_check, kp_check, edge_check])
         return score >= 3
 
+    def analyze_image(self, image_path: str) -> SkyMetrics:
+        """Load an image from path and analyze it for sky content."""
+        image = cv2.imread(image_path)
+        if image is None:
+            return SkyMetrics(
+                brightness=0, saturation=0, keypoint_count=999,
+                blue_ratio=0, edge_density=1.0, is_sky=False,
+            )
+        return self.analyze(image)
+
     def is_sky(self, image: np.ndarray) -> bool:
         """Quick check if image is sky."""
         return self.analyze(image).is_sky
