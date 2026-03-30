@@ -7,6 +7,7 @@ using a ring-based configuration system.
 
 import json
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Callable, Tuple
@@ -467,6 +468,7 @@ class Reframer:
         num_workers: int = 4,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         station_dirs: bool = False,
+        log: Optional[Callable[[str], None]] = None,
     ) -> ReframeResult:
         """
         Reframe all equirectangular images in a directory.
@@ -494,6 +496,10 @@ class Reframer:
             images.extend(input_path.glob(ext))
         images = sorted(images)
 
+        def _log(msg):
+            if log:
+                log(msg)
+
         if not images:
             return ReframeResult(
                 success=False,
@@ -502,6 +508,12 @@ class Reframer:
                 output_dir=str(output_path),
                 errors=["No images found in input directory"]
             )
+
+        _log(f"Reframer: {len(images)} images, {self.config.total_views()} views/frame")
+        _log(f"  Rings: {len(self.config.rings)} "
+             f"({', '.join(f'pitch={r.pitch:+.0f}° count={r.count} fov={r.fov:.0f}°' for r in self.config.rings)})")
+        _log(f"  Interpolation: {'py360convert' if HAS_PY360 else 'custom fallback'}")
+        _log(f"  Output: {self.config.output_size}px, JPEG q{self.config.jpeg_quality}")
 
         # Build mask lookup by stem name
         mask_map = {}
@@ -514,6 +526,7 @@ class Reframer:
             unmatched = len(images) - matched
             if unmatched > 0:
                 print(f"Warning: {unmatched} of {len(images)} frames have no matching mask")
+            _log(f"  Masks: {matched}/{len(images)} matched")
 
         # Prepare arguments for parallel processing
         args_list = [
@@ -524,6 +537,7 @@ class Reframer:
         ]
 
         # Process
+        t0 = time.perf_counter()
         errors = []
         total_outputs = 0
 
@@ -547,6 +561,14 @@ class Reframer:
 
                 if progress_callback:
                     progress_callback(i + 1, len(images), images[i].name)
+
+        elapsed = time.perf_counter() - t0
+        _log(f"Reframing complete: {len(images)} frames → {total_outputs} crops ({elapsed:.1f}s, "
+             f"{elapsed/max(len(images),1):.2f}s/frame)")
+        if errors:
+            _log(f"  Errors: {len(errors)}")
+            for err in errors[:3]:
+                _log(f"    {err}")
 
         # Write station metadata JSON
         if station_dirs and len(errors) == 0:
