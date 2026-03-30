@@ -149,9 +149,9 @@ _LABEL_TO_MODE = {info[0]: key for key, info in _MODE_INFO.items()}
 _MODE_TO_LABEL = {key: info[0] for key, info in _MODE_INFO.items()}
 
 _TIER_INFO = {
-    "fast": ("Fast", "Score each frame with OpenCV Laplacian variance, pick sharpest per window. Fastest — pure Python, no ffmpeg analysis pass."),
-    "balanced": ("Balanced", "Analyze blur with ffmpeg blurdetect (more accurate than Laplacian for motion blur), pick sharpest per window. No scene-cut detection."),
-    "best": ("Best", "Analyze blur with ffmpeg blurdetect and detect scene cuts. Splits time windows at scene boundaries so both sides of a cut get a sharp representative frame."),
+    "fast": ("Fast", "OpenCV Laplacian — fastest, no scene awareness"),
+    "balanced": ("Balanced", "ffmpeg blurdetect — accurate, no scene awareness"),
+    "best": ("Best", "blurdetect + scene-aware chunk splitting"),
 }
 _TIER_KEY_TO_LABEL = {k: v[0] for k, v in _TIER_INFO.items()}
 _TIER_LABEL_TO_KEY = {v: k for k, v in _TIER_KEY_TO_LABEL.items()}
