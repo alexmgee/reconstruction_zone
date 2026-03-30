@@ -368,14 +368,14 @@ def _update_sharpest_tier_ui(app):
     # Enable/disable the tier combo
     combo.configure(state="readonly" if is_sharpest else "disabled")
 
-    # Update description
+    # Update description (inline on the mode row, right of tier combo)
     desc = getattr(app, "extract_sharpest_tier_desc", None)
     if desc:
         if is_sharpest:
             tier = _get_tier_value(app)
             desc.configure(text=_TIER_INFO[tier][1])
             if not desc.winfo_manager():
-                desc.pack(fill="x", padx=12, pady=(0, 2), after=app.extract_mode_desc)
+                desc.pack(side="left", padx=(8, 0))
         else:
             if desc.winfo_manager():
                 desc.pack_forget()
@@ -848,15 +848,16 @@ def _build_extract_section(app, parent):
             "windows at scene cuts so you get a sharp frame from\n"
             "both sides of a transition.")
 
+    # Tier description inline, to the right of the combo
+    app.extract_sharpest_tier_desc = ctk.CTkLabel(
+        mode_frame, text="", text_color="#9ca3af",
+        font=ctk.CTkFont(size=10), anchor="w")
+    # Starts hidden — _update_sharpest_tier_ui will pack/forget it
+
     app.extract_mode_desc = ctk.CTkLabel(
         c, text=_MODE_INFO["fixed"][1], text_color="#9ca3af",
         font=ctk.CTkFont(size=10), anchor="w")
     app.extract_mode_desc.pack(fill="x", padx=12, pady=(0, 2))
-
-    app.extract_sharpest_tier_desc = ctk.CTkLabel(
-        c, text="", text_color="#9ca3af",
-        font=ctk.CTkFont(size=10), anchor="w")
-    # Starts hidden — _update_sharpest_tier_ui will show it when needed
 
     int_frame = ctk.CTkFrame(c, fg_color="transparent")
     int_frame.pack(fill="x", pady=3, padx=6)
