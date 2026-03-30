@@ -1934,6 +1934,10 @@ class MaskingPipeline:
         # Combine masks
         combined_mask = self._combine_masks(results)
 
+        coverage = float(np.sum(combined_mask.mask > 0) / combined_mask.mask.size * 100)
+        logger.info(f"  Detections: {len(results)}, coverage: {coverage:.1f}%, "
+                     f"quality: {combined_mask.quality.value} (conf={combined_mask.confidence:.2f})")
+
         # SAM refinement: refine coarse combined mask before temporal smoothing
         if self.sam_refiner is not None and np.any(combined_mask.mask):
             try:
@@ -1991,9 +1995,14 @@ class MaskingPipeline:
                     combined_mask.metadata['shadow_detected'] = True
 
         # Final postprocess on combined mask (dilation + fill holes)
+        before_pct = float(np.sum(combined_mask.mask > 0) / combined_mask.mask.size * 100)
         combined_mask.mask = self.segmenter.postprocess_mask(
             combined_mask.mask, geometry, final=True
         )
+        after_pct = float(np.sum(combined_mask.mask > 0) / combined_mask.mask.size * 100)
+        if abs(after_pct - before_pct) > 0.01:
+            logger.info(f"  Postprocess: {before_pct:.1f}% → {after_pct:.1f}% "
+                        f"(dilation={self.config.mask_dilate_px}px, fill_holes={self.config.fill_holes})")
 
         # Alpha matting: convert binary mask to soft alpha matte (final step)
         if self.matting_refiner is not None and np.any(combined_mask.mask):
@@ -2002,6 +2011,15 @@ class MaskingPipeline:
                 combined_mask.metadata['matting_applied'] = True
             except Exception as e:
                 logger.warning(f"Alpha matting failed: {e}")
+
+        steps_applied = []
+        if combined_mask.metadata.get('sam_refined'): steps_applied.append('SAM-refine')
+        if combined_mask.metadata.get('edge_injected'): steps_applied.append('edge-inject')
+        if combined_mask.metadata.get('vos_keyframe'): steps_applied.append('VOS-keyframe')
+        if combined_mask.metadata.get('shadow_detected'): steps_applied.append('shadow')
+        if combined_mask.metadata.get('matting_applied'): steps_applied.append('matting')
+        if steps_applied:
+            logger.info(f"  Post-steps: {', '.join(steps_applied)}")
 
         self._frame_counter += 1
         return combined_mask
@@ -2073,8 +2091,10 @@ class MaskingPipeline:
         # Segment each face independently
         face_masks = {}
         all_results = []
+        total_face_det = 0
         for face_name, face_img in faces.items():
             results = self._segment(face_img, custom_prompts, ImageGeometry.PINHOLE)
+            total_face_det += len(results)
             if results:
                 # Combine per-face results into single face mask
                 combined = np.zeros(face_img.shape[:2], dtype=np.uint8)
@@ -2088,6 +2108,9 @@ class MaskingPipeline:
 
         # Merge face masks back to equirectangular
         equirect_mask = cubemap.cubemap2equirect(face_masks, (w, h))
+
+        coverage = float(np.sum(equirect_mask > 0) / equirect_mask.size * 100)
+        logger.info(f"  Cubemap merge: {total_face_det} detections → {coverage:.1f}% coverage")
 
         # Compute combined confidence
         if all_results:
@@ -2132,9 +2155,14 @@ class MaskingPipeline:
         # This is needed because per-detection postprocess runs at face level
         # (1024px) where the hole may not be enclosed; at full equirect
         # resolution the morphological close + flood-fill can bridge and fill it.
+        before_pct = float(np.sum(result.mask > 0) / result.mask.size * 100)
         result.mask = self.segmenter.postprocess_mask(
             result.mask, ImageGeometry.EQUIRECTANGULAR, final=True
         )
+        after_pct = float(np.sum(result.mask > 0) / result.mask.size * 100)
+        if abs(after_pct - before_pct) > 0.01:
+            logger.info(f"  Postprocess: {before_pct:.1f}% → {after_pct:.1f}% "
+                        f"(dilation={self.config.mask_dilate_px}px, fill_holes={self.config.fill_holes})")
 
         # Alpha matting on equirect result
         if self.matting_refiner is not None and np.any(result.mask):
@@ -2688,7 +2716,11 @@ class MaskingPipeline:
         with open(output_dir / "statistics.json", 'w') as f:
             json.dump(stats, f, indent=2)
         
-        logger.info(f"Processing complete: {stats}")
+        logger.info(f"Masking complete: {stats['processed_images']}/{stats['total_images']} images "
+                     f"in {stats['processing_time']:.1f}s ({stats['average_time']:.1f}s/image)")
+        logger.info(f"  Review: {stats.get('review_images', 0)}, Rejected: {stats['rejected_images']}")
+        if skipped:
+            logger.info(f"  Skipped (existing): {skipped}")
 
         return stats
 
