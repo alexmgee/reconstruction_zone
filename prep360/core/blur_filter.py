@@ -94,6 +94,7 @@ class BlurFilter:
         self,
         input_dir: str,
         progress_callback: Optional[Callable] = None,
+        log: Optional[Callable[[str], None]] = None,
     ) -> List[BlurScore]:
         """
         Score all images in a directory for sharpness.
@@ -101,10 +102,13 @@ class BlurFilter:
         Args:
             input_dir: Directory containing images.
             progress_callback: Optional callback(current, total, image_name).
+            log: Optional callable for diagnostic log messages.
 
         Returns:
             List of BlurScore sorted by score descending (sharpest first).
         """
+        _log = log or (lambda _: None)
+
         input_path = Path(input_dir)
         images = sorted(
             f for f in input_path.iterdir()
@@ -117,6 +121,8 @@ class BlurFilter:
         paths = [str(p) for p in images]
         scores = []
 
+        import time
+        t0 = time.perf_counter()
         with ProcessPoolExecutor(max_workers=self.config.workers) as executor:
             for i, (path_str, score, metrics) in enumerate(
                 executor.map(_score_image, paths)
@@ -131,6 +137,13 @@ class BlurFilter:
                     progress_callback(i + 1, len(images), bs.image_name)
 
         scores.sort(key=lambda s: s.score, reverse=True)
+        _log(f"  Scored {len(scores)} images ({time.perf_counter() - t0:.1f}s)")
+        if scores:
+            vals = [s.score for s in scores]
+            _log(f"  Laplacian variance: min={min(vals):.1f} max={max(vals):.1f} "
+                 f"mean={np.mean(vals):.1f} median={np.median(vals):.1f} std={np.std(vals):.1f}")
+            _log(f"  Top 3: {', '.join(f'{s.image_name}={s.score:.1f}' for s in scores[:3])}")
+            _log(f"  Bottom 3: {', '.join(f'{s.image_name}={s.score:.1f}' for s in scores[-3:])}")
         return scores
 
     def filter_images(
@@ -139,6 +152,7 @@ class BlurFilter:
         output_dir: str,
         config: Optional[BlurFilterConfig] = None,
         progress_callback: Optional[Callable] = None,
+        log: Optional[Callable[[str], None]] = None,
     ) -> BlurFilterResult:
         """
         Score and filter images, copying sharp ones to output_dir.
@@ -148,16 +162,18 @@ class BlurFilter:
             output_dir: Directory to copy kept images to.
             config: Override config for this run (uses self.config if None).
             progress_callback: Optional callback(current, total, message).
+            log: Optional callable for diagnostic log messages.
 
         Returns:
             BlurFilterResult with kept/rejected lists and statistics.
         """
+        _log = log or (lambda _: None)
         cfg = config or self.config
         input_path = Path(input_dir)
         output_path = Path(output_dir)
 
         # Score all images
-        scores = self.analyze_batch(input_dir, progress_callback)
+        scores = self.analyze_batch(input_dir, progress_callback, log=log)
 
         if not scores:
             return BlurFilterResult(
@@ -175,13 +191,25 @@ class BlurFilter:
         if cfg.keep_top_n is not None:
             idx = min(cfg.keep_top_n, len(scores)) - 1
             cutoff = scores[idx].score
+            _log(f"  Cutoff: keep top {cfg.keep_top_n} (score >= {cutoff:.1f})")
         elif cfg.threshold is not None:
             cutoff = cfg.threshold
+            _log(f"  Cutoff: absolute threshold = {cfg.threshold:.1f}")
         else:
             cutoff = float(np.percentile(score_values, 100 - cfg.percentile))
+            _log(f"  Cutoff: {cfg.percentile}th percentile = {cutoff:.1f}")
 
         kept = [s for s in scores if s.score >= cutoff]
         rejected = [s for s in scores if s.score < cutoff]
+        _log(f"  Kept: {len(kept)}, Rejected: {len(rejected)}")
+
+        if cutoff > 0:
+            near = [s for s in scores if abs(s.score - cutoff) / cutoff < 0.1]
+            if near:
+                _log(f"  Borderline ({len(near)} within 10% of cutoff):")
+                for s in near[:5]:
+                    status = "KEPT" if s.score >= cutoff else "CUT"
+                    _log(f"    {s.image_name}: {s.score:.1f} ({status})")
 
         # Copy kept images
         output_path.mkdir(parents=True, exist_ok=True)

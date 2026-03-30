@@ -1409,7 +1409,7 @@ def _run_post_processing(app, settings, output_dir):
         t0 = time.perf_counter()
         from prep360.core.blur_filter import BlurFilter, BlurFilterConfig
         bf = BlurFilter(BlurFilterConfig(percentile=float(settings.blur_percentile), workers=4))
-        scores = bf.analyze_batch(str(output_dir))
+        scores = bf.analyze_batch(str(output_dir), log=app.log)
         if scores:
             import numpy as np
             vals = [s.score for s in scores]
