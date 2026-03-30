@@ -904,7 +904,7 @@ def _build_extract_section(app, parent):
     # -- Post-Processing (collapsible parent) --
     pp_sec = CollapsibleSection(c, "Post-Processing",
                                 subtitle="filters applied after frame extraction",
-                                expanded=False)
+                                expanded=True)
     pp_sec.pack(fill="x", pady=(4, 0), padx=2)
     pp = pp_sec.content
 
@@ -2153,7 +2153,7 @@ def _build_fisheye_section(app, parent):
         c,
         "Split Lenses",
         subtitle="lossless demux from a 360 container into front/back raw lens videos",
-        expanded=True,
+        expanded=False,
     )
     split_sec.pack(fill="x", padx=2, pady=(4, 0))
     sc = split_sec.content
