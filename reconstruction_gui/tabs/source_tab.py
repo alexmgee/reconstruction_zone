@@ -1533,6 +1533,7 @@ def _extract_single_worker(app, video_path, base_output):
                 video_path, str(output_dir), sharp_cfg,
                 progress_callback=progress,
                 cancel_check=app.cancel_flag.is_set,
+                log=app.log,
             )
             from prep360.core.extractor import ExtractionResult
             if sharp_result.success:
@@ -1863,6 +1864,7 @@ def _extract_queue_worker(app):
                         item.video_path, str(output_dir), sharp_cfg,
                         progress_callback=progress,
                         cancel_check=app.cancel_flag.is_set,
+                        log=app.log,
                     )
                     from prep360.core.extractor import ExtractionResult
                     if sharp_result.success:
