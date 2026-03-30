@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Callable, Dict, Tuple, Set
 import json
+import time
 
 import cv2
 import numpy as np
@@ -186,6 +187,7 @@ class Segmenter:
         self,
         image_path: str,
         output_dir: str,
+        log: Optional[Callable[[str], None]] = None,
     ) -> SegmentResult:
         """
         Segment a single image file and save mask.
@@ -193,6 +195,10 @@ class Segmenter:
         Returns:
             SegmentResult with details
         """
+        def _log(msg):
+            if log:
+                log(msg)
+
         image_path = Path(image_path)
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -211,6 +217,13 @@ class Segmenter:
 
             # Segment
             mask, detections = self.segment_image(image)
+
+            if detections:
+                _log(f"  {image_path.name}: {len(detections)} detections")
+                for det in detections:
+                    _log(f"    {det['class_name']} conf={det['confidence']:.2f}")
+            else:
+                _log(f"  {image_path.name}: no detections")
 
             # Save mask
             mask_name = f"{image_path.stem}_mask.png"
@@ -241,6 +254,7 @@ class Segmenter:
         input_dir: str,
         output_dir: str,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        log: Optional[Callable[[str], None]] = None,
     ) -> BatchSegmentResult:
         """
         Segment all images in a directory.
@@ -253,6 +267,10 @@ class Segmenter:
         Returns:
             BatchSegmentResult with operation details
         """
+        def _log(msg):
+            if log:
+                log(msg)
+
         input_path = Path(input_dir)
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -279,11 +297,13 @@ class Segmenter:
         images_with_detections = 0
         total_detections = 0
 
+        t0 = time.perf_counter()
+
         for i, img_path in enumerate(images):
             if progress_callback:
                 progress_callback(i + 1, len(images), img_path.name)
 
-            result = self.segment_single(str(img_path), str(output_path))
+            result = self.segment_single(str(img_path), str(output_path), log=log)
             results.append(result)
 
             if result.error:
@@ -291,6 +311,19 @@ class Segmenter:
             elif result.detections > 0:
                 images_with_detections += 1
                 total_detections += result.detections
+
+        elapsed = time.perf_counter() - t0
+        _log(f"Segmentation complete: {len(images)} images in {elapsed:.1f}s")
+        _log(f"  With detections: {images_with_detections}/{len(images)}, total: {total_detections}")
+
+        # Class breakdown
+        class_counts = {}
+        for r in results:
+            if r.detections > 0:
+                for cls_name in r.classes_found:
+                    class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+        if class_counts:
+            _log(f"  Classes: {', '.join(f'{name}={count}' for name, count in sorted(class_counts.items(), key=lambda x: -x[1]))}")
 
         return BatchSegmentResult(
             success=len(errors) == 0,
