@@ -24,7 +24,7 @@ class QueueItemStatus(Enum):
 @dataclass
 class ExtractionSettings:
     """Per-item extraction settings captured at queue time."""
-    mode: str = "fixed"          # fixed, scene, adaptive, sharpest
+    mode: str = "fixed"          # fixed, scene, sharpest
     interval: float = 2.0
     quality: int = 95
     format: str = "jpg"
@@ -38,6 +38,12 @@ class ExtractionSettings:
     lut_strength: float = 1.0
     shadow: int = 50
     highlight: int = 50
+    sky_brightness: float = 0.85
+    sky_keypoints: int = 50
+    motion_enabled: bool = False
+    motion_sharpness: float = 50.0
+    motion_flow: float = 10.0
+    sharpest_tier: str = "best"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -59,6 +65,12 @@ class ExtractionSettings:
             lut_strength=data.get("lut_strength", 1.0),
             shadow=data.get("shadow", 50),
             highlight=data.get("highlight", 50),
+            sky_brightness=data.get("sky_brightness", 0.85),
+            sky_keypoints=data.get("sky_keypoints", 50),
+            motion_enabled=data.get("motion_enabled", False),
+            motion_sharpness=data.get("motion_sharpness", 50.0),
+            motion_flow=data.get("motion_flow", 10.0),
+            sharpest_tier=data.get("sharpest_tier", "best"),
         )
 
     def summary(self) -> str:

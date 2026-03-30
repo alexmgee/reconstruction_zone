@@ -187,6 +187,12 @@ def _snapshot_settings(app) -> "ExtractionSettings":
         lut_strength=app.extract_lut_strength_var.get(),
         shadow=app.extract_shadow_var.get(),
         highlight=app.extract_highlight_var.get(),
+        sky_brightness=app.extract_sky_brightness_var.get(),
+        sky_keypoints=app.extract_sky_keypoints_var.get(),
+        motion_enabled=app.extract_motion_enabled_var.get(),
+        motion_sharpness=app.extract_sharpness_var.get(),
+        motion_flow=app.extract_flow_var.get(),
+        sharpest_tier=_get_tier_value(app),
     )
 
 def _on_mode_change(app, label):
@@ -1284,6 +1290,114 @@ def _extract_split_pair_worker(app, front_video, back_video, clip_root):
         app.after(0, lambda: _extract_single_done(app))
 
 
+def _run_post_processing(app, settings, output_dir):
+    """Run post-processing filters on extracted frames in output_dir.
+
+    Applies: LUT, shadow/highlight, sky filter, blur filter, motion selection.
+    Reads settings from the ExtractionSettings object (not app GUI vars).
+    Deletes rejected frames in-place.
+    """
+    import cv2
+    from pathlib import Path
+
+    ext_patterns = ("*.jpg", "*.jpeg", "*.png")
+    images = sorted(
+        p for pat in ext_patterns for p in Path(output_dir).glob(pat)
+    )
+    if not images:
+        return
+
+    ext = images[0].suffix.lstrip(".")
+    quality = settings.quality
+
+    # LUT
+    if settings.lut_enabled and settings.lut_path and Path(settings.lut_path).exists():
+        app.log(f"  Applying LUT: {Path(settings.lut_path).name}")
+        processor = LUTProcessor()
+        for img_path in images:
+            if app.cancel_flag.is_set():
+                return
+            img = cv2.imread(str(img_path))
+            if img is not None:
+                processed = processor.apply_lut(img, settings.lut_path, settings.lut_strength)
+                params = [cv2.IMWRITE_JPEG_QUALITY, quality] if ext in ("jpg", "jpeg") else []
+                cv2.imwrite(str(img_path), processed, params)
+
+    # Shadow / highlight
+    if settings.shadow != 50 or settings.highlight != 50:
+        app.log("  Applying shadow/highlight adjustments...")
+        from prep360.core.adjustments import apply_shadow_highlight
+        for img_path in images:
+            if app.cancel_flag.is_set():
+                return
+            img = cv2.imread(str(img_path))
+            if img is not None:
+                adjusted = apply_shadow_highlight(img, settings.shadow, settings.highlight)
+                params = [cv2.IMWRITE_JPEG_QUALITY, quality] if ext in ("jpg", "jpeg") else []
+                cv2.imwrite(str(img_path), adjusted, params)
+
+    # Sky filter
+    if settings.sky_filter:
+        app.log("  Running sky filter...")
+        sky_cfg = SkyFilterConfig(
+            brightness_threshold=settings.sky_brightness,
+            keypoint_threshold=settings.sky_keypoints,
+        )
+        sky = SkyFilter(sky_cfg)
+        images = sorted(p for pat in ext_patterns for p in Path(output_dir).glob(pat))
+        removed = 0
+        for img_path in images:
+            if app.cancel_flag.is_set():
+                return
+            m = sky.analyze_image(str(img_path))
+            if m.is_sky:
+                img_path.unlink()
+                removed += 1
+        if removed:
+            app.log(f"  Removed {removed} sky-dominated images")
+
+    # Blur filter (skip if sharpest mode was used — already pre-filtered)
+    used_sharpest = (settings.mode == "sharpest")
+    if settings.blur_filter and not used_sharpest and not app.cancel_flag.is_set():
+        app.log("  Running blur filter...")
+        from prep360.core.blur_filter import BlurFilter, BlurFilterConfig
+        bf = BlurFilter(BlurFilterConfig(percentile=float(settings.blur_percentile), workers=4))
+        scores = bf.analyze_batch(str(output_dir))
+        if scores:
+            import numpy as np
+            vals = [s.score for s in scores]
+            cutoff = float(np.percentile(vals, 100 - settings.blur_percentile))
+            removed = 0
+            for s in scores:
+                if s.score < cutoff:
+                    p = Path(output_dir) / s.image_name
+                    if p.exists():
+                        p.unlink()
+                        removed += 1
+            if removed:
+                app.log(f"  Removed {removed} blurry frames (kept top {settings.blur_percentile}%)")
+
+    # Motion selection
+    if settings.motion_enabled and not app.cancel_flag.is_set():
+        app.log("  Running motion-aware selection...")
+        from prep360.core.motion_selector import MotionSelector
+        selector = MotionSelector(
+            min_sharpness=settings.motion_sharpness,
+            target_flow=settings.motion_flow,
+        )
+        images = sorted(str(p) for pat in ext_patterns for p in Path(output_dir).glob(pat))
+        sel_result = selector.select_from_paths(images)
+        app.log(f"  {sel_result.summary()}")
+        selected_set = {f.path for f in sel_result.selected_frames}
+        removed = 0
+        for p in images:
+            if p not in selected_set:
+                Path(p).unlink()
+                removed += 1
+        if removed:
+            app.log(f"  Removed {removed} redundant frames via motion selection")
+
+
 def _extract_single_worker(app, video_path, base_output):
     """Run extraction for a single video directly — no queue involvement."""
     try:
@@ -1316,12 +1430,14 @@ def _extract_single_worker(app, video_path, base_output):
 
         if mode_str == "sharpest":
             used_sharpest = True
+            tier = _get_tier_value(app)
             sharp_cfg = SharpestConfig(
                 interval=interval,
                 quality=quality,
                 output_format=fmt,
                 start_sec=start_sec,
                 end_sec=end_sec,
+                tier=tier,
             )
             sharp_ext = SharpestExtractor()
             sharp_result = sharp_ext.extract(
@@ -1368,88 +1484,11 @@ def _extract_single_worker(app, video_path, base_output):
             return
 
         if result.success:
-            import cv2
+            settings = _snapshot_settings(app)
+            _run_post_processing(app, settings, output_dir)
+            # Recount after filtering
             ext = fmt
-            images = sorted(output_dir.glob(f"*.{ext}"))
-            final_count = len(images)
-
-            # LUT
-            if app.extract_lut_enabled_var.get():
-                lut_path = app.extract_lut_file_entry.get()
-                if lut_path and Path(lut_path).exists():
-                    app.log(f"Applying LUT: {Path(lut_path).name}")
-                    processor = LUTProcessor()
-                    strength = app.extract_lut_strength_var.get()
-                    for img_path in images:
-                        if app.cancel_flag.is_set():
-                            break
-                        img = cv2.imread(str(img_path))
-                        if img is not None:
-                            processed = processor.apply_lut(img, lut_path, strength)
-                            params = ([cv2.IMWRITE_JPEG_QUALITY, quality]
-                                      if ext in ("jpg", "jpeg") else [])
-                            cv2.imwrite(str(img_path), processed, params)
-
-            # Shadow / highlight
-            shadow = app.extract_shadow_var.get()
-            highlight = app.extract_highlight_var.get()
-            if shadow != 50 or highlight != 50:
-                app.log("Applying shadow/highlight adjustments...")
-                from prep360.core.adjustments import apply_shadow_highlight
-                for img_path in images:
-                    if app.cancel_flag.is_set():
-                        break
-                    img = cv2.imread(str(img_path))
-                    if img is not None:
-                        adjusted = apply_shadow_highlight(img, shadow, highlight)
-                        params = ([cv2.IMWRITE_JPEG_QUALITY, quality]
-                                  if ext in ("jpg", "jpeg") else [])
-                        cv2.imwrite(str(img_path), adjusted, params)
-
-            # Sky filter
-            if app.extract_sky_enabled_var.get():
-                app.log("Running sky filter...")
-                sky_cfg = SkyFilterConfig(
-                    brightness_threshold=app.extract_sky_brightness_var.get(),
-                    keypoint_threshold=app.extract_sky_keypoints_var.get(),
-                )
-                sky = SkyFilter(sky_cfg)
-                images = sorted(output_dir.glob(f"*.{ext}"))
-                removed = 0
-                for img_path in images:
-                    if app.cancel_flag.is_set():
-                        break
-                    m = sky.analyze_image(str(img_path))
-                    if m.is_sky:
-                        img_path.unlink()
-                        removed += 1
-                if removed:
-                    app.log(f"Removed {removed} sky-dominated images")
-                    final_count -= removed
-
-            # Blur filter — skip if already using sharpest mode
-            if (app.extract_blur_enabled_var.get()
-                    and not used_sharpest
-                    and not app.cancel_flag.is_set()):
-                app.log("Running blur filter...")
-                from prep360.core.blur_filter import BlurFilter, BlurFilterConfig
-                pct = app.extract_blur_percentile_var.get()
-                bf = BlurFilter(BlurFilterConfig(percentile=float(pct), workers=4))
-                scores = bf.analyze_batch(str(output_dir))
-                if scores:
-                    import numpy as np
-                    vals = [s.score for s in scores]
-                    cutoff = float(np.percentile(vals, 100 - pct))
-                    blur_removed = 0
-                    for s in scores:
-                        if s.score < cutoff:
-                            p = output_dir / s.image_name
-                            if p.exists():
-                                p.unlink()
-                                blur_removed += 1
-                    if blur_removed:
-                        app.log(f"Removed {blur_removed} blurry frames (kept top {pct}%)")
-                        final_count -= blur_removed
+            final_count = len(list(output_dir.glob(f"*.{ext}")))
 
             # SRT geotag (after all filters so we only tag surviving frames)
             _maybe_geotag(app, video_path, output_dir)
@@ -1703,6 +1742,7 @@ def _extract_queue_worker(app):
                         output_format=fmt,
                         start_sec=start_sec,
                         end_sec=end_sec,
+                        tier=s.sharpest_tier,
                     )
                     sharp_ext = SharpestExtractor()
                     sharp_result = sharp_ext.extract(
@@ -1751,85 +1791,9 @@ def _extract_queue_worker(app):
                     break
 
                 if result.success:
-                    import cv2
-                    ext = fmt
-                    images = sorted(output_dir.glob(f"*.{ext}"))
-                    final_count = len(images)
-
-                    # LUT
-                    if s.lut_enabled:
-                        lut_path = s.lut_path
-                        if lut_path and Path(lut_path).exists():
-                            app.log(f"Applying LUT: {Path(lut_path).name}")
-                            processor = LUTProcessor()
-                            for img_path in images:
-                                if app.cancel_flag.is_set():
-                                    break
-                                img = cv2.imread(str(img_path))
-                                if img is not None:
-                                    processed = processor.apply_lut(img, lut_path, s.lut_strength)
-                                    params = ([cv2.IMWRITE_JPEG_QUALITY, quality]
-                                              if ext in ("jpg", "jpeg") else [])
-                                    cv2.imwrite(str(img_path), processed, params)
-
-                    # Shadow / highlight
-                    if s.shadow != 50 or s.highlight != 50:
-                        app.log("Applying shadow/highlight adjustments...")
-                        from prep360.core.adjustments import apply_shadow_highlight
-                        for img_path in images:
-                            if app.cancel_flag.is_set():
-                                break
-                            img = cv2.imread(str(img_path))
-                            if img is not None:
-                                adjusted = apply_shadow_highlight(img, s.shadow, s.highlight)
-                                params = ([cv2.IMWRITE_JPEG_QUALITY, quality]
-                                          if ext in ("jpg", "jpeg") else [])
-                                cv2.imwrite(str(img_path), adjusted, params)
-
-                    # Sky filter
-                    if s.sky_filter:
-                        app.log("Running sky filter...")
-                        sky_cfg = SkyFilterConfig(
-                            brightness_threshold=app.extract_sky_brightness_var.get(),
-                            keypoint_threshold=app.extract_sky_keypoints_var.get(),
-                        )
-                        sky = SkyFilter(sky_cfg)
-                        images = sorted(output_dir.glob(f"*.{ext}"))
-                        removed = 0
-                        for img_path in images:
-                            if app.cancel_flag.is_set():
-                                break
-                            m = sky.analyze_image(str(img_path))
-                            if m.is_sky:
-                                img_path.unlink()
-                                removed += 1
-                        if removed:
-                            app.log(f"Removed {removed} sky-dominated images")
-                            final_count -= removed
-
-                    # Blur filter — skip if already using sharpest mode
-                    if (s.blur_filter
-                            and not used_sharpest
-                            and not app.cancel_flag.is_set()):
-                        app.log("Running blur filter...")
-                        from prep360.core.blur_filter import BlurFilter, BlurFilterConfig
-                        pct = s.blur_percentile
-                        bf = BlurFilter(BlurFilterConfig(percentile=float(pct), workers=4))
-                        scores = bf.analyze_batch(str(output_dir))
-                        if scores:
-                            import numpy as np
-                            vals = [s_item.score for s_item in scores]
-                            cutoff = float(np.percentile(vals, 100 - pct))
-                            blur_removed = 0
-                            for s_item in scores:
-                                if s_item.score < cutoff:
-                                    p = output_dir / s_item.image_name
-                                    if p.exists():
-                                        p.unlink()
-                                        blur_removed += 1
-                            if blur_removed:
-                                app.log(f"Removed {blur_removed} blurry frames (kept top {pct}%)")
-                                final_count -= blur_removed
+                    _run_post_processing(app, s, output_dir)
+                    ext = s.format
+                    final_count = len(list(output_dir.glob(f"*.{ext}")))
 
                     # SRT geotag (after all filters)
                     _maybe_geotag(app, item.video_path, output_dir)
@@ -2680,11 +2644,17 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         app.log(f"Error: {result.error}")
         return
 
+    # Run post-processing on both front and back frame directories
+    settings = _snapshot_settings(app)
+    for lens_label, lens_dir in [("front", clip_root / "front" / "frames"),
+                                  ("back", clip_root / "back" / "frames")]:
+        if lens_dir.exists() and any(lens_dir.iterdir()):
+            app.log(f"\nPost-processing {lens_label} frames...")
+            _run_post_processing(app, settings, lens_dir)
+
     summary = "\n".join([
         "Paired extraction complete",
         f"  Frame pairs:   {result.pair_count}",
-        f"  Front frames:  {frames_root / 'front'}",
-        f"  Back frames:   {frames_root / 'back'}",
         f"  Front frames:  {clip_root / 'front' / 'frames'}",
         f"  Back frames:   {clip_root / 'back' / 'frames'}",
         f"  Manifest:      {clip_root / 'paired_extraction_manifest.json'}",
