@@ -1,21 +1,40 @@
 """
-Projects Tab — Central registry for photogrammetry projects.
+Projects Tab -- Central registry for photogrammetry projects.
 
-Provides a searchable project list (left) and detail/edit panel (right).
+Project pane (left tab content): searchable project list.
+Details pane (right, replaces preview panel): project details, sections.
+All interactions are inline -- no popout dialogs.
 """
 
+import threading
 import customtkinter as ctk
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 from typing import Optional
 
 from widgets import Section, CollapsibleSection, Tooltip
 
 
+# ── Capture method checkboxes (pre-tags) ──
+
+CAPTURE_METHODS = [
+    "drone", "dslr", "phone", "360",
+]
+
+
+# ======================================================================
+#  Entry point
+# ======================================================================
+
 def build_projects_tab(app, parent):
-    """Build the Projects tab UI. Called once during app init."""
+    """Build the Projects tab UI. Called once during app init.
+
+    The project list lives in the tab content (left column of the main layout).
+    Project details go into a separate panel that replaces the preview panel
+    in column 1 of _main_frame when the Projects tab is active.
+    """
     app._selected_project_id = None
 
     # Initialize store
@@ -23,29 +42,33 @@ def build_projects_tab(app, parent):
     store_path = app._prefs.get("tracker_store_path", "D:\\tracker.json")
     app._project_store = ProjectStore(store_path)
 
-    # Two-column layout: list (left) + detail (right)
-    container = ctk.CTkFrame(parent, fg_color="transparent")
-    container.pack(fill="both", expand=True, padx=4, pady=4)
-    container.grid_columnconfigure(0, weight=1, minsize=280)
-    container.grid_columnconfigure(1, weight=2, minsize=400)
-    container.grid_rowconfigure(0, weight=1)
+    # -- Project pane (tab content): project list --
+    _build_list_panel(app, parent)
 
-    # -- Left panel: project list --
-    left = ctk.CTkFrame(container)
-    left.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-    _build_list_panel(app, left)
+    # -- Details pane (lives in _main_frame column 1) --
+    # Created here but only shown when Projects tab is active.
+    app._proj_detail_panel = ctk.CTkFrame(app._main_frame)
 
-    # -- Right panel: project detail --
-    right = ctk.CTkFrame(container)
-    right.grid(row=0, column=1, sticky="nsew")
-    _build_detail_panel(app, right)
+    # Empty-state label (centered placeholder)
+    app._proj_empty_label = ctk.CTkLabel(
+        app._proj_detail_panel, text="Select a project or click + New",
+        font=ctk.CTkFont(size=13), text_color="#9ca3af",
+    )
+    app._proj_empty_label.place(relx=0.5, rely=0.5, anchor="center")
+
+    # Scrollable detail area -- created once, content cleared/rebuilt on selection
+    app._proj_detail_scroll = ctk.CTkScrollableFrame(app._proj_detail_panel)
 
     # Initial list population (deferred so UI is built first)
     parent.after(100, lambda: _refresh_project_list(app))
 
 
+# ======================================================================
+#  Project pane: project list
+# ======================================================================
+
 def _build_list_panel(app, parent):
-    """Left panel: search bar, filter, scrollable project list."""
+    """Project pane: search bar, filter, scrollable project list."""
     # -- Header row: title + buttons --
     header = ctk.CTkFrame(parent, fg_color="transparent")
     header.pack(fill="x", padx=6, pady=(6, 2))
@@ -53,21 +76,14 @@ def _build_list_panel(app, parent):
         header, text="Projects",
         font=ctk.CTkFont(size=14, weight="bold"),
     ).pack(side="left")
-    app._proj_new_btn = ctk.CTkButton(
+    ctk.CTkButton(
         header, text="+ New", width=60,
         command=lambda: _on_new_project(app),
-    )
-    app._proj_new_btn.pack(side="right")
-    app._proj_scan_btn = ctk.CTkButton(
+    ).pack(side="right")
+    ctk.CTkButton(
         header, text="Scan", width=60,
-        command=lambda: _open_scan_dialog(app),
-    )
-    app._proj_scan_btn.pack(side="right", padx=(0, 4))
-    app._proj_export_btn = ctk.CTkButton(
-        header, text="Export", width=60,
-        command=lambda: _open_export_dialog(app),
-    )
-    app._proj_export_btn.pack(side="right", padx=(0, 4))
+        command=lambda: _on_scan(app),
+    ).pack(side="right", padx=(0, 4))
 
     # -- Search bar --
     app._proj_search_var = tk.StringVar()
@@ -78,22 +94,12 @@ def _build_list_panel(app, parent):
     )
     search.pack(fill="x", padx=6, pady=(2, 4))
 
-    # -- Filter row --
-    filter_frame = ctk.CTkFrame(parent, fg_color="transparent")
-    filter_frame.pack(fill="x", padx=6, pady=(0, 4))
-    app._proj_filter_var = tk.StringVar(value="all")
-    for label, val in [("All", "all"), ("Active", "active"), ("Archived", "archived")]:
-        ctk.CTkRadioButton(
-            filter_frame, text=label, variable=app._proj_filter_var,
-            value=val, command=lambda: _refresh_project_list(app),
-        ).pack(side="left", padx=(0, 8))
-
     # -- Scrollable project list --
     app._proj_list_frame = ctk.CTkScrollableFrame(parent)
     app._proj_list_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-    app._proj_list_widgets = []  # track for refresh
+    app._proj_list_widgets = []
 
-    # -- Settings row at bottom --
+    # -- Store path at bottom --
     settings_frame = ctk.CTkFrame(parent, fg_color="transparent")
     settings_frame.pack(fill="x", padx=6, pady=(4, 6), side="bottom")
     ctk.CTkLabel(
@@ -107,103 +113,21 @@ def _build_list_panel(app, parent):
     app._proj_store_label.pack(side="left", padx=(4, 0))
 
 
-def _build_detail_panel(app, parent):
-    """Right panel: project detail view with stages, sources, notes."""
-    app._proj_detail_parent = parent
-
-    # Placeholder when nothing selected
-    app._proj_empty_label = ctk.CTkLabel(
-        parent, text="Select a project or create a new one",
-        font=ctk.CTkFont(size=13), text_color="#9ca3af",
-    )
-    app._proj_empty_label.place(relx=0.5, rely=0.5, anchor="center")
-
-    # Scrollable detail (hidden until project selected)
-    app._proj_detail_scroll = ctk.CTkScrollableFrame(parent)
-    # Will be packed when a project is selected
-
-
-# ── New Project Dialog ──
-
-def _on_new_project(app):
-    """Create a new project via a popup dialog."""
-    dialog = ctk.CTkToplevel(app)
-    dialog.title("New Project")
-    dialog.geometry("420x280")
-    dialog.transient(app)
-    dialog.grab_set()
-
-    ctk.CTkLabel(dialog, text="Project Title:", anchor="w").pack(
-        fill="x", padx=16, pady=(16, 2),
-    )
-    title_entry = ctk.CTkEntry(dialog, placeholder_text="e.g. Grand Island Interior")
-    title_entry.pack(fill="x", padx=16, pady=(0, 8))
-    title_entry.focus_set()
-
-    ctk.CTkLabel(dialog, text="Scene Type:", anchor="w").pack(
-        fill="x", padx=16, pady=(0, 2),
-    )
-    scene_var = tk.StringVar(value="interior")
-    scene_menu = ctk.CTkOptionMenu(
-        dialog, variable=scene_var,
-        values=["interior", "exterior", "object", "landscape", "aerial", "other"],
-    )
-    scene_menu.pack(fill="x", padx=16, pady=(0, 8))
-
-    ctk.CTkLabel(dialog, text="Tags (comma-separated):", anchor="w").pack(
-        fill="x", padx=16, pady=(0, 2),
-    )
-    tags_entry = ctk.CTkEntry(dialog, placeholder_text="e.g. edgeworks, 360, client-work")
-    tags_entry.pack(fill="x", padx=16, pady=(0, 16))
-
-    def _create():
-        t = title_entry.get().strip()
-        if not t:
-            return
-        proj = app._project_store.create_project(t, scene_var.get())
-        raw_tags = tags_entry.get().strip()
-        if raw_tags:
-            proj.tags = [tag.strip() for tag in raw_tags.split(",") if tag.strip()]
-            app._project_store.save()
-        dialog.destroy()
-        _refresh_project_list(app)
-        _show_project_detail(app, proj.id)
-
-    ctk.CTkButton(dialog, text="Create Project", command=_create).pack(
-        padx=16, pady=(0, 16),
-    )
-    dialog.bind("<Return>", lambda e: _create())
-
-
-# ── Project List ──
+# ======================================================================
+#  Project list refresh + row widget
+# ======================================================================
 
 def _refresh_project_list(app):
     """Rebuild the project list from the store."""
     if not app._project_store:
         return
 
-    # Clear existing widgets
     for w in app._proj_list_widgets:
         w.destroy()
     app._proj_list_widgets.clear()
 
-    # Determine filters
-    filt = app._proj_filter_var.get()
     search = app._proj_search_var.get().strip()
-
-    if filt == "all":
-        projects = app._project_store.list_projects(
-            include_archived=True, search=search,
-        )
-    elif filt == "archived":
-        projects = app._project_store.list_projects(
-            include_archived=True, search=search,
-        )
-        projects = [p for p in projects if p.archived]
-    else:  # "active"
-        projects = app._project_store.list_projects(
-            include_archived=False, search=search,
-        )
+    projects = app._project_store.list_projects(include_archived=False, search=search)
 
     for proj in projects:
         row = _create_project_list_row(app, proj)
@@ -213,7 +137,7 @@ def _refresh_project_list(app):
     if not projects:
         lbl = ctk.CTkLabel(
             app._proj_list_frame,
-            text="No projects found" if search else "No projects yet \u2014 click + New",
+            text="No projects found" if search else "No projects yet -- click + New",
             text_color="#9ca3af",
         )
         lbl.pack(pady=20)
@@ -222,8 +146,6 @@ def _refresh_project_list(app):
 
 def _create_project_list_row(app, proj) -> ctk.CTkFrame:
     """Create a clickable row for one project in the list."""
-    from project_store import STAGE_ORDER
-
     row = ctk.CTkFrame(app._proj_list_frame, cursor="hand2")
 
     title_lbl = ctk.CTkLabel(
@@ -233,12 +155,11 @@ def _create_project_list_row(app, proj) -> ctk.CTkFrame:
     )
     title_lbl.pack(fill="x", padx=8, pady=(4, 0))
 
-    # Stage indicator: compact text showing current stage
-    stage = proj.current_stage().replace("_", " ").title()
-    done_count = sum(1 for s in proj.stages.values() if s.status == "done")
-    subtitle = f"{stage}  |  {done_count}/{len(STAGE_ORDER)} stages"
-    if proj.scene_type:
-        subtitle = f"{proj.scene_type}  |  {subtitle}"
+    # Subtitle: source count + tags preview
+    src_count = len(proj.sources)
+    subtitle = f"{src_count} source{'s' if src_count != 1 else ''}"
+    if proj.tags:
+        subtitle += f"  |  {', '.join(proj.tags[:3])}"
 
     sub_lbl = ctk.CTkLabel(
         row, text=subtitle,
@@ -259,183 +180,389 @@ def _create_project_list_row(app, proj) -> ctk.CTkFrame:
     return row
 
 
-# ── Project Detail Panel ──
+# ======================================================================
+#  New project (instant creation, no dialog)
+# ======================================================================
+
+def _on_new_project(app):
+    """Create a new project with a date-based default title and select it."""
+    title = datetime.now().strftime("%Y-%m-%d Untitled")
+    proj = app._project_store.create_project(title)
+    _refresh_project_list(app)
+    _show_project_detail(app, proj.id)
+
+
+# ======================================================================
+#  Details pane: project detail
+# ======================================================================
 
 def _show_project_detail(app, project_id: str):
-    """Populate the right panel with full project details."""
-    from project_store import STAGE_ORDER
-
+    """Populate the details pane with full project details."""
     proj = app._project_store.get_project(project_id)
     if not proj:
         return
 
     app._selected_project_id = project_id
-    _refresh_project_list(app)  # Update selection highlight
+    _refresh_project_list(app)
 
-    # Hide placeholder, destroy old detail scroll, create fresh one
+    # Hide placeholder, clear old content, show scroll frame
     app._proj_empty_label.place_forget()
-    if app._proj_detail_scroll.winfo_exists():
-        app._proj_detail_scroll.destroy()
-    app._proj_detail_scroll = ctk.CTkScrollableFrame(app._proj_detail_parent)
-    app._proj_detail_scroll.pack(fill="both", expand=True, padx=4, pady=4)
     scroll = app._proj_detail_scroll
+    for w in scroll.winfo_children():
+        w.destroy()
+    scroll.pack(fill="both", expand=True, padx=4, pady=4)
 
-    # -- Title + scene type --
-    header = ctk.CTkFrame(scroll, fg_color="transparent")
-    header.pack(fill="x", padx=4, pady=(4, 8))
+    # ── Pipeline header (always visible at top) ──
+    _build_pipeline_header(app, scroll, proj)
+
+    # ── Separator ──
+    ctk.CTkFrame(scroll, height=1, fg_color=("#d1d5db", "#404040")).pack(
+        fill="x", padx=4, pady=(4, 8),
+    )
+
+    # ── Sections (all expanded by default) ──
+    _build_project_info_section(app, scroll, proj)
+    _build_notes_section(app, scroll, proj)
+    _build_media_section(app, scroll, proj)
+    _build_export_section(app, scroll, proj)
+    _build_tags_section(app, scroll, proj)
+    _build_delete_button(app, scroll, proj)
+
+
+# ── Pipeline header ──
+
+def _build_pipeline_header(app, parent, proj):
+    """Fixed header: project title."""
+    header = ctk.CTkFrame(parent, fg_color="transparent")
+    header.pack(fill="x", padx=4, pady=(4, 2))
+
     ctk.CTkLabel(
         header, text=proj.title,
         font=ctk.CTkFont(size=16, weight="bold"), anchor="w",
     ).pack(side="left")
-    if proj.scene_type:
-        ctk.CTkLabel(
-            header, text=f"  [{proj.scene_type}]",
-            font=("Consolas", 11), text_color="#9ca3af", anchor="w",
-        ).pack(side="left")
 
-    # Archive / Delete buttons
-    btn_frame = ctk.CTkFrame(header, fg_color="transparent")
-    btn_frame.pack(side="right")
-    ctk.CTkButton(
-        btn_frame, text="Archive", width=70, fg_color="#6b7280",
-        command=lambda: _archive_project(app, project_id),
-    ).pack(side="left", padx=(0, 4))
-    ctk.CTkButton(
-        btn_frame, text="Delete", width=60, fg_color="#dc2626", hover_color="#b91c1c",
-        command=lambda: _delete_project(app, project_id),
+
+# ── Project Info section ──
+
+def _build_project_info_section(app, parent, proj):
+    """Editable project info: title, subject, capture method checkboxes, notes."""
+    sec = CollapsibleSection(parent, "Project Info", expanded=True)
+    sec.pack(fill="x", padx=4, pady=(0, 6))
+    c = sec.content
+
+    # Title
+    title_row = ctk.CTkFrame(c, fg_color="transparent")
+    title_row.pack(fill="x", padx=6, pady=3)
+    ctk.CTkLabel(title_row, text="Title:", width=60, anchor="w").pack(side="left")
+    title_entry = ctk.CTkEntry(title_row)
+    title_entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
+    title_entry.insert(0, proj.title)
+
+    def _save_title(event=None):
+        t = title_entry.get().strip()
+        if t and t != proj.title:
+            proj.title = t
+            proj.updated_at = datetime.now().isoformat()
+            app._project_store.save()
+            _refresh_project_list(app)
+    title_entry.bind("<FocusOut>", _save_title)
+    title_entry.bind("<Return>", _save_title)
+
+    # Capture method checkboxes (act as pre-tags)
+    method_label = ctk.CTkFrame(c, fg_color="transparent")
+    method_label.pack(fill="x", padx=6, pady=(6, 2))
+    ctk.CTkLabel(
+        method_label, text="Capture method:",
+        font=ctk.CTkFont(size=11), anchor="w",
     ).pack(side="left")
 
-    # -- Stages --
-    stages_sec = Section(scroll, "Stages")
-    stages_sec.pack(fill="x", padx=4, pady=(0, 6))
-    _build_stages_grid(app, stages_sec.content, proj)
+    method_frame = ctk.CTkFrame(c, fg_color="transparent")
+    method_frame.pack(fill="x", padx=6, pady=(0, 4))
 
-    # -- Sources --
-    sources_sec = Section(scroll, "Sources", subtitle=f"{len(proj.sources)} entries")
-    sources_sec.pack(fill="x", padx=4, pady=(0, 6))
-    _build_sources_list(app, sources_sec.content, proj)
+    # Current tags that match capture methods
+    current_tags = set(proj.tags)
+    app._proj_method_vars = {}
 
-    # Add source button
+    for method in CAPTURE_METHODS:
+        var = tk.BooleanVar(value=method in current_tags)
+        app._proj_method_vars[method] = var
+
+        def _on_method_toggle(m=method, v=var):
+            if v.get():
+                if m not in proj.tags:
+                    proj.tags.append(m)
+            else:
+                if m in proj.tags:
+                    proj.tags.remove(m)
+            proj.updated_at = datetime.now().isoformat()
+            app._project_store.save()
+            _refresh_project_list(app)
+
+        ctk.CTkCheckBox(
+            method_frame, text=method.upper(), variable=var,
+            command=_on_method_toggle,
+            font=ctk.CTkFont(size=10), height=22, width=80,
+        ).pack(side="left", padx=(0, 6))
+
+
+# ── Notes section (entry + submit + selectable removal) ──
+
+def _build_notes_section(app, parent, proj):
+    """Notes as a list: type a note, submit to add, select to remove."""
+    sec = CollapsibleSection(parent, "Notes", expanded=True)
+    sec.pack(fill="x", padx=4, pady=(0, 6))
+    c = sec.content
+
+    # Parse existing notes (newline-separated)
+    notes_list = [n for n in (proj.notes or "").split("\n") if n.strip()]
+
+    # Entry + Submit row
+    entry_row = ctk.CTkFrame(c, fg_color="transparent")
+    entry_row.pack(fill="x", padx=6, pady=(4, 4))
+    note_entry = ctk.CTkEntry(entry_row, placeholder_text="Add a note...")
+    note_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+    def _add_note():
+        text = note_entry.get().strip()
+        if not text:
+            return
+        notes_list.append(text)
+        proj.notes = "\n".join(notes_list)
+        proj.updated_at = datetime.now().isoformat()
+        app._project_store.save()
+        _show_project_detail(app, proj.id)
+
     ctk.CTkButton(
-        sources_sec.content, text="+ Add Source", width=120,
-        command=lambda: _add_source_dialog(app, project_id),
-    ).pack(pady=(4, 4))
+        entry_row, text="Add", width=60, command=_add_note,
+    ).pack(side="right")
+    note_entry.bind("<Return>", lambda e: _add_note())
 
-    # -- Metashape --
-    meta_sec = Section(scroll, "Metashape Project")
-    meta_sec.pack(fill="x", padx=4, pady=(0, 6))
-    _build_metashape_section(app, meta_sec.content, proj)
+    # Listed notes with selection for removal
+    if notes_list:
+        notes_container = ctk.CTkFrame(c, fg_color="transparent")
+        notes_container.pack(fill="x", padx=6, pady=(0, 4))
 
-    # -- Notes --
-    notes_sec = Section(scroll, "Notes")
-    notes_sec.pack(fill="x", padx=4, pady=(0, 6))
-    app._proj_notes_text = ctk.CTkTextbox(notes_sec.content, height=100)
-    app._proj_notes_text.pack(fill="x", padx=4, pady=4)
-    if proj.notes:
-        app._proj_notes_text.insert("1.0", proj.notes)
+        selected_indices = set()
+
+        def _toggle_select(idx, row_frame):
+            if idx in selected_indices:
+                selected_indices.discard(idx)
+                row_frame.configure(fg_color="transparent")
+            else:
+                selected_indices.add(idx)
+                row_frame.configure(fg_color=("#dbeafe", "#1e3a5f"))
+
+        for i, note in enumerate(notes_list):
+            note_row = ctk.CTkFrame(notes_container, cursor="hand2")
+            note_row.pack(fill="x", pady=(0, 2))
+            lbl = ctk.CTkLabel(
+                note_row, text=note, font=("Consolas", 10), anchor="w",
+            )
+            lbl.pack(fill="x", padx=6, pady=2)
+            for w in (note_row, lbl):
+                w.bind("<Button-1>", lambda e, idx=i, rf=note_row: _toggle_select(idx, rf))
+
+        def _remove_selected():
+            if not selected_indices:
+                return
+            new_notes = [n for i, n in enumerate(notes_list) if i not in selected_indices]
+            proj.notes = "\n".join(new_notes)
+            proj.updated_at = datetime.now().isoformat()
+            app._project_store.save()
+            _show_project_detail(app, proj.id)
+
+        ctk.CTkButton(
+            notes_container, text="Remove selected", width=120,
+            fg_color="#6b7280", command=_remove_selected,
+        ).pack(anchor="w", pady=(4, 2))
+
+
+# ── Media section ──
+
+def _build_media_section(app, parent, proj):
+    """Media section with two subsections: Add Media and Add Method."""
+    sec = CollapsibleSection(parent, "Media", expanded=True)
+    sec.pack(fill="x", padx=4, pady=(0, 6))
+    c = sec.content
+
+    # ── Add Media subsection ──
+    media_sub = CollapsibleSection(c, "Add Media", expanded=True)
+    media_sub.pack(fill="x", padx=2, pady=(0, 4))
+    mc = media_sub.content
+
+    # Existing media entries (skip method entries — shown in Add Method)
+    METHOD_LABELS = ("Metashape", "RealityScan", "COLMAP")
+    for i, src in enumerate(proj.sources):
+        if src.label in METHOD_LABELS:
+            continue
+        _build_source_row(app, mc, proj, src, i)
+
+    # Inline add area: label + Add button (Add launches directory dialog)
+    add_frame = ctk.CTkFrame(mc, fg_color="transparent")
+    add_frame.pack(fill="x", padx=4, pady=(4, 4))
+
+    row1 = ctk.CTkFrame(add_frame, fg_color="transparent")
+    row1.pack(fill="x", pady=2)
+    ctk.CTkLabel(row1, text="Label:", width=50, anchor="w").pack(side="left")
+    label_entry = ctk.CTkEntry(row1, placeholder_text="e.g. ERP frames, DJI video")
+    label_entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
+
+    def _add():
+        label = label_entry.get().strip()
+        if not label:
+            messagebox.showwarning("Add Media", "Please enter a label first.")
+            return
+        path = filedialog.askdirectory(title="Select Media Directory")
+        if not path:
+            return
+        proj_obj = app._project_store.get_project(proj.id)
+        if proj_obj:
+            proj_obj.add_source(label, path, "other")
+            app._project_store.save()
+        _show_project_detail(app, proj.id)
+
+    ctk.CTkButton(row1, text="Add", width=60, command=_add).pack(side="right")
+
+    # ── Add Method subsection ──
+    method_sub = CollapsibleSection(c, "Add Method", expanded=True)
+    method_sub.pack(fill="x", padx=2, pady=(0, 4))
+    tc = method_sub.content
+
+    # Show existing method entries (Metashape/RealityScan/COLMAP) from sources
+    METHOD_LABELS = ("Metashape", "RealityScan", "COLMAP")
+    for src in proj.sources:
+        if src.label in METHOD_LABELS:
+            _build_project_file_row(tc, src.label, src.path)
+
+    # Buttons row for setting project files
+    proj_file_row = ctk.CTkFrame(tc, fg_color="transparent")
+    proj_file_row.pack(fill="x", padx=4, pady=(4, 4))
     ctk.CTkButton(
-        notes_sec.content, text="Save Notes", width=100,
-        command=lambda: _save_notes(app, project_id),
-    ).pack(pady=(0, 4))
-
-    # -- Tags --
-    tags_sec = Section(scroll, "Tags")
-    tags_sec.pack(fill="x", padx=4, pady=(0, 6))
-    app._proj_tags_entry = ctk.CTkEntry(
-        tags_sec.content,
-        placeholder_text="comma-separated tags",
-    )
-    app._proj_tags_entry.pack(fill="x", padx=4, pady=4)
-    if proj.tags:
-        app._proj_tags_entry.insert(0, ", ".join(proj.tags))
+        proj_file_row, text="Metashape", width=90, fg_color="#6b7280",
+        command=lambda: _set_metashape_path(app, proj.id),
+    ).pack(side="left", padx=(0, 4))
     ctk.CTkButton(
-        tags_sec.content, text="Save Tags", width=100,
-        command=lambda: _save_tags(app, project_id),
-    ).pack(pady=(0, 4))
+        proj_file_row, text="RealityScan", width=90, fg_color="#6b7280",
+        command=lambda: _set_project_file(app, proj.id, "RealityScan"),
+    ).pack(side="left", padx=(0, 4))
+    ctk.CTkButton(
+        proj_file_row, text="COLMAP", width=90, fg_color="#6b7280",
+        command=lambda: _set_project_file(app, proj.id, "COLMAP"),
+    ).pack(side="left")
 
-    # -- Path Health --
-    health_sec = Section(scroll, "Path Health")
-    health_sec.pack(fill="x", padx=4, pady=(0, 6))
-    _build_path_health(app, health_sec.content, proj)
+
+def _build_project_file_row(parent, label, path):
+    """Display a project file path with health indicator."""
+    row = ctk.CTkFrame(parent, fg_color="transparent")
+    row.pack(fill="x", padx=4, pady=2)
+    exists = Path(path).exists()
+    color = "#22c55e" if exists else "#ef4444"
+    indicator = "+" if exists else "X"
+    ctk.CTkLabel(
+        row, text=indicator, font=("Consolas", 12),
+        text_color=color, width=20,
+    ).pack(side="left")
+    ctk.CTkLabel(
+        row, text=f"{label}: {path}",
+        font=("Consolas", 10), anchor="w",
+    ).pack(side="left", fill="x", expand=True)
 
 
-# ── Stages Grid ──
-
-def _build_stages_grid(app, parent, proj):
-    """Build a 2-column grid of stage checkboxes."""
+def _build_source_row(app, parent, proj, src, index):
+    """Single source entry with path health, relocate, and stage progression."""
     from project_store import STAGE_ORDER
 
-    frame = ctk.CTkFrame(parent, fg_color="transparent")
-    frame.pack(fill="x", padx=4, pady=4)
-    frame.grid_columnconfigure(0, weight=1)
-    frame.grid_columnconfigure(1, weight=1)
+    container = ctk.CTkFrame(parent, fg_color="transparent")
+    container.pack(fill="x", padx=4, pady=(4, 2))
 
-    for i, stage_name in enumerate(STAGE_ORDER):
-        stage = proj.stages.get(stage_name, None)
-        status = stage.status if stage else "not_started"
+    # Top row: health indicator + label + path + relocate
+    row = ctk.CTkFrame(container, fg_color="transparent")
+    row.pack(fill="x")
 
-        row = i // 2
-        col = i % 2
+    exists = Path(src.path).exists()
+    indicator = "+" if exists else "X"
+    color = "#22c55e" if exists else "#ef4444"
 
-        stage_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        stage_frame.grid(row=row, column=col, sticky="w", padx=4, pady=2)
+    ctk.CTkLabel(
+        row, text=indicator, font=("Consolas", 12),
+        text_color=color, width=20,
+    ).pack(side="left")
 
-        var = tk.BooleanVar(value=(status == "done"))
-        display_name = stage_name.replace("_", " ").title()
-        cb = ctk.CTkCheckBox(
-            stage_frame, text=display_name, variable=var,
-            command=lambda sn=stage_name, v=var: _toggle_stage(app, proj.id, sn, v),
+    info = f"{src.label}: {src.path}"
+    if src.file_count:
+        info += f"  ({src.file_count} files)"
+
+    ctk.CTkLabel(
+        row, text=info, font=("Consolas", 10), anchor="w",
+    ).pack(side="left", fill="x", expand=True)
+
+    ctk.CTkButton(
+        row, text="Relocate", width=70, fg_color="#6b7280",
+        command=lambda idx=index: _relocate_source(app, proj.id, idx),
+    ).pack(side="right", padx=(4, 0))
+
+    # Stage progression row
+    stage_row = ctk.CTkFrame(container, fg_color="transparent")
+    stage_row.pack(fill="x", padx=(20, 0), pady=(2, 0))
+
+    current_stage = src.stage or ""
+    # Find index of current stage (-1 if none)
+    try:
+        current_idx = STAGE_ORDER.index(current_stage)
+    except ValueError:
+        current_idx = -1
+
+    for si, stage_name in enumerate(STAGE_ORDER):
+        if si <= current_idx:
+            fg = "#22c55e"
+            symbol = "+"
+        else:
+            fg = "#6b7280"
+            symbol = "-"
+
+        display = stage_name.replace("_", " ").title()
+
+        btn = ctk.CTkButton(
+            stage_row, text=f"{symbol} {display}",
+            fg_color="transparent", hover_color=("#e5e7eb", "#374151"),
+            text_color=fg, border_width=1, border_color=fg,
+            width=90, height=24,
+            font=ctk.CTkFont(size=10),
+            command=lambda sn=stage_name: _cycle_source_stage(app, proj.id, index, sn),
         )
-        cb.pack(side="left")
-
-        if status == "in_progress":
-            ctk.CTkLabel(
-                stage_frame, text="(in progress)",
-                font=("Consolas", 9), text_color="#f59e0b",
-            ).pack(side="left", padx=(4, 0))
+        btn.pack(side="left", padx=(0, 3))
 
 
-def _toggle_stage(app, project_id, stage_name, var):
-    """Toggle a stage between done and not_started."""
+def _cycle_source_stage(app, project_id, source_index, clicked_stage):
+    """Set a source's stage. Clicking a done stage clears it (and later ones)."""
+    from project_store import STAGE_ORDER
+
     proj = app._project_store.get_project(project_id)
-    if not proj:
+    if not proj or source_index >= len(proj.sources):
         return
-    new_status = "done" if var.get() else "not_started"
-    proj.set_stage(stage_name, new_status)
+    src = proj.sources[source_index]
+    current = src.stage or ""
+
+    try:
+        current_idx = STAGE_ORDER.index(current)
+    except ValueError:
+        current_idx = -1
+
+    clicked_idx = STAGE_ORDER.index(clicked_stage)
+
+    if clicked_idx <= current_idx:
+        # Clicking a completed stage: roll back to one before it
+        if clicked_idx == 0:
+            src.stage = ""
+        else:
+            src.stage = STAGE_ORDER[clicked_idx - 1]
+    else:
+        # Clicking an incomplete stage: advance to it (all prior are implicitly done)
+        src.stage = clicked_stage
+
+    proj.updated_at = datetime.now().isoformat()
     app._project_store.save()
-    _refresh_project_list(app)  # Update subtitle
-
-
-# ── Sources List ──
-
-def _build_sources_list(app, parent, proj):
-    """List all source paths with file counts and existence indicators."""
-    for i, src in enumerate(proj.sources):
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=4, pady=2)
-
-        exists = Path(src.path).exists()
-        indicator = "+" if exists else "X"
-        color = "#22c55e" if exists else "#ef4444"
-
-        ctk.CTkLabel(
-            row, text=indicator, font=("Consolas", 12),
-            text_color=color, width=20,
-        ).pack(side="left")
-
-        info = f"{src.label}: {src.path}"
-        if src.file_count:
-            info += f"  ({src.file_count} files)"
-
-        ctk.CTkLabel(
-            row, text=info, font=("Consolas", 10), anchor="w",
-        ).pack(side="left", fill="x", expand=True)
-
-        # Relocate button (for moved files)
-        ctk.CTkButton(
-            row, text="Relocate", width=70, fg_color="#6b7280",
-            command=lambda idx=i: _relocate_source(app, proj.id, idx),
-        ).pack(side="right", padx=(4, 0))
+    _show_project_detail(app, project_id)
 
 
 def _relocate_source(app, project_id, source_index):
@@ -443,88 +570,11 @@ def _relocate_source(app, project_id, source_index):
     new_path = filedialog.askdirectory(title="Select new location")
     if new_path:
         app._project_store.relocate_source(project_id, source_index, new_path)
-        _show_project_detail(app, project_id)  # Refresh
-
-
-# ── Add Source Dialog ──
-
-def _add_source_dialog(app, project_id):
-    """Dialog to add a new source to a project."""
-    dialog = ctk.CTkToplevel(app)
-    dialog.title("Add Source")
-    dialog.geometry("500x240")
-    dialog.transient(app)
-    dialog.grab_set()
-
-    ctk.CTkLabel(dialog, text="Label:", anchor="w").pack(fill="x", padx=16, pady=(16, 2))
-    label_entry = ctk.CTkEntry(dialog, placeholder_text="e.g. ERP frames, Fuji stills, DJI video")
-    label_entry.pack(fill="x", padx=16, pady=(0, 8))
-
-    ctk.CTkLabel(dialog, text="Media Type:", anchor="w").pack(fill="x", padx=16, pady=(0, 2))
-    type_var = tk.StringVar(value="images")
-    ctk.CTkOptionMenu(
-        dialog, variable=type_var,
-        values=["images", "video", "masks", "other"],
-    ).pack(fill="x", padx=16, pady=(0, 8))
-
-    path_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-    path_frame.pack(fill="x", padx=16, pady=(0, 8))
-    path_entry = ctk.CTkEntry(path_frame, placeholder_text="Path to directory or file")
-    path_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
-
-    def _browse():
-        if type_var.get() == "video":
-            p = filedialog.askopenfilename(
-                title="Select Video",
-                filetypes=[("Video", "*.mp4 *.mov *.avi *.mkv"), ("All", "*.*")],
-            )
-        else:
-            p = filedialog.askdirectory(title="Select Directory")
-        if p:
-            path_entry.delete(0, "end")
-            path_entry.insert(0, p)
-
-    ctk.CTkButton(path_frame, text="Browse", width=70, command=_browse).pack(side="right")
-
-    def _add():
-        label = label_entry.get().strip()
-        path = path_entry.get().strip()
-        if not label or not path:
-            return
-        proj = app._project_store.get_project(project_id)
-        if proj:
-            proj.add_source(label, path, type_var.get())
-            app._project_store.save()
-        dialog.destroy()
         _show_project_detail(app, project_id)
-
-    ctk.CTkButton(dialog, text="Add Source", command=_add).pack(padx=16, pady=(0, 16))
-
-
-# ── Metashape Section ──
-
-def _build_metashape_section(app, parent, proj):
-    """Show Metashape project path with browse button."""
-    row = ctk.CTkFrame(parent, fg_color="transparent")
-    row.pack(fill="x", padx=4, pady=4)
-
-    path_text = proj.metashape_path or "(none)"
-    exists = Path(proj.metashape_path).exists() if proj.metashape_path else False
-    color = "#22c55e" if exists else ("#ef4444" if proj.metashape_path else "#9ca3af")
-
-    ctk.CTkLabel(
-        row, text=path_text, font=("Consolas", 10),
-        text_color=color, anchor="w",
-    ).pack(side="left", fill="x", expand=True)
-
-    ctk.CTkButton(
-        row, text="Browse", width=70,
-        command=lambda: _set_metashape_path(app, proj.id),
-    ).pack(side="right")
 
 
 def _set_metashape_path(app, project_id):
-    """Browse for a .psx file."""
+    """Browse for a .psx file and store as a source entry."""
     path = filedialog.askopenfilename(
         title="Select Metashape Project",
         filetypes=[("Metashape Project", "*.psx"), ("All Files", "*.*")],
@@ -532,169 +582,425 @@ def _set_metashape_path(app, project_id):
     if path:
         proj = app._project_store.get_project(project_id)
         if proj:
-            proj.metashape_path = path
+            from project_store import ProjectSource
+            proj.sources.append(ProjectSource(
+                label="Metashape", path=path, media_type="other",
+            ))
             proj.updated_at = datetime.now().isoformat()
             app._project_store.save()
             _show_project_detail(app, project_id)
 
 
-# ── Notes & Tags ──
+def _set_project_file(app, project_id, tool_name):
+    """Browse for a project file (RealityScan, COLMAP, etc.) and store as a source."""
+    if tool_name == "RealityScan":
+        path = filedialog.askdirectory(title="Select RealityScan project folder")
+    elif tool_name == "COLMAP":
+        path = filedialog.askdirectory(title="Select COLMAP workspace folder")
+    else:
+        path = filedialog.askdirectory(title=f"Select {tool_name} folder")
+    if path:
+        proj = app._project_store.get_project(project_id)
+        if proj:
+            # Store as a source with the tool name as label
+            from project_store import ProjectSource
+            proj.sources.append(ProjectSource(
+                label=tool_name, path=path, media_type="other",
+            ))
+            proj.updated_at = datetime.now().isoformat()
+            app._project_store.save()
+            _show_project_detail(app, project_id)
 
-def _save_notes(app, project_id):
-    """Save notes from the text box to the project."""
-    proj = app._project_store.get_project(project_id)
-    if proj and hasattr(app, "_proj_notes_text"):
-        proj.notes = app._proj_notes_text.get("1.0", "end-1c").strip()
+
+# ── Export section ──
+
+def _build_export_section(app, parent, proj):
+    """Export project reports."""
+    sec = CollapsibleSection(parent, "Export", expanded=True)
+    sec.pack(fill="x", padx=4, pady=(0, 6))
+    c = sec.content
+
+    export_frame = ctk.CTkFrame(c, fg_color="transparent")
+    export_frame.pack(fill="x", padx=6, pady=(4, 4))
+
+    # Scope: this project vs all
+    scope_row = ctk.CTkFrame(export_frame, fg_color="transparent")
+    scope_row.pack(fill="x", pady=(2, 2))
+    app._proj_export_scope = tk.StringVar(value="this")
+    ctk.CTkRadioButton(
+        scope_row, text="This project", variable=app._proj_export_scope, value="this",
+    ).pack(side="left", padx=(0, 12))
+    ctk.CTkRadioButton(
+        scope_row, text="All projects", variable=app._proj_export_scope, value="all",
+    ).pack(side="left")
+
+    # Format
+    fmt_row = ctk.CTkFrame(export_frame, fg_color="transparent")
+    fmt_row.pack(fill="x", pady=(2, 4))
+    app._proj_export_fmt = tk.StringVar(value="all")
+    for label, val in [("All", "all"), ("MD", "md"), ("HTML", "html"), ("JSON", "json")]:
+        ctk.CTkRadioButton(
+            fmt_row, text=label, variable=app._proj_export_fmt, value=val,
+        ).pack(side="left", padx=(0, 8))
+
+    # Output directory
+    dir_row = ctk.CTkFrame(export_frame, fg_color="transparent")
+    dir_row.pack(fill="x", pady=(0, 4))
+    app._proj_export_dir_entry = ctk.CTkEntry(dir_row)
+    app._proj_export_dir_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+    app._proj_export_dir_entry.insert(0, str(Path(app._project_store.store_path).parent))
+    ctk.CTkButton(
+        dir_row, text="...", width=36,
+        command=lambda: _browse_export_dir(app._proj_export_dir_entry),
+    ).pack(side="right")
+
+    ctk.CTkButton(
+        export_frame, text="Export", width=80,
+        command=lambda: _do_export(app, proj.id),
+    ).pack(anchor="w", pady=(0, 4))
+
+
+# ── Delete button (standalone at bottom) ──
+
+def _build_delete_button(app, parent, proj):
+    """Delete button with messagebox confirmation."""
+    delete_frame = ctk.CTkFrame(parent, fg_color="transparent")
+    delete_frame.pack(fill="x", padx=4, pady=(8, 6))
+
+    def _on_delete():
+        result = messagebox.askyesno(
+            "Delete Project",
+            f"Permanently delete '{proj.title}'?\n\nThis cannot be undone.",
+            icon="warning",
+        )
+        if result:
+            app._project_store.delete_project(proj.id)
+            app._selected_project_id = None
+            _refresh_project_list(app)
+            _reset_detail_panel(app)
+
+    ctk.CTkButton(
+        delete_frame, text="Delete Project", width=120,
+        fg_color="#dc2626", hover_color="#b91c1c",
+        command=_on_delete,
+    ).pack(anchor="w")
+
+
+# ── Tags section ──
+
+def _build_tags_section(app, parent, proj):
+    """Tags as a list: type a tag, submit to add, select to remove.
+    Capture method checkboxes also add tags automatically."""
+    method_set = set(CAPTURE_METHODS)
+    custom_tags = [t for t in proj.tags if t not in method_set]
+
+    sec = CollapsibleSection(parent, "Tags", expanded=True)
+    sec.pack(fill="x", padx=4, pady=(0, 6))
+    c = sec.content
+
+    # Entry + Add row
+    entry_row = ctk.CTkFrame(c, fg_color="transparent")
+    entry_row.pack(fill="x", padx=6, pady=(4, 4))
+    tag_entry = ctk.CTkEntry(entry_row, placeholder_text="Add a tag...")
+    tag_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+    def _add_tag():
+        text = tag_entry.get().strip()
+        if not text or text in proj.tags:
+            return
+        proj.tags.append(text)
         proj.updated_at = datetime.now().isoformat()
         app._project_store.save()
+        _refresh_project_list(app)
+        _show_project_detail(app, proj.id)
+
+    ctk.CTkButton(
+        entry_row, text="Add", width=60, command=_add_tag,
+    ).pack(side="right")
+    tag_entry.bind("<Return>", lambda e: _add_tag())
+
+    # Listed tags with selection for removal
+    all_tags = proj.tags
+    if all_tags:
+        tags_container = ctk.CTkFrame(c, fg_color="transparent")
+        tags_container.pack(fill="x", padx=6, pady=(0, 4))
+
+        selected_indices = set()
+
+        def _toggle_select(idx, row_frame):
+            if idx in selected_indices:
+                selected_indices.discard(idx)
+                row_frame.configure(fg_color="transparent")
+            else:
+                selected_indices.add(idx)
+                row_frame.configure(fg_color=("#dbeafe", "#1e3a5f"))
+
+        for i, tag in enumerate(all_tags):
+            # Mark method-origin tags visually
+            is_method = tag in method_set
+            tag_row = ctk.CTkFrame(tags_container, cursor="hand2")
+            tag_row.pack(fill="x", pady=(0, 2))
+            display = f"{tag}  (capture)" if is_method else tag
+            lbl = ctk.CTkLabel(
+                tag_row, text=display, font=("Consolas", 10), anchor="w",
+                text_color="#9ca3af" if is_method else None,
+            )
+            lbl.pack(fill="x", padx=6, pady=2)
+            for w in (tag_row, lbl):
+                w.bind("<Button-1>", lambda e, idx=i, rf=tag_row: _toggle_select(idx, rf))
+
+        def _remove_selected():
+            if not selected_indices:
+                return
+            # Remove selected tags, also uncheck method boxes
+            removed = {all_tags[i] for i in selected_indices}
+            proj.tags = [t for t in proj.tags if t not in removed]
+            proj.updated_at = datetime.now().isoformat()
+            app._project_store.save()
+            _refresh_project_list(app)
+            _show_project_detail(app, proj.id)
+
+        ctk.CTkButton(
+            tags_container, text="Remove selected", width=120,
+            fg_color="#6b7280", command=_remove_selected,
+        ).pack(anchor="w", pady=(4, 2))
 
 
-def _save_tags(app, project_id):
-    """Save tags from the entry to the project."""
-    proj = app._project_store.get_project(project_id)
-    if proj and hasattr(app, "_proj_tags_entry"):
-        raw = app._proj_tags_entry.get().strip()
-        proj.tags = [t.strip() for t in raw.split(",") if t.strip()]
-        proj.updated_at = datetime.now().isoformat()
-        app._project_store.save()
-
-
-# ── Path Health ──
-
-def _build_path_health(app, parent, proj):
-    """Show which paths exist and which are missing."""
-    health = app._project_store.validate_paths(proj.id)
-    if not health:
-        ctk.CTkLabel(
-            parent, text="No paths to check", text_color="#9ca3af",
-        ).pack(padx=4, pady=4)
-        return
-
-    for path, exists in health.items():
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=4, pady=1)
-        indicator = "+" if exists else "MISSING"
-        color = "#22c55e" if exists else "#ef4444"
-        ctk.CTkLabel(
-            row, text=indicator, font=("Consolas", 10),
-            text_color=color, width=60, anchor="w",
-        ).pack(side="left")
-        ctk.CTkLabel(
-            row, text=path, font=("Consolas", 9), anchor="w",
-        ).pack(side="left", fill="x")
-
-
-# ── Archive / Delete ──
-
-def _archive_project(app, project_id):
-    """Archive a project (soft delete)."""
-    app._project_store.archive_project(project_id)
-    app._selected_project_id = None
-    _refresh_project_list(app)
-    # Reset detail panel
+def _reset_detail_panel(app):
+    """Return detail panel to empty state."""
     app._proj_detail_scroll.pack_forget()
+    for w in app._proj_detail_scroll.winfo_children():
+        w.destroy()
     app._proj_empty_label.place(relx=0.5, rely=0.5, anchor="center")
 
 
-def _delete_project(app, project_id):
-    """Permanently delete a project (with confirmation)."""
-    proj = app._project_store.get_project(project_id)
-    if not proj:
-        return
-    # Simple confirmation via toplevel
-    dialog = ctk.CTkToplevel(app)
-    dialog.title("Confirm Delete")
-    dialog.geometry("350x120")
-    dialog.transient(app)
-    dialog.grab_set()
+# ── Export logic ──
+
+def _do_export(app, current_project_id: str):
+    """Run the export with current settings."""
+    from project_exporters import export_markdown, export_html, export_json
+
+    dir_entry = getattr(app, "_proj_export_dir_entry", None)
+    if dir_entry:
+        out_dir = Path(dir_entry.get().strip())
+    else:
+        out_dir = Path(app._project_store.store_path).parent
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fmt = getattr(app, "_proj_export_fmt", tk.StringVar(value="all")).get()
+    scope = getattr(app, "_proj_export_scope", tk.StringVar(value="this")).get()
+    store = app._project_store
+
+    exported = []
+    if scope == "this":
+        # Export single project
+        proj = store.get_project(current_project_id)
+        if not proj:
+            return
+        suffix = proj.title.replace(" ", "_").lower()[:30]
+        if fmt in ("all", "md"):
+            exported.append(_export_single_md(proj, out_dir / f"{suffix}.md"))
+        if fmt in ("all", "html"):
+            exported.append(_export_single_html(proj, out_dir / f"{suffix}.html"))
+        if fmt in ("all", "json"):
+            exported.append(_export_single_json(proj, out_dir / f"{suffix}.json"))
+    else:
+        # Export all projects
+        if fmt in ("all", "md"):
+            exported.append(export_markdown(store, str(out_dir / "project_index.md")))
+        if fmt in ("all", "html"):
+            exported.append(export_html(store, str(out_dir / "project_index.html")))
+        if fmt in ("all", "json"):
+            exported.append(export_json(store, str(out_dir / "project_index.json")))
+
+    app.log(f"Exported {len(exported)} file(s) to {out_dir}")
+
+    # Open HTML in browser if generated
+    html_files = [f for f in exported if str(f).endswith(".html")]
+    if html_files:
+        import webbrowser
+        webbrowser.open(str(html_files[0]))
+
+
+def _export_single_md(proj, path: Path) -> str:
+    """Export a single project to markdown."""
+    from project_store import STAGE_ORDER
+    lines = [
+        f"# {proj.title}",
+        "",
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+    ]
+    if proj.scene_type:
+        lines.append(f"**Subject:** {proj.scene_type}")
+    if proj.tags:
+        lines.append(f"**Tags:** {', '.join(proj.tags)}")
+    lines.append("")
+
+    if proj.sources:
+        lines.append("## Sources")
+        for src in proj.sources:
+            exists = Path(src.path).exists()
+            status = "" if exists else " [MISSING]"
+            count = f" ({src.file_count} files)" if src.file_count else ""
+            lines.append(f"- {src.label}: `{src.path}`{count}{status}")
+        lines.append("")
+
+    lines.append("## Pipeline")
+    for sn in STAGE_ORDER:
+        st = proj.stages.get(sn)
+        status = st.status if st else "not_started"
+        marker = "[x]" if status == "done" else "[-]" if status == "in_progress" else "[ ]"
+        label = sn.replace("_", " ").title()
+        lines.append(f"- {marker} {label}")
+    lines.append("")
+
+    if proj.notes:
+        lines.append("## Notes")
+        lines.append(proj.notes)
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return str(path)
+
+
+def _export_single_html(proj, path: Path) -> str:
+    """Export a single project to styled HTML."""
+    from project_store import STAGE_ORDER
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    done = sum(1 for s in proj.stages.values() if s.status == "done")
+    pct = int(done / len(STAGE_ORDER) * 100)
+
+    stages_html = ""
+    for sn in STAGE_ORDER:
+        st = proj.stages.get(sn)
+        status = st.status if st else "not_started"
+        if status == "done":
+            icon, color = "+", "#22c55e"
+        elif status == "in_progress":
+            icon, color = "o", "#f59e0b"
+        else:
+            icon, color = "-", "#6b7280"
+        label = sn.replace("_", " ").title()
+        stages_html += f'<span style="color:{color};margin-right:16px">{icon} {label}</span>'
+
+    sources_html = ""
+    if proj.sources:
+        items = []
+        for src in proj.sources:
+            exists = Path(src.path).exists()
+            clr = "#22c55e" if exists else "#ef4444"
+            ind = "OK" if exists else "MISSING"
+            cnt = f" ({src.file_count})" if src.file_count else ""
+            items.append(
+                f'<div style="font-family:monospace;font-size:12px;padding:2px 0">'
+                f'<span style="color:{clr}">[{ind}]</span> '
+                f'<b>{src.label}</b>: {src.path}{cnt}</div>'
+            )
+        sources_html = "<div style='margin:12px 0'>" + "\n".join(items) + "</div>"
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{proj.title}</title>
+<style>body {{ background:#111827;color:#f9fafb;font-family:-apple-system,sans-serif;padding:24px;max-width:900px;margin:0 auto; }}</style>
+</head><body>
+<h1>{proj.title}</h1>
+<p style="color:#9ca3af">Generated: {now}</p>
+<div style="background:#374151;border-radius:4px;height:6px;margin:8px 0"><div style="background:#3b82f6;border-radius:4px;height:6px;width:{pct}%"></div></div>
+<div style="margin:12px 0">{stages_html}</div>
+{sources_html}
+{f'<div style="color:#9ca3af;margin-top:12px"><b>Notes:</b><br>{proj.notes}</div>' if proj.notes else ''}
+{f'<div style="margin-top:8px"><b>Tags:</b> {", ".join(proj.tags)}</div>' if proj.tags else ''}
+</body></html>"""
+    path.write_text(html, encoding="utf-8")
+    return str(path)
+
+
+def _export_single_json(proj, path: Path) -> str:
+    """Export a single project to JSON."""
+    import json
+    data = {
+        "generated": datetime.now().isoformat(),
+        "project": proj.to_dict(),
+    }
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return str(path)
+
+
+def _browse_export_dir(entry):
+    p = filedialog.askdirectory(title="Select export directory")
+    if p:
+        entry.delete(0, "end")
+        entry.insert(0, p)
+
+
+# ======================================================================
+#  Drive scanner (inline in details pane)
+# ======================================================================
+
+def _on_scan(app):
+    """Show scan UI inline in the details pane."""
+    app._proj_empty_label.place_forget()
+    scroll = app._proj_detail_scroll
+    for w in scroll.winfo_children():
+        w.destroy()
+    scroll.pack(fill="both", expand=True, padx=4, pady=4)
+
+    # Header
     ctk.CTkLabel(
-        dialog, text=f"Permanently delete '{proj.title}'?",
-    ).pack(pady=(16, 8))
-    btn_row = ctk.CTkFrame(dialog, fg_color="transparent")
-    btn_row.pack()
-    ctk.CTkButton(
-        btn_row, text="Cancel", width=80, fg_color="#6b7280",
-        command=dialog.destroy,
-    ).pack(side="left", padx=8)
-    ctk.CTkButton(
-        btn_row, text="Delete", width=80, fg_color="#dc2626", hover_color="#b91c1c",
-        command=lambda: (_do_delete(app, project_id), dialog.destroy()),
-    ).pack(side="left", padx=8)
+        scroll, text="Scan for Projects",
+        font=ctk.CTkFont(size=16, weight="bold"), anchor="w",
+    ).pack(fill="x", padx=4, pady=(4, 8))
 
-
-def _do_delete(app, project_id):
-    app._project_store.delete_project(project_id)
-    app._selected_project_id = None
-    _refresh_project_list(app)
-    app._proj_detail_scroll.pack_forget()
-    app._proj_empty_label.place(relx=0.5, rely=0.5, anchor="center")
-
-
-# ── Drive Scanner Dialog ──
-
-def _open_scan_dialog(app):
-    """Dialog for scanning drives/directories for projects."""
-    import threading
-    from project_scanner import scan_directory
-
-    dialog = ctk.CTkToplevel(app)
-    dialog.title("Scan for Projects")
-    dialog.geometry("600x500")
-    dialog.transient(app)
-    dialog.grab_set()
-
-    # Path entry + browse
-    path_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-    path_frame.pack(fill="x", padx=16, pady=(16, 4))
-    ctk.CTkLabel(path_frame, text="Scan root:").pack(side="left")
-    scan_entry = ctk.CTkEntry(path_frame)
-    scan_entry.pack(side="left", fill="x", expand=True, padx=(8, 4))
+    # Path entry
+    path_row = ctk.CTkFrame(scroll, fg_color="transparent")
+    path_row.pack(fill="x", padx=4, pady=(0, 4))
+    ctk.CTkLabel(path_row, text="Root:", width=40, anchor="w").pack(side="left")
+    scan_entry = ctk.CTkEntry(path_row)
+    scan_entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
     scan_entry.insert(0, "D:\\")
 
-    def _browse_scan():
+    def _browse():
         p = filedialog.askdirectory(title="Select root to scan")
         if p:
             scan_entry.delete(0, "end")
             scan_entry.insert(0, p)
 
-    ctk.CTkButton(path_frame, text="Browse", width=70, command=_browse_scan).pack(side="right")
+    ctk.CTkButton(path_row, text="...", width=36, command=_browse).pack(side="right")
 
-    # Status + results
-    status_label = ctk.CTkLabel(dialog, text="", text_color="#9ca3af")
-    status_label.pack(fill="x", padx=16, pady=(4, 4))
+    # Status
+    status_label = ctk.CTkLabel(scroll, text="", text_color="#9ca3af")
+    status_label.pack(fill="x", padx=4, pady=(2, 4))
 
-    results_frame = ctk.CTkScrollableFrame(dialog)
-    results_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+    # Results container
+    results_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+    results_frame.pack(fill="both", expand=True, padx=4)
 
-    scan_results = []
-    result_widgets = []
+    # Scan button + back button
+    btn_row = ctk.CTkFrame(scroll, fg_color="transparent")
+    btn_row.pack(fill="x", padx=4, pady=(4, 4))
 
     def _run_scan():
+        from project_scanner import scan_directory
+
         root = scan_entry.get().strip()
         if not root:
             return
 
-        # Clear previous results
-        for w in result_widgets:
+        for w in results_frame.winfo_children():
             w.destroy()
-        result_widgets.clear()
-        scan_results.clear()
-
         status_label.configure(text="Scanning...")
         scan_btn.configure(state="disabled")
 
-        def _scan_thread():
+        def _thread():
             results = scan_directory(
                 root, max_depth=5,
-                progress_callback=lambda msg: dialog.after(
+                progress_callback=lambda msg: scroll.after(
                     0, lambda m=msg: status_label.configure(text=m)
                 ),
             )
-            dialog.after(0, lambda: _display_scan_results(results))
+            scroll.after(0, lambda: _display_results(results))
 
-        def _display_scan_results(results):
-            scan_results.clear()
-            scan_results.extend(results)
+        def _display_results(results):
             status_label.configure(text=f"Found {len(results)} project clusters")
             scan_btn.configure(state="normal")
 
@@ -714,18 +1020,27 @@ def _open_scan_dialog(app):
 
                 ctk.CTkButton(
                     row, text="Import", width=70,
-                    command=lambda r=res: _import_scan_result(app, r, dialog),
+                    command=lambda r=res: _import_scan_result(app, r),
                 ).pack(side="right", padx=4, pady=4)
 
-                result_widgets.append(row)
+            if not results:
+                ctk.CTkLabel(
+                    results_frame, text="No projects found in this directory",
+                    text_color="#9ca3af",
+                ).pack(pady=20)
 
-        threading.Thread(target=_scan_thread, daemon=True).start()
+        threading.Thread(target=_thread, daemon=True).start()
 
-    scan_btn = ctk.CTkButton(dialog, text="Scan", command=_run_scan)
-    scan_btn.pack(padx=16, pady=(0, 8))
+    scan_btn = ctk.CTkButton(btn_row, text="Scan", width=80, command=_run_scan)
+    scan_btn.pack(side="left", padx=(0, 4))
+
+    ctk.CTkButton(
+        btn_row, text="Back", width=60, fg_color="#6b7280",
+        command=lambda: _back_to_detail(app),
+    ).pack(side="left")
 
 
-def _import_scan_result(app, scan_result, dialog):
+def _import_scan_result(app, scan_result):
     """Create a project from a scan result."""
     from project_store import ProjectSource
 
@@ -733,7 +1048,9 @@ def _import_scan_result(app, scan_result, dialog):
     proj = app._project_store.create_project(title)
 
     if scan_result.psx_path:
-        proj.metashape_path = scan_result.psx_path
+        proj.sources.append(ProjectSource(
+            label="Metashape", path=scan_result.psx_path, media_type="other",
+        ))
 
     for img_dir in scan_result.image_dirs:
         count = scan_result.image_counts.get(img_dir, 0)
@@ -753,86 +1070,15 @@ def _import_scan_result(app, scan_result, dialog):
             label=Path(vid).name, path=vid, media_type="video",
         ))
 
-    proj.set_stage("captured", "done")
+    proj.set_stage("extracted", "done")
     app._project_store.save()
     _refresh_project_list(app)
     _show_project_detail(app, proj.id)
-    dialog.destroy()
 
 
-# ── Export Dialog ──
-
-def _open_export_dialog(app):
-    """Dialog for exporting the project index."""
-    from project_exporters import export_markdown, export_html, export_json
-
-    dialog = ctk.CTkToplevel(app)
-    dialog.title("Export Project Index")
-    dialog.geometry("450x280")
-    dialog.transient(app)
-    dialog.grab_set()
-
-    ctk.CTkLabel(dialog, text="Export Format:", anchor="w").pack(
-        fill="x", padx=16, pady=(16, 4),
-    )
-    format_var = tk.StringVar(value="all")
-    for label, val in [("All formats", "all"), ("Markdown", "md"), ("HTML", "html"), ("JSON", "json")]:
-        ctk.CTkRadioButton(
-            dialog, text=label, variable=format_var, value=val,
-        ).pack(anchor="w", padx=24, pady=2)
-
-    ctk.CTkLabel(dialog, text="Output directory:", anchor="w").pack(
-        fill="x", padx=16, pady=(12, 4),
-    )
-    dir_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-    dir_frame.pack(fill="x", padx=16)
-    dir_entry = ctk.CTkEntry(dir_frame)
-    dir_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
-    dir_entry.insert(0, str(Path(app._project_store.store_path).parent))
-    ctk.CTkButton(
-        dir_frame, text="Browse", width=70,
-        command=lambda: _browse_export_dir(dir_entry),
-    ).pack(side="right")
-
-    include_archived = tk.BooleanVar(value=False)
-    ctk.CTkCheckBox(
-        dialog, text="Include archived projects", variable=include_archived,
-    ).pack(anchor="w", padx=16, pady=(8, 4))
-
-    def _do_export():
-        out_dir = Path(dir_entry.get().strip())
-        out_dir.mkdir(parents=True, exist_ok=True)
-        fmt = format_var.get()
-        archived = include_archived.get()
-        store = app._project_store
-
-        exported = []
-        if fmt in ("all", "md"):
-            p = export_markdown(store, str(out_dir / "project_index.md"), archived)
-            exported.append(p)
-        if fmt in ("all", "html"):
-            p = export_html(store, str(out_dir / "project_index.html"), archived)
-            exported.append(p)
-        if fmt in ("all", "json"):
-            p = export_json(store, str(out_dir / "project_index.json"), archived)
-            exported.append(p)
-
-        dialog.destroy()
-        app.log(f"Exported {len(exported)} file(s) to {out_dir}")
-
-        # Open the HTML in browser if it was generated
-        html_path = out_dir / "project_index.html"
-        if html_path.exists():
-            import webbrowser
-            webbrowser.open(str(html_path))
-
-    ctk.CTkButton(dialog, text="Export", command=_do_export).pack(
-        padx=16, pady=(12, 16),
-    )
-
-
-def _browse_export_dir(entry):
-    p = filedialog.askdirectory(title="Select export directory")
-    if p:
-        entry.delete(0, "end")
-        entry.insert(0, p)
+def _back_to_detail(app):
+    """Return from scan view to project detail or empty state."""
+    if app._selected_project_id:
+        _show_project_detail(app, app._selected_project_id)
+    else:
+        _reset_detail_panel(app)

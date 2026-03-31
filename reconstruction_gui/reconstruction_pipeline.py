@@ -54,7 +54,7 @@ except ImportError:
 
 # Try importing segmentation models in order of preference
 try:
-    # SAM3 - Primary model (November 2025, Meta)
+    # SAM3 / SAM 3.1 - Primary model (Meta)
     # Real API: git clone https://github.com/facebookresearch/sam3 && pip install -e .
     from sam3.model_builder import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
@@ -252,7 +252,7 @@ class MaskConfig:
     rfdetr_model_size: str = "small"  # nano/small/medium/large
 
     # SAM 3 unified video pipeline (replaces YOLO+SAM2+tracker chain)
-    sam3_unified: bool = False  # Use SAM 3 video predictor for video sequences
+    sam3_unified: bool = False  # Use SAM 3.1 video predictor for video sequences
     sam3_video_config: Optional[Dict] = None  # Serialized SAM3VideoConfig dict
 
     # COLMAP geometric validation (post-mask consistency check)
@@ -693,11 +693,11 @@ class BaseSegmenter(ABC):
 
 
 class SAM3Segmenter(BaseSegmenter):
-    """SAM3-based segmentation with text prompts (Meta, November 2025).
+    """SAM3-based per-image segmentation with text prompts (Meta).
 
     Uses SAM 3's Promptable Concept Segmentation: text prompts find and
     segment all instances of a concept. 848M params, unified DETR detector
-    + SAM2 tracker.
+    + SAM2 tracker. Image model API unchanged between SAM 3 and 3.1.
 
     Real API: build_sam3_image_model() → Sam3Processor → set_image → set_text_prompt
     Requires: git clone https://github.com/facebookresearch/sam3 && pip install -e .
@@ -1539,7 +1539,7 @@ class MaskingPipeline:
         if self.config.ensemble:
             self._init_ensemble()
 
-        # SAM 3 unified video pipeline (optional, replaces full detection chain)
+        # SAM 3.1 unified video pipeline (optional, replaces full detection chain)
         self.sam3_video_pipeline = None
         if self.config.sam3_unified:
             try:
@@ -1554,12 +1554,12 @@ class MaskingPipeline:
                     s3v_cfg.prompts = self.config.remove_prompts
                 self.sam3_video_pipeline = SAM3VideoPipeline(s3v_cfg)
                 self.sam3_video_pipeline.initialize()
-                logger.info("SAM3 unified video pipeline loaded")
+                logger.info("SAM 3.1 unified video pipeline loaded")
             except ImportError as e:
-                logger.warning(f"SAM3 video pipeline unavailable ({e})")
+                logger.warning(f"SAM 3.1 video pipeline unavailable ({e})")
                 self.sam3_video_pipeline = None
             except Exception as e:
-                logger.error(f"SAM3 video pipeline init failed: {e}")
+                logger.error(f"SAM 3.1 video pipeline init failed: {e}")
                 self.sam3_video_pipeline = None
 
         # COLMAP geometric validation (optional, post-mask consistency check)
@@ -2747,12 +2747,12 @@ class MaskingPipeline:
         output_dir: Path,
         progress_callback=None
     ) -> Dict[str, Any]:
-        """Process a directory of frames using SAM 3 unified video pipeline.
+        """Process a directory of frames using SAM 3.1 unified video pipeline.
 
-        Instead of per-frame YOLO+SAM2+tracking, this uses SAM 3's video
+        Instead of per-frame YOLO+SAM2+tracking, this uses SAM 3.1's video
         predictor for end-to-end detection+segmentation+tracking in one pass.
 
-        Falls back to standard per-frame processing if SAM3 video is unavailable.
+        Falls back to standard per-frame processing if SAM 3.1 video is unavailable.
 
         Args:
             input_dir: Directory containing frame images.
@@ -2763,7 +2763,7 @@ class MaskingPipeline:
             Processing statistics dict.
         """
         if self.sam3_video_pipeline is None:
-            logger.warning("SAM3 video pipeline not available, falling back to per-frame")
+            logger.warning("SAM 3.1 video pipeline not available, falling back to per-frame")
             return self.process_directory(input_dir, output_dir)
 
         return self.sam3_video_pipeline.process_frames(
@@ -2771,6 +2771,89 @@ class MaskingPipeline:
             output_dir=str(output_dir),
             progress_callback=progress_callback
         )
+
+    def process_video_sam3_unified(
+        self,
+        video_path: Path,
+        output_dir: Path,
+        skip_frames: int = 0,
+        mask_dir: Path = None,
+        progress_callback=None,
+    ) -> Dict[str, Any]:
+        """Process a video file using SAM 3.1 unified video pipeline.
+
+        Extracts frames from the video to a temp directory, then runs SAM 3.1's
+        multiplex video predictor for end-to-end detection+segmentation+tracking.
+
+        Falls back to standard per-frame process_video if SAM 3.1 is unavailable.
+
+        Args:
+            video_path: Path to video file.
+            output_dir: Output directory for masks.
+            skip_frames: Extract every Nth frame (0 = all frames).
+            mask_dir: Override mask output directory.
+            progress_callback: Optional callable(current, total, message).
+
+        Returns:
+            Processing statistics dict.
+        """
+        import tempfile
+
+        if self.sam3_video_pipeline is None:
+            logger.warning("SAM 3.1 video pipeline not available, falling back to per-frame")
+            return self.process_video(video_path, output_dir)
+
+        video_path = Path(video_path)
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        if mask_dir is None:
+            mask_dir = output_dir
+        mask_dir = Path(mask_dir)
+        mask_dir.mkdir(parents=True, exist_ok=True)
+
+        # Extract frames from video to a temp directory
+        temp_dir = Path(tempfile.mkdtemp(prefix="sam3_video_"))
+        try:
+            cap = cv2.VideoCapture(str(video_path))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            logger.info(
+                f"Extracting frames from {video_path.name}: "
+                f"{total_frames} frames @ {fps:.2f} FPS"
+            )
+
+            frame_idx = 0
+            written = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if skip_frames > 0 and frame_idx % (skip_frames + 1) != 0:
+                    frame_idx += 1
+                    continue
+                out_path = temp_dir / f"{written:06d}.jpg"
+                cv2.imwrite(str(out_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                written += 1
+                frame_idx += 1
+            cap.release()
+            logger.info(f"Extracted {written} frames to {temp_dir}")
+
+            if progress_callback:
+                progress_callback(0, written, "Frames extracted, running SAM 3.1...")
+
+            # Run SAM 3.1 unified pipeline on the extracted frames
+            # Output masks into mask_dir (sam3_pipeline writes to output/masks/)
+            stats = self.sam3_video_pipeline.process_frames(
+                frames_dir=str(temp_dir),
+                output_dir=str(mask_dir),
+                progress_callback=progress_callback,
+            )
+            return stats
+        finally:
+            # Clean up extracted frames
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class InteractiveMaskRefiner:

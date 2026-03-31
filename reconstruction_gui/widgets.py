@@ -200,6 +200,7 @@ def slider_row(
     fmt: str = ".2f",
     width: int = 100,
     pad_left: int = 0,
+    tooltip: Optional[str] = None,
 ) -> ctk.DoubleVar:
     """Pack label + slider + value readout into *parent*, return the DoubleVar.
 
@@ -219,6 +220,9 @@ def slider_row(
     )
     if steps is not None:
         slider_kwargs["number_of_steps"] = steps
-    ctk.CTkSlider(parent, **slider_kwargs).pack(side="left", padx=2)
+    _sl = ctk.CTkSlider(parent, **slider_kwargs)
+    _sl.pack(side="left", padx=2)
+    if tooltip:
+        Tooltip(_sl, tooltip)
     val_lbl.pack(side="left")
     return var

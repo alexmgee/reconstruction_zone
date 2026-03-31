@@ -1,22 +1,27 @@
 """
-SAM 3 Unified Video Pipeline
-=============================
+SAM 3.1 Unified Video Pipeline
+================================
 
-End-to-end detection + segmentation + tracking using SAM 3's video predictor.
+End-to-end detection + segmentation + tracking using SAM 3.1's multiplex
+video predictor (Object Multiplex).
 
 Replaces the traditional YOLO → SAM2 → tracker chain with a single model
 that handles text-prompted detection, instance segmentation, and temporal
 tracking across video frames in one unified system.
 
-SAM 3's Promptable Concept Segmentation (PCS) takes text prompts (e.g.
-"person", "tripod") and automatically detects, segments, and tracks all
-matching instances across all frames with built-in temporal consistency.
+SAM 3.1's Object Multiplex groups tracked objects into shared-memory buckets,
+giving ~7x speedup over SAM 3's per-object inference when tracking many
+objects simultaneously.
 
-Pipeline: frames directory → SAM3 video session → text prompts → propagate → masks
+Frames are loaded as PIL images and passed directly to start_session as a
+list, which SAM 3.1 treats as a video sequence for temporal tracking. No
+temp directories or sequential JPEG renaming needed.
+
+Pipeline: frames directory → PIL list → SAM3.1 video session → text prompts → propagate → masks
 
 Requires:
     git clone https://github.com/facebookresearch/sam3 && pip install -e .
-    HuggingFace access approval for model weights.
+    HuggingFace access approval for model weights (facebook/sam3.1).
     Python 3.12+, PyTorch 2.7+
 
 Usage:
@@ -24,17 +29,17 @@ Usage:
     cfg = SAM3VideoConfig(prompts=["person", "tripod"])
     pipeline = SAM3VideoPipeline(cfg)
     pipeline.initialize()
-    masks = pipeline.process_video(frames_dir="/path/to/frames")
+    stats = pipeline.process_frames(frames_dir="/path/to/frames", output_dir="/path/to/output")
 """
 
 import logging
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
+from PIL import Image as PILImage
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +57,7 @@ except ImportError:
     pass
 
 try:
-    from sam3.model_builder import build_sam3_video_predictor
+    from sam3.model_builder import build_sam3_multiplex_video_predictor
     HAS_SAM3_VIDEO = True
 except ImportError:
     pass
@@ -64,7 +69,7 @@ except ImportError:
 
 @dataclass
 class SAM3VideoConfig:
-    """Configuration for SAM 3 unified video pipeline."""
+    """Configuration for SAM 3.1 unified video pipeline."""
 
     # Text prompts for detection
     prompts: List[str] = field(default_factory=lambda: [
@@ -81,9 +86,6 @@ class SAM3VideoConfig:
     output_format: str = "png"
     confidence_threshold: float = 0.5
 
-    # Batch retrieval
-    batch_size: int = 50  # Retrieve masks N frames at a time
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             'prompts': self.prompts,
@@ -91,7 +93,6 @@ class SAM3VideoConfig:
             'prompt_frame_index': self.prompt_frame_index,
             'output_format': self.output_format,
             'confidence_threshold': self.confidence_threshold,
-            'batch_size': self.batch_size,
         }
 
     @classmethod
@@ -102,73 +103,25 @@ class SAM3VideoConfig:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RLE Decode
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _decode_rle(rle_data: Dict, shape: Tuple[int, int]) -> np.ndarray:
-    """Decode run-length encoded mask to binary numpy array.
-
-    Args:
-        rle_data: RLE dict with 'counts' and 'size' keys.
-        shape: (H, W) output shape.
-
-    Returns:
-        Binary mask (H, W), uint8 0/255.
-    """
-    if isinstance(rle_data, np.ndarray):
-        # Already decoded
-        return (rle_data > 0).astype(np.uint8) * 255
-
-    if isinstance(rle_data, dict):
-        counts = rle_data.get('counts', [])
-        size = rle_data.get('size', list(shape))
-
-        if isinstance(counts, str):
-            # COCO-style RLE string
-            try:
-                from pycocotools import mask as mask_utils
-                mask = mask_utils.decode(rle_data)
-                return (mask > 0).astype(np.uint8) * 255
-            except ImportError:
-                logger.warning("pycocotools not available for RLE decoding")
-                return np.zeros(shape, dtype=np.uint8)
-
-        # Integer run-length counts
-        h, w = size[0], size[1]
-        flat = np.zeros(h * w, dtype=np.uint8)
-        pos = 0
-        val = 0
-        for count in counts:
-            flat[pos:pos + count] = val
-            pos += count
-            val = 1 - val
-        mask = flat.reshape((h, w), order='F')
-        return mask.astype(np.uint8) * 255
-
-    # Tensor
-    if hasattr(rle_data, 'cpu'):
-        arr = rle_data.cpu().numpy()
-        return (arr > 0.5).astype(np.uint8) * 255
-
-    return np.zeros(shape, dtype=np.uint8)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SAM 3 Video Pipeline
+# SAM 3.1 Video Pipeline
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SAM3VideoPipeline:
-    """Unified video detection + segmentation + tracking via SAM 3.
+    """Unified video detection + segmentation + tracking via SAM 3.1.
 
-    Processes an entire video (or directory of frames) through SAM 3's
-    video predictor, which handles detection, segmentation, and temporal
-    tracking in a single pass.
+    Processes a directory of frames (or any ordered image set) through SAM 3.1's
+    multiplex video predictor, which handles detection, segmentation, and
+    temporal tracking in a single pass with shared-memory object buckets.
+
+    Frames are loaded as PIL images and passed directly to SAM 3.1 as a list,
+    which it treats as a video sequence. No temp directories or sequential
+    naming required.
 
     This replaces the traditional per-frame pipeline:
         YOLO detect → SAM2 segment → BoT-SORT track → temporal average
 
     With a single unified model:
-        SAM3 video: text prompt → detect + segment + track all frames
+        SAM3.1 video: text prompt → detect + segment + track all frames
 
     Usage:
         pipeline = SAM3VideoPipeline(config)
@@ -182,19 +135,44 @@ class SAM3VideoPipeline:
         self._session_id = None
 
     def initialize(self):
-        """Load SAM 3 video predictor model."""
+        """Load SAM 3.1 multiplex video predictor."""
         if not HAS_SAM3_VIDEO:
             raise ImportError(
-                "SAM3 video predictor not available. Install from: "
+                "SAM 3.1 video predictor not available. Install from: "
                 "git clone https://github.com/facebookresearch/sam3 && "
                 "cd sam3 && pip install -e ."
             )
         if not HAS_TORCH:
             raise ImportError("torch is required. Install with: pip install torch")
 
-        logger.info("Loading SAM3 video predictor (848M params)")
-        self.predictor = build_sam3_video_predictor()
-        logger.info("SAM3 video predictor ready")
+        # Detect Flash Attention 3 availability
+        fa3_available = False
+        try:
+            from flash_attn_interface import flash_attn_func  # noqa: F401
+            fa3_available = True
+        except ImportError:
+            pass
+
+        if not fa3_available:
+            # SAM 3.1's decoder.py hardcodes sdpa_kernel(FLASH_ATTENTION) when
+            # use_fa3=False, which crashes if Flash Attention isn't compiled into
+            # PyTorch. Monkey-patch to allow all backends as fallback.
+            try:
+                from sam3.model import decoder as _dec
+                from torch.nn.attention import sdpa_kernel, SDPBackend
+                _orig_sdpa_kernel = sdpa_kernel
+                _dec.sdpa_kernel = lambda *a, **kw: _orig_sdpa_kernel(
+                    [SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.FLASH_ATTENTION]
+                )
+                logger.info("Patched SAM 3.1 decoder to allow MATH attention fallback")
+            except Exception as e:
+                logger.warning(f"Could not patch decoder attention: {e}")
+
+        logger.info("Loading SAM 3.1 multiplex video predictor (FA3=%s)", fa3_available)
+        self.predictor = build_sam3_multiplex_video_predictor(
+            use_fa3=fa3_available,
+        )
+        logger.info("SAM 3.1 multiplex video predictor ready")
 
     def process_frames(
         self,
@@ -202,11 +180,11 @@ class SAM3VideoPipeline:
         output_dir: str,
         progress_callback=None
     ) -> Dict[str, Any]:
-        """Process a directory of frames through SAM 3 video pipeline.
+        """Process a directory of frames through SAM 3.1 video pipeline.
 
-        Frames must be sequential JPEG images (0000.jpg, 0001.jpg, ...).
-        If frames have different naming, they'll be copied to a temp dir
-        with sequential names.
+        Loads all images from frames_dir as PIL images, passes them to SAM 3.1
+        as a video sequence, runs text-prompted detection on the first frame,
+        then propagates tracking across all frames.
 
         Args:
             frames_dir: Directory containing frame images.
@@ -234,171 +212,123 @@ class SAM3VideoPipeline:
             return {'total_frames': 0, 'processed_frames': 0}
 
         n_frames = len(frame_files)
-        logger.info(f"Processing {n_frames} frames with SAM3 video pipeline")
+        logger.info(f"Processing {n_frames} frames with SAM 3.1 video pipeline")
 
-        # SAM3 video requires sequential JPEG naming (0000.jpg, 0001.jpg, ...)
-        # Prepare frames if needed
-        prepared_dir, name_map = self._prepare_frames(frame_files)
+        # Load as PIL list — SAM 3.1 accepts this directly as resource_path
+        pil_images = []
+        for f in frame_files:
+            pil_images.append(PILImage.open(f).convert("RGB"))
 
+        # Frame dimensions from first image (PIL .size returns (W, H))
+        img_w, img_h = pil_images[0].size
+
+        # Start video session — pass PIL list directly (NOT str())
+        # offload_video_to_cpu keeps frame tensors in system RAM, reducing VRAM pressure
+        response = self.predictor.handle_request({
+            "type": "start_session",
+            "resource_path": pil_images,
+            "offload_video_to_cpu": True,
+        })
+        self._session_id = response["session_id"]
+        logger.info(f"SAM 3.1 session started: {self._session_id}")
+
+        # Add text prompt on the designated frame
+        # SAM 3.1 multiplex resets state on each add_prompt call, so we must
+        # combine all prompts into a single string. The model's text encoder
+        # handles multi-concept detection from a single prompt.
+        prompt_idx = min(self.config.prompt_frame_index, n_frames - 1)
+        combined_prompt = " . ".join(self.config.prompts)
         try:
-            # Start video session
-            response = self.predictor.handle_request({
-                "type": "start_session",
-                "resource_path": str(prepared_dir)
+            self.predictor.handle_request({
+                "type": "add_prompt",
+                "session_id": self._session_id,
+                "frame_index": prompt_idx,
+                "text": combined_prompt,
             })
-            self._session_id = response["session_id"]
-            logger.info(f"SAM3 session started: {self._session_id}")
+            logger.info(f"Added prompt '{combined_prompt}' on frame {prompt_idx}")
+        except Exception as e:
+            logger.warning(f"Prompt '{combined_prompt}' failed: {e}")
 
-            # Add text prompts on the designated frame
-            prompt_idx = min(self.config.prompt_frame_index, n_frames - 1)
-            for prompt_text in self.config.prompts:
-                try:
-                    self.predictor.handle_request({
-                        "type": "add_prompt",
-                        "session_id": self._session_id,
-                        "frame_index": prompt_idx,
-                        "text": prompt_text,
-                    })
-                    logger.info(f"Added prompt '{prompt_text}' on frame {prompt_idx}")
-                except Exception as e:
-                    logger.warning(f"Prompt '{prompt_text}' failed: {e}")
+        if progress_callback:
+            progress_callback(0, n_frames, "Prompts added, propagating...")
 
-            if progress_callback:
-                progress_callback(0, n_frames, "Prompts added, propagating...")
+        # Propagate through video — streaming API yields per-frame results
+        stats = {
+            'total_frames': n_frames,
+            'processed_frames': 0,
+            'total_objects': 0,
+            'frames_with_detections': 0,
+        }
 
-            # Retrieve masks in batches
-            stats = {
-                'total_frames': n_frames,
-                'processed_frames': 0,
-                'total_objects': 0,
-                'frames_with_detections': 0,
-            }
+        outputs_per_frame = {}
+        for response in self.predictor.handle_stream_request({
+            "type": "propagate_in_video",
+            "session_id": self._session_id,
+            "propagation_direction": "forward",
+        }):
+            outputs_per_frame[response["frame_index"]] = response["outputs"]
 
-            batch_size = self.config.batch_size
-            for batch_start in range(0, n_frames, batch_size):
-                batch_end = min(batch_start + batch_size, n_frames)
-                frame_indices = list(range(batch_start, batch_end))
+        # Write masks for each frame
+        for frame_idx in range(n_frames):
+            frame_outputs = outputs_per_frame.get(frame_idx)
 
-                response = self.predictor.handle_request({
-                    "type": "get_outputs",
-                    "session_id": self._session_id,
-                    "frame_indices": frame_indices,
-                })
-
-                outputs = response.get("outputs", {})
-
-                for frame_idx in frame_indices:
-                    frame_data = outputs.get(frame_idx, {})
-                    original_file = name_map.get(frame_idx)
-                    if original_file is None:
-                        continue
-
-                    # Read frame dimensions
-                    orig_img = cv2.imread(str(original_file))
-                    if orig_img is None:
-                        continue
-                    h, w = orig_img.shape[:2]
-
-                    # Merge all object masks into one combined mask
-                    combined = np.zeros((h, w), dtype=np.uint8)
+            if frame_outputs is None:
+                combined = np.zeros((img_h, img_w), dtype=np.uint8)
+                n_objects = 0
+            else:
+                binary_masks = frame_outputs.get("out_binary_masks")
+                if binary_masks is not None and len(binary_masks) > 0:
+                    # binary_masks shape: (N, H, W), dtype bool
+                    # Merge all objects: logical OR across object dimension
+                    combined_bool = np.any(binary_masks, axis=0)
+                    combined = combined_bool.astype(np.uint8) * 255
+                    n_objects = len(binary_masks)
+                else:
+                    combined = np.zeros((img_h, img_w), dtype=np.uint8)
                     n_objects = 0
 
-                    for obj_id, mask_data in frame_data.items():
-                        mask = _decode_rle(mask_data, (h, w))
-                        if mask.shape[:2] != (h, w):
-                            mask = cv2.resize(mask, (w, h),
-                                              interpolation=cv2.INTER_NEAREST)
-                        combined = np.maximum(combined, mask)
-                        n_objects += 1
+            if n_objects > 0:
+                stats['frames_with_detections'] += 1
+                stats['total_objects'] += n_objects
 
-                    if n_objects > 0:
-                        stats['frames_with_detections'] += 1
-                        stats['total_objects'] += n_objects
+            # Resize if SAM output resolution differs from original
+            if combined.shape[:2] != (img_h, img_w):
+                combined = cv2.resize(combined, (img_w, img_h),
+                                      interpolation=cv2.INTER_NEAREST)
 
-                    # Save mask
-                    stem = original_file.stem
-                    mask_path = masks_dir / f"{stem}.{self.config.output_format}"
-                    cv2.imwrite(str(mask_path), combined)
-                    stats['processed_frames'] += 1
+            # Save mask
+            stem = frame_files[frame_idx].stem
+            mask_path = masks_dir / f"{stem}.{self.config.output_format}"
+            cv2.imwrite(str(mask_path), combined)
+            stats['processed_frames'] += 1
 
-                if progress_callback:
-                    progress_callback(batch_end, n_frames, "Retrieving masks...")
+            if progress_callback:
+                progress_callback(
+                    stats['processed_frames'], n_frames, "Writing masks..."
+                )
 
-            # End session
-            self.predictor.handle_request({
-                "type": "end_session",
-                "session_id": self._session_id,
-            })
-            self._session_id = None
+        # Close session
+        self.predictor.handle_request({
+            "type": "close_session",
+            "session_id": self._session_id,
+        })
+        self._session_id = None
 
-        finally:
-            # Clean up prepared frames if we made a copy
-            if prepared_dir != frames_path and prepared_dir.exists():
-                shutil.rmtree(prepared_dir, ignore_errors=True)
+        # Release PIL images
+        del pil_images
 
         logger.info(
-            f"SAM3 pipeline complete: {stats['processed_frames']}/{stats['total_frames']} frames, "
+            f"SAM 3.1 pipeline complete: {stats['processed_frames']}/{stats['total_frames']} frames, "
             f"{stats['total_objects']} total detections"
         )
         return stats
-
-    def _prepare_frames(
-        self, frame_files: List[Path]
-    ) -> Tuple[Path, Dict[int, Path]]:
-        """Ensure frames are sequential JPEGs for SAM3 video predictor.
-
-        If frames already follow 0000.jpg naming, returns the parent dir.
-        Otherwise creates a temp directory with symlinks/copies.
-
-        Returns:
-            (prepared_dir, {frame_index: original_path})
-        """
-        name_map = {}
-
-        # Check if already sequential
-        parent = frame_files[0].parent
-        is_sequential = True
-        for i, f in enumerate(frame_files):
-            expected = f"{i:04d}.jpg"
-            if f.name != expected:
-                is_sequential = False
-                break
-            name_map[i] = f
-
-        if is_sequential and all(f.suffix.lower() in ('.jpg', '.jpeg') for f in frame_files):
-            return parent, name_map
-
-        # Need to prepare: create temp dir with sequential naming
-        import tempfile
-        temp_dir = Path(tempfile.mkdtemp(prefix="sam3_frames_"))
-        name_map = {}
-
-        for i, src in enumerate(frame_files):
-            dst = temp_dir / f"{i:04d}.jpg"
-            name_map[i] = src
-
-            # Convert to JPEG if needed
-            if src.suffix.lower() in ('.jpg', '.jpeg'):
-                # Symlink or copy
-                try:
-                    dst.symlink_to(src.resolve())
-                except OSError:
-                    shutil.copy2(str(src), str(dst))
-            else:
-                # Read and save as JPEG
-                img = cv2.imread(str(src))
-                if img is not None:
-                    cv2.imwrite(str(dst), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
-
-        logger.info(f"Prepared {len(name_map)} frames in {temp_dir}")
-        return temp_dir, name_map
 
     def cleanup(self):
         """Release model resources."""
         if self._session_id is not None and self.predictor is not None:
             try:
                 self.predictor.handle_request({
-                    "type": "end_session",
+                    "type": "close_session",
                     "session_id": self._session_id,
                 })
             except Exception:
