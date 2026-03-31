@@ -17,7 +17,7 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
-from widgets import CollapsibleSection
+from widgets import CollapsibleSection, Tooltip
 
 # ── prep360 core (optional) ────────────────────────────────────────────
 
@@ -63,15 +63,21 @@ def _build_gap_analysis_section(app, parent):
     app.gaps_source_var = ctk.StringVar(value="colmap")
     src_radios = ctk.CTkFrame(c, fg_color="transparent")
     src_radios.pack(fill="x", pady=3, padx=12)
-    ctk.CTkRadioButton(src_radios, text="COLMAP directory",
+    radio_colmap = ctk.CTkRadioButton(src_radios, text="COLMAP directory",
                        variable=app.gaps_source_var, value="colmap",
-                       command=lambda: _on_source_change(app)).pack(anchor="w", pady=2)
-    ctk.CTkRadioButton(src_radios, text="Metashape XML",
+                       command=lambda: _on_source_change(app))
+    radio_colmap.pack(anchor="w", pady=2)
+    Tooltip(radio_colmap, "Load camera positions from a COLMAP sparse reconstruction.\nExpects a directory with cameras.bin, images.bin, points3D.bin.")
+    radio_meta = ctk.CTkRadioButton(src_radios, text="Metashape XML",
                        variable=app.gaps_source_var, value="metashape",
-                       command=lambda: _on_source_change(app)).pack(anchor="w", pady=2)
-    ctk.CTkRadioButton(src_radios, text="XMP sidecars",
+                       command=lambda: _on_source_change(app))
+    radio_meta.pack(anchor="w", pady=2)
+    Tooltip(radio_meta, "Load camera positions from a Metashape cameras.xml export.\nExport via: File \u2192 Export \u2192 Export Cameras.")
+    radio_xmp = ctk.CTkRadioButton(src_radios, text="XMP sidecars",
                        variable=app.gaps_source_var, value="xmp",
-                       command=lambda: _on_source_change(app)).pack(anchor="w", pady=2)
+                       command=lambda: _on_source_change(app))
+    radio_xmp.pack(anchor="w", pady=2)
+    Tooltip(radio_xmp, "Load camera positions from XMP sidecar files.\nReads GPS coordinates embedded in .xmp files alongside images.")
 
     # Source path picker
     src_frame = ctk.CTkFrame(c, fg_color="transparent")
@@ -81,6 +87,7 @@ def _build_gap_analysis_section(app, parent):
     app.gaps_source_entry = ctk.CTkEntry(src_frame,
                                           placeholder_text="Select folder or file...")
     app.gaps_source_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    Tooltip(app.gaps_source_entry, "Path to your camera position data.\nBrowse to select the appropriate file or folder.")
     ctk.CTkButton(src_frame, text="...", width=36,
                   command=lambda: _browse_source(app)).pack(side="left")
 
@@ -91,6 +98,7 @@ def _build_gap_analysis_section(app, parent):
     app.gaps_images_entry = ctk.CTkEntry(img_frame,
                                           placeholder_text="Source images (optional)...")
     app.gaps_images_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    Tooltip(app.gaps_images_entry, "Optional: path to source images for visual gap reports.\nUsed to show which images are near detected gaps.")
     ctk.CTkButton(img_frame, text="...", width=36,
                   command=lambda: app._browse_folder_for(app.gaps_images_entry)
                   ).pack(side="left")
@@ -107,9 +115,10 @@ def _build_gap_analysis_section(app, parent):
     app.gaps_eps_label = ctk.CTkLabel(eps_frame, text="5.0", width=35,
                                       font=("Consolas", 11))
     app.gaps_eps_label.pack(side="right")
-    ctk.CTkSlider(eps_frame, from_=1.0, to=20.0, variable=app.gaps_eps_var,
-                  command=lambda v: app.gaps_eps_label.configure(text=f"{float(v):.1f}")
-                  ).pack(side="left", fill="x", expand=True, padx=(6, 4))
+    eps_slider = ctk.CTkSlider(eps_frame, from_=1.0, to=20.0, variable=app.gaps_eps_var,
+                  command=lambda v: app.gaps_eps_label.configure(text=f"{float(v):.1f}"))
+    eps_slider.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    Tooltip(eps_slider, "DBSCAN clustering distance threshold.\nSmaller = tighter clusters, may split continuous coverage.\nLarger = looser clusters, may merge distinct areas.")
 
     sparse_frame = ctk.CTkFrame(pc, fg_color="transparent")
     sparse_frame.pack(fill="x", pady=3, padx=6)
@@ -118,9 +127,10 @@ def _build_gap_analysis_section(app, parent):
     app.gaps_sparse_label = ctk.CTkLabel(sparse_frame, text="2.0x", width=35,
                                          font=("Consolas", 11))
     app.gaps_sparse_label.pack(side="right")
-    ctk.CTkSlider(sparse_frame, from_=1.0, to=5.0, variable=app.gaps_sparse_var,
-                  command=lambda v: app.gaps_sparse_label.configure(text=f"{float(v):.1f}x")
-                  ).pack(side="left", fill="x", expand=True, padx=(6, 4))
+    sparse_slider = ctk.CTkSlider(sparse_frame, from_=1.0, to=5.0, variable=app.gaps_sparse_var,
+                  command=lambda v: app.gaps_sparse_label.configure(text=f"{float(v):.1f}x"))
+    sparse_slider.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    Tooltip(sparse_slider, "How sparse a region must be to count as a gap.\nMultiplier of median point density.\nHigher = only flags very sparse areas.")
 
     # Analyze button
     app.gaps_analyze_btn = ctk.CTkButton(
@@ -129,6 +139,7 @@ def _build_gap_analysis_section(app, parent):
         font=ctk.CTkFont(size=13, weight="bold"), height=38,
     )
     app.gaps_analyze_btn.pack(fill="x", pady=(6, 4), padx=6)
+    Tooltip(app.gaps_analyze_btn, "Run gap analysis on loaded camera positions.\nIdentifies spatial gaps in your reconstruction coverage.")
 
     # Summary + detail textboxes
     app.gaps_summary_text = ctk.CTkTextbox(
@@ -275,8 +286,10 @@ def _build_bridge_section(app, parent):
 
     # Reframe toggle (Coverage-specific; reads fisheye config from Extract)
     app.gaps_reframe_var = ctk.BooleanVar(value=False)
-    ctk.CTkCheckBox(c, text="Reframe fisheye \u2192 perspective",
-                    variable=app.gaps_reframe_var).pack(pady=3, padx=12, anchor="w")
+    reframe_cb = ctk.CTkCheckBox(c, text="Reframe fisheye \u2192 perspective",
+                    variable=app.gaps_reframe_var)
+    reframe_cb.pack(pady=3, padx=12, anchor="w")
+    Tooltip(reframe_cb, "Reframe extracted bridge frames from fisheye to perspective.\nUses the fisheye preset configured on the Extract tab.")
 
     # Buttons
     app.gaps_bridge_btn = ctk.CTkButton(
@@ -285,6 +298,7 @@ def _build_bridge_section(app, parent):
         font=ctk.CTkFont(size=13, weight="bold"), height=38,
     )
     app.gaps_bridge_btn.pack(fill="x", pady=(6, 4), padx=6)
+    Tooltip(app.gaps_bridge_btn, "Extract frames from the source video at gap timestamps.\nFills spatial gaps identified by the gap analysis.")
 
     app.gaps_stop_btn = ctk.CTkButton(
         c, text="Stop", command=app.stop_operation,

@@ -40,12 +40,6 @@ try:
         default_osmo360_calibration, batch_extract as fisheye_batch_extract,
     )
     from prep360.core.queue_manager import VideoQueue, ExtractionSettings
-    from prep360.core.dual_fisheye_dataset import (
-        DualFisheyeClipDataset,
-        discover_clip_roots,
-        load_clip_dataset,
-        write_dual_fisheye_session_manifest,
-    )
     from prep360.core.paired_split_video_extractor import (
         PairedSplitConfig,
         PairedSplitVideoExtractor,
@@ -469,7 +463,7 @@ def build_source_tab(app, parent):
     _build_extract_section(app, scroll)
     _build_fisheye_section(app, scroll)
     _build_metadata_section(app, scroll)
-    _build_metashape_section(app, scroll)
+    # Metashape Session section archived to legacy/metashape_session_ui.py (2026-03-24)
     _update_source_mode_ui(app)
 
 
@@ -1962,172 +1956,8 @@ def _geotag_standalone_worker(app, frames_dir, srt_path):
 
 
 # ======================================================================
-#  4. METASHAPE SESSION
-# ======================================================================
-
-def _build_metashape_section(app, parent):
-    sec = CollapsibleSection(
-        parent,
-        "Metashape Session",
-        subtitle="assemble a no-copy session manifest from clip working folders",
-        expanded=False,
-    )
-    sec.pack(fill="x", pady=(0, 6), padx=4)
-    c = sec.content
-
-    desc = ctk.CTkLabel(
-        c,
-        text="Use this after several clip folders already have front/frames + back/frames\n"
-             "and optional front/masks + back/masks. This step writes a session manifest only.\n"
-             "It does not duplicate any images on disk.",
-        font=("Consolas", 10),
-        text_color="#9ca3af",
-        anchor="w",
-        justify="left",
-    )
-    desc.pack(fill="x", padx=6, pady=(2, 4))
-
-    clips_frame = ctk.CTkFrame(c, fg_color="transparent")
-    clips_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(clips_frame, text="Clips:", width=80, anchor="w").pack(side="left")
-    app.metashape_clips_root_entry = ctk.CTkEntry(
-        clips_frame,
-        placeholder_text="Clip folder or parent folder containing many clip folders...",
-    )
-    app.metashape_clips_root_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(
-        clips_frame, text="...", width=36,
-        command=lambda: app._browse_folder_for(app.metashape_clips_root_entry),
-    ).pack(side="left")
-
-    output_frame = ctk.CTkFrame(c, fg_color="transparent")
-    output_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(output_frame, text="Session Out:", width=80, anchor="w").pack(side="left")
-    app.metashape_output_entry = ctk.CTkEntry(
-        output_frame,
-        placeholder_text="Folder where the session manifest should be written...",
-    )
-    app.metashape_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(
-        output_frame, text="...", width=36,
-        command=lambda: app._browse_folder_for(app.metashape_output_entry),
-    ).pack(side="left")
-
-    name_frame = ctk.CTkFrame(c, fg_color="transparent")
-    name_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(name_frame, text="Name:", width=80, anchor="w").pack(side="left")
-    app.metashape_session_name_entry = ctk.CTkEntry(
-        name_frame,
-        placeholder_text="Optional session name (defaults from the output folder)...",
-    )
-    app.metashape_session_name_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-
-    app.metashape_require_masks_var = ctk.BooleanVar(value=False)
-    masks_cb = ctk.CTkCheckBox(
-        c,
-        text="Require masks for every clip pair",
-        variable=app.metashape_require_masks_var,
-    )
-    masks_cb.pack(pady=(4, 2), padx=6, anchor="w")
-    Tooltip(
-        masks_cb,
-        "Enable this if the session should only include clips with complete front/back masks.",
-    )
-
-    app.metashape_run_btn = ctk.CTkButton(
-        c, text="Assemble Session Manifest", command=lambda: _run_metashape_session(app),
-        fg_color="#2E7D32", hover_color="#1B5E20",
-        font=ctk.CTkFont(size=13, weight="bold"), height=36,
-    )
-    app.metashape_run_btn.pack(fill="x", padx=6, pady=(6, 2))
-
-    app.metashape_status_text = ctk.CTkTextbox(
-        c, height=50,
-        font=ctk.CTkFont(family="Consolas", size=10),
-        fg_color="#1a1a1a", state="disabled",
-    )
-    app.metashape_status_text.pack(fill="x", padx=6, pady=(4, 2))
-    app._set_textbox(
-        app.metashape_status_text,
-        "Assemble one session manifest from validated clip working folders.\n"
-        "This keeps the existing clip files in place and only writes a JSON handoff for Metashape.",
-    )
-
-
-def _run_metashape_session(app):
-    if not HAS_PREP360:
-        app.log("Error: prep360 core not available")
-        return
-
-    clips_root = app.metashape_clips_root_entry.get().strip()
-    session_out = app.metashape_output_entry.get().strip()
-    session_name = app.metashape_session_name_entry.get().strip() or None
-    if not clips_root:
-        app.log("Error: Select a clip folder or a parent folder of clip folders")
-        return
-    if not Path(clips_root).exists():
-        app.log(f"Error: Clips folder not found: {clips_root}")
-        return
-    if not session_out:
-        app.log("Error: Select a Session Out folder")
-        return
-
-    app.metashape_run_btn.configure(state="disabled")
-    threading.Thread(
-        target=_metashape_session_worker,
-        args=(app, clips_root, session_out, session_name, app.metashape_require_masks_var.get()),
-        daemon=True,
-    ).start()
-
-
-def _metashape_session_worker(app, clips_root, session_out, session_name, require_masks):
-    try:
-        clip_roots = discover_clip_roots(clips_root)
-        app.log(f"Assembling Metashape session from {len(clip_roots)} clip folder(s)...")
-
-        clip_datasets: list[DualFisheyeClipDataset] = []
-        total_pairs = 0
-        masked_pairs = 0
-        for clip_root in clip_roots:
-            dataset = load_clip_dataset(clip_root, require_masks=require_masks)
-            clip_datasets.append(dataset)
-            total_pairs += len(dataset.pair_records)
-            masked_pairs += sum(
-                1 for record in dataset.pair_records
-                if record.front_mask is not None and record.back_mask is not None
-            )
-            app.log(
-                f"  {dataset.clip_id}: {len(dataset.pair_records)} pairs"
-                + (f", {sum(1 for r in dataset.pair_records if r.front_mask and r.back_mask)} masked"
-                   if dataset.masks_root else ", no masks")
-            )
-
-        manifest_path = write_dual_fisheye_session_manifest(
-            session_out,
-            clip_datasets,
-            session_name=session_name,
-        )
-
-        summary = "\n".join([
-            "Metashape session ready",
-            f"  Clips:         {len(clip_datasets)}",
-            f"  Pair count:    {total_pairs}",
-            f"  Mask pairs:    {masked_pairs}",
-            f"  Manifest:      {manifest_path}",
-            "  Mode:          no-copy session assembly",
-        ])
-        app.log(f"\n{summary}")
-        app.after(0, lambda: app._set_textbox(app.metashape_status_text, summary))
-    except Exception as e:
-        import traceback
-        app.log(f"Metashape session error: {e}")
-        app.log(traceback.format_exc())
-    finally:
-        app.after(0, lambda: app.metashape_run_btn.configure(state="normal"))
-
-
-# ======================================================================
-#  5. FISHEYE (DJI Osmo 360)
+#  4. FISHEYE (DJI Osmo 360)
+#     (Former section 4 "Metashape Session" archived to legacy/metashape_session_ui.py)
 # ======================================================================
 
 def _build_fisheye_section(app, parent):
@@ -2686,16 +2516,9 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         f"  Front frames:  {clip_root / 'front' / 'frames'}",
         f"  Back frames:   {clip_root / 'back' / 'frames'}",
         f"  Manifest:      {clip_root / 'paired_extraction_manifest.json'}",
-        "  Next:          Run Mask on this clip folder, then assemble the Metashape session below Metadata.",
+        "  Next:          Run Mask on this clip folder.",
     ])
     app.log(f"\n{summary}")
-
-    def _update_ui():
-        if hasattr(app, "metashape_clips_root_entry") and not app.metashape_clips_root_entry.get().strip():
-            _set_entry_text(app.metashape_clips_root_entry, str(Path(output_dir).parent))
-        if hasattr(app, "metashape_output_entry") and not app.metashape_output_entry.get().strip():
-            _set_entry_text(app.metashape_output_entry, str(Path(output_dir).parent / "metashape"))
-    app.after(0, _update_ui)
 
 
 def _run_reframe(app):
