@@ -615,7 +615,9 @@ class MaskReviewer:
             cv2.imshow(window_name, display)
             
             key = cv2.waitKey(1) & 0xFF
-            
+            if 65 <= key <= 90:  # Caps Lock / Shift: normalize A-Z → a-z
+                key += 32
+
             if key == ord('s'):
                 # Save and continue - resize back to original
                 if self.scale < 1.0:
@@ -742,6 +744,8 @@ class MaskReviewer:
             cv2.imshow(window_name, display)
 
             key = cv2.waitKey(1) & 0xFF
+            if 65 <= key <= 90:  # Caps Lock / Shift: normalize A-Z → a-z
+                key += 32
 
             if key == ord('s'):
                 if self.scale < 1.0:
@@ -971,6 +975,8 @@ def edit_session_subprocess():
         cv2.imshow(window_name, display)
 
         key = cv2.waitKey(1) & 0xFF
+        if 65 <= key <= 90:  # Caps Lock / Shift: normalize A-Z → a-z
+            key += 32
 
         if key == ord('s'):
             if reviewer.scale < 1.0:

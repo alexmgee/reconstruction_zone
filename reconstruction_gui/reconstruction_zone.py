@@ -1586,18 +1586,25 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                         review_dir=review_dir,
                     )
             elif inp.suffix.lower() in (".mp4", ".mov", ".avi", ".mkv"):
-                self.log(f"Processing video: {inp}")
                 if create_review_folder:
                     self.log(f"Output: masks → {mask_out_dir}, review → {review_dir}")
                 else:
                     self.log(f"Output: masks → {mask_out_dir}")
-                stats = pipeline.process_video(
-                    video_path=inp, output_dir=out,
-                    geometry=geometry,
-                    save_review=create_review_folder,
-                    mask_dir=mask_out_dir,
-                    review_dir=review_dir,
-                )
+                if self.sam3_unified_var.get() and pipeline.sam3_video_pipeline is not None:
+                    self.log(f"Processing video with SAM 3.1 unified: {inp}")
+                    stats = pipeline.process_video_sam3_unified(
+                        video_path=inp, output_dir=out,
+                        mask_dir=mask_out_dir,
+                    )
+                else:
+                    self.log(f"Processing video: {inp}")
+                    stats = pipeline.process_video(
+                        video_path=inp, output_dir=out,
+                        geometry=geometry,
+                        save_review=create_review_folder,
+                        mask_dir=mask_out_dir,
+                        review_dir=review_dir,
+                    )
             else:
                 self.log(f"Processing single image: {inp}")
                 import cv2, shutil
