@@ -16,14 +16,10 @@ from typing import List, Dict, Optional, Any
 
 
 STAGE_ORDER = [
-    "captured",
     "extracted",
     "masked",
     "aligned",
-    "dense_cloud",
-    "meshed",
-    "textured",
-    "exported",
+    "trained",
 ]
 
 MEDIA_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".mp4", ".mov", ".avi", ".mkv"}
@@ -46,6 +42,7 @@ class ProjectSource:
     media_type: str  # "images", "video", "masks", "other"
     file_count: int = 0
     notes: str = ""
+    stage: str = ""  # current stage: "" (none), or one of STAGE_ORDER
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -58,6 +55,7 @@ class ProjectSource:
             media_type=data.get("media_type", "other"),
             file_count=data.get("file_count", 0),
             notes=data.get("notes", ""),
+            stage=data.get("stage", ""),
         )
 
 
@@ -169,12 +167,12 @@ class Project:
 
     def current_stage(self) -> str:
         """Return the name of the most advanced stage that is done or in_progress."""
-        latest = "captured"
+        latest = ""
         for name in STAGE_ORDER:
             st = self.stages.get(name)
             if st and st.status in ("done", "in_progress"):
                 latest = name
-        return latest
+        return latest or STAGE_ORDER[0]
 
 
 class ProjectStore:

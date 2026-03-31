@@ -186,8 +186,12 @@ def _parse_block(block: str) -> Optional[SrtEntry]:
             elif key == "longitude":
                 entry.longitude = float(value)
             elif key == "rel_alt":
-                # DJI format: "10.400 abs_alt: -51.012" — rel_alt value is first token
-                entry.rel_alt = float(value.split()[0])
+                # DJI format: "[rel_alt: 7.900 abs_alt: 651.867]" — both values in one bracket
+                tokens = value.split()
+                entry.rel_alt = float(tokens[0])
+                if "abs_alt:" in value:
+                    abs_idx = tokens.index("abs_alt:")
+                    entry.abs_alt = float(tokens[abs_idx + 1])
             elif key == "abs_alt":
                 entry.abs_alt = float(value)
             elif key == "iso":
