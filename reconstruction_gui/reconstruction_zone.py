@@ -244,6 +244,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._build_review_tab()
         build_gaps_tab(self, self.tabs.tab("Coverage"))
 
+        # Projects is the default tab — swap preview for detail panel
+        self.after(50, self._on_tab_change)
+
     # ── slider helper ──
 
     def _slider(self, parent, label, from_, to, default, steps,
@@ -966,8 +969,29 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self._process_mask_label.pack_forget()
 
     def _on_tab_change(self):
-        """Tab changed — switch navigator data source."""
+        """Tab changed — switch navigator data source and swap right panel."""
         active = self.tabs.get()
+
+        # Swap right-side panel: Projects detail vs. preview
+        if active == "Projects":
+            self._preview_panel.grid_forget()
+            if hasattr(self, '_preview_show_btn'):
+                self._preview_show_btn.destroy()
+            self._proj_detail_panel.grid(
+                row=0, column=1, sticky="nsew", padx=0, pady=0,
+            )
+            self._main_frame.grid_columnconfigure(1, weight=65, uniform="split")
+        else:
+            if hasattr(self, '_proj_detail_panel'):
+                self._proj_detail_panel.grid_forget()
+            if self._preview_visible:
+                self._main_frame.grid_columnconfigure(1, weight=65, uniform="split")
+                self._preview_panel.grid(
+                    row=0, column=1, sticky="nsew", padx=0, pady=0,
+                )
+            else:
+                self._main_frame.grid_columnconfigure(1, weight=0, minsize=0)
+
         if active == "Mask":
             self._preview_mode = "process"
             self._load_image_list()
@@ -975,7 +999,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self._preview_mode = "review"
             self._load_review_nav_list()
         else:
-            # Extract / Coverage — no special preview mode yet
             self._preview_mode = active.lower()
             if active == "Coverage":
                 from tabs.gaps_tab import _refresh_bridge_info
