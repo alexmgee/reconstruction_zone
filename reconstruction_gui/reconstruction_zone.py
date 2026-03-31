@@ -82,7 +82,7 @@ MASK_TARGETS = [
 # Shared widgets & infrastructure (extracted to separate modules)
 # ──────────────────────────────────────────────────────────────────────
 
-from widgets import Section as _Section, CollapsibleSection as _CollapsibleSection, slider_row
+from widgets import Section as _Section, CollapsibleSection as _CollapsibleSection, slider_row, Tooltip
 from app_infra import AppInfrastructure
 from tabs.source_tab import build_source_tab
 from tabs.gaps_tab import build_gaps_tab
@@ -105,6 +105,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.minsize(1200, 800)
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
+
+        # Window icon (also controls taskbar icon while running)
+        _ico = Path(__file__).resolve().parent.parent / "reconstruction-zone.ico"
+        if _ico.exists():
+            self.after(200, lambda: self.iconbitmap(str(_ico)))
 
         # State
         self.log_queue: queue.Queue = queue.Queue()
@@ -259,13 +264,13 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         scroll.pack(fill="both", expand=True, padx=5, pady=5)
 
         # ==============================================================
-        #  CORE PROCESS
+        #  DETECTION
         # ==============================================================
-        core_sec = _CollapsibleSection(scroll, "Core Process", expanded=True)
+        core_sec = _CollapsibleSection(scroll, "Detection", expanded=True)
         core_sec.pack(fill="x", pady=(0, 6), padx=4)
         core = core_sec.content
 
-        # Input / Output
+        # ── I/O ──
         row = ctk.CTkFrame(core, fg_color="transparent")
         row.pack(fill="x", padx=6, pady=3)
         ctk.CTkLabel(row, text="Input:", width=55, anchor="e").pack(side="left")
@@ -286,29 +291,23 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         row2b.pack(fill="x", padx=6, pady=(0, 3))
         ctk.CTkLabel(row2b, text="", width=55).pack(side="left")
         self.review_folder_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
-            row2b,
-            text="Create review folder",
-            variable=self.review_folder_var,
-            width=150,
-        ).pack(side="left", padx=(5, 8))
+        _rf = ctk.CTkCheckBox(row2b, text="Create review folder",
+                              variable=self.review_folder_var, width=0)
+        _rf.pack(side="left", padx=(5, 0))
+        Tooltip(_rf, "Creates masks/ and review/ subdirectories inside Output")
         self.review_rejects_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(
-            row2b,
-            text="Include rejects",
-            variable=self.review_rejects_var,
-            width=130,
-        ).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(
-            row2b,
-            text="Off: write masks directly into Output. On: create masks/ and review/ inside Output.",
-            font=("Consolas", 10),
-            text_color="#9ca3af",
-        ).pack(side="left")
+        _rr = ctk.CTkCheckBox(row2b, text="Include rejects",
+                              variable=self.review_rejects_var, width=0)
+        _rr.pack(side="left", padx=(16, 0))
+        Tooltip(_rr, "Creates a mask for every image regardless of confidence score")
 
-        # SAM3 mode: Hybrid / Unified Video  (above model row — mode determines what's relevant)
+        self.pattern_var = ctk.StringVar(value="*.jpg *.png")
+        ctk.CTkEntry(row2b, textvariable=self.pattern_var, width=80).pack(side="right", padx=(2, 70))
+        ctk.CTkLabel(row2b, text="File types:").pack(side="right", padx=(0, 2))
+
+        # ── Model ──
         sam3_mode_row = ctk.CTkFrame(core, fg_color="transparent")
-        sam3_mode_row.pack(fill="x", padx=6, pady=3)
+        sam3_mode_row.pack(fill="x", padx=6, pady=(8, 3))
         ctk.CTkLabel(sam3_mode_row, text="SAM3 mode:").pack(side="left", padx=(0, 2))
         self.sam3_unified_var = ctk.BooleanVar(value=False)
         self._sam3_mode_btn = ctk.CTkSegmentedButton(
@@ -319,14 +318,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._sam3_mode_btn.pack(side="left", padx=4)
         ctk.CTkLabel(sam3_mode_row,
                      text="Hybrid = per-frame detect+segment; Unified = SAM3 video tracking",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
+                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(6, 0))
 
-        # Model / Geometry  (greyed out in Unified mode)
         r1 = ctk.CTkFrame(core, fg_color="transparent")
         r1.pack(fill="x", padx=6, pady=3)
-
         ctk.CTkLabel(r1, text="Model:").pack(side="left", padx=(0, 2))
-        # Build model list based on distribution
         try:
             from prep360.distribution import is_gumroad as _is_gumroad_check
         except ImportError:
@@ -352,11 +348,22 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                           values=["pinhole", "equirect", "fisheye", "cubemap"],
                           width=95).pack(side="left", padx=2)
 
-        self.conf_var = self._slider(r1, "Conf", 0, 1, 0.70, 20, width=80, pad_left=12)
+        r1b = ctk.CTkFrame(core, fg_color="transparent")
+        r1b.pack(fill="x", padx=6, pady=3)
+        self.conf_var = self._slider(r1b, "Conf", 0, 1, 0.70, 20, width=100)
+        self.review_thresh_var = self._slider(r1b, "Review thresh", 0, 1, 0.85, 20,
+                                              pad_left=40)
+        self.torch_compile_var = ctk.BooleanVar(value=False)
+        _tc = ctk.CTkCheckBox(r1b, text="torch.compile",
+                              variable=self.torch_compile_var, width=0)
+        _tc.pack(side="left", padx=(40, 0))
+        Tooltip(_tc, "Compile models with torch.compile() for ~20-50% faster\n"
+                     "GPU inference. First run is slow (warmup).\n"
+                     "Requires PyTorch 2.0+ and CUDA.")
 
-        # Prompts & Classes
+        # ── Prompts & Targets ──
         r2 = ctk.CTkFrame(core, fg_color="transparent")
-        r2.pack(fill="x", padx=6, pady=3)
+        r2.pack(fill="x", padx=6, pady=(8, 3))
         ctk.CTkLabel(r2, text="Remove:", width=55, anchor="e").pack(side="left")
         self.remove_prompts_entry = ctk.CTkEntry(
             r2, placeholder_text="default: person, tripod, backpack, selfie stick")
@@ -369,19 +376,19 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             r3, placeholder_text="(optional) objects to protect from masking")
         self.keep_prompts_entry.pack(side="left", fill="x", expand=True, padx=5)
 
-        # Multi-pass SAM3 prompts
+        self._target_vars: dict = {}
+
         mp_wrapper = ctk.CTkFrame(core, fg_color="transparent")
         mp_wrapper.pack(fill="x", padx=6, pady=3)
-
         mp_toggle_row = ctk.CTkFrame(mp_wrapper, fg_color="transparent")
         mp_toggle_row.pack(fill="x")
         self.multi_pass_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(mp_toggle_row, text="Multi-pass SAM3",
-                        variable=self.multi_pass_var,
-                        command=self._toggle_multi_pass,
-                        width=140).pack(side="left")
-        ctk.CTkLabel(mp_toggle_row, text="(union masks from multiple prompt passes)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
+        _mp = ctk.CTkCheckBox(mp_toggle_row, text="Multi-pass SAM3",
+                              variable=self.multi_pass_var,
+                              command=self._toggle_multi_pass, width=0)
+        _mp.pack(side="left")
+        Tooltip(_mp, "Run SAM3 once per prompt with individual confidence\n"
+                     "thresholds, then union all masks together")
         ctk.CTkButton(mp_toggle_row, text="+ Add Pass", width=80,
                       command=self._add_multi_pass_row).pack(side="right", padx=2)
         ctk.CTkButton(mp_toggle_row, text="Remove", width=70,
@@ -391,49 +398,29 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.multi_pass_list_frame = ctk.CTkFrame(mp_wrapper, fg_color="transparent")
         # Initially hidden — shown when checkbox is checked
 
-        # Mask targets  (greyed out in Unified mode)
-        targets_row = ctk.CTkFrame(core, fg_color="transparent")
-        targets_row.pack(fill="x", padx=6, pady=3)
-        ctk.CTkLabel(targets_row, text="Mask:", width=55, anchor="e").pack(side="left")
-        self._target_vars: dict = {}
-        for label, coco_id in MASK_TARGETS:
-            var = ctk.BooleanVar(value=(label in ("person", "backpack", "selfie stick")))
-            ctk.CTkCheckBox(targets_row, text=label, variable=var,
-                            width=100).pack(side="left", padx=4)
-            self._target_vars[label] = (var, coco_id)
-
         # Frames whose interactive children are disabled in Unified mode
-        self._unified_disable_frames = [r1, targets_row]
+        self._unified_disable_frames = [r1, r1b]
 
-        # File types, skip existing, review threshold
-        opts_row = ctk.CTkFrame(core, fg_color="transparent")
-        opts_row.pack(fill="x", padx=6, pady=3)
-        ctk.CTkLabel(opts_row, text="File types:").pack(side="left", padx=(0, 2))
-        self.pattern_var = ctk.StringVar(value="*.jpg *.png")
-        ctk.CTkEntry(opts_row, textvariable=self.pattern_var, width=80).pack(side="left", padx=2)
-
-        self.skip_existing_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(opts_row, text="Skip existing",
-                        variable=self.skip_existing_var, width=110).pack(side="left", padx=(12, 0))
-
-        self.review_thresh_var = self._slider(opts_row, "Review thresh", 0, 1, 0.85, 20,
-                                              pad_left=12)
-        ctk.CTkLabel(opts_row, text="(below = flagged)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
-
-        # Output options: multi-label, inpaint
+        # ── Output ──
         out_row = ctk.CTkFrame(core, fg_color="transparent")
-        out_row.pack(fill="x", padx=6, pady=3)
+        out_row.pack(fill="x", padx=6, pady=(8, 3))
+        self.skip_existing_var = ctk.BooleanVar(value=False)
+        _se = ctk.CTkCheckBox(out_row, text="Skip existing",
+                              variable=self.skip_existing_var, width=0)
+        _se.pack(side="left")
+        Tooltip(_se, "Skip images that already have a mask file in the output directory")
         self.multi_label_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(out_row, text="Multi-label output",
-                        variable=self.multi_label_var, width=130).pack(side="left")
-        ctk.CTkLabel(out_row, text="(per-class segmaps)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(0, 12))
+        _ml = ctk.CTkCheckBox(out_row, text="Multi-label output",
+                              variable=self.multi_label_var, width=0)
+        _ml.pack(side="left")
+        Tooltip(_ml, "Export per-class segmentation maps (pixel values = class IDs)\n"
+                     "for Gaussian Grouping and semantic scene decomposition")
         self.inpaint_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(out_row, text="Inpaint masked",
-                        variable=self.inpaint_var, width=120).pack(side="left")
-        ctk.CTkLabel(out_row, text="(fill masked regions for 3DGS training)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
+        _ip = ctk.CTkCheckBox(out_row, text="Inpaint masked",
+                              variable=self.inpaint_var, width=0)
+        _ip.pack(side="left", padx=(40, 0))
+        Tooltip(_ip, "Fill masked regions with plausible background texture\n"
+                     "so 3DGS gets gradient signal instead of black void")
 
         # ==============================================================
         #  DETECTION & REFINEMENT
@@ -445,7 +432,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         # Shadow Detection
         shadow_section = _CollapsibleSection(detect, "Shadow Detection",
-            subtitle="Detect shadows cast by masked objects")
+            subtitle="detect shadows cast by masked objects")
         shadow_section.pack(fill="x", padx=2, pady=(0, 4))
         sc = shadow_section.content
 
@@ -487,7 +474,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         # SAM Mask Refinement
         sam_section = _CollapsibleSection(detect, "SAM Mask Refinement",
-            subtitle="Tighten mask edges using SAM point prompts")
+            subtitle="tighten mask edges using SAM point prompts")
         sam_section.pack(fill="x", padx=2, pady=(0, 4))
         samc = sam_section.content
 
@@ -511,7 +498,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         # Alpha Matting
         mat_section = _CollapsibleSection(detect, "Alpha Matting (ViTMatte)",
-            subtitle="Soft alpha edges for hair, fur, semi-transparent boundaries")
+            subtitle="soft alpha edges for hair, fur, semi-transparent boundaries")
         mat_section.pack(fill="x", padx=2, pady=(0, 4))
         matc = mat_section.content
 
@@ -538,7 +525,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         # Ensemble Detection
         ens_section = _CollapsibleSection(detect, "Ensemble Detection (WMF)",
-            subtitle="Run multiple detectors and merge results")
+            subtitle="run multiple detectors and merge results")
         ens_section.pack(fill="x", padx=2, pady=(0, 4))
         ensc = ens_section.content
 
@@ -565,7 +552,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         # Edge Injection
         edge_section = _CollapsibleSection(detect, "Edge Injection",
-            subtitle="Canny edges for thin structures (wires, antennas)")
+            subtitle="canny edges for thin structures like wires and antennas")
         edge_section.pack(fill="x", padx=2, pady=(0, 4))
         edgec = edge_section.content
 
@@ -580,7 +567,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         # COLMAP Geometric Validation
         col_section = _CollapsibleSection(detect, "COLMAP Geometric Validation",
-            subtitle="Cross-check masks against 3D reconstruction")
+            subtitle="cross-check masks against 3D reconstruction")
         col_section.pack(fill="x", padx=2, pady=(0, 4))
         colc = col_section.content
 
@@ -600,8 +587,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         colr2.pack(fill="x", pady=2)
         self.colmap_agree_var = self._slider(colr2, "Agreement", 0, 1, 0.7, 20)
         self.colmap_flag_var = self._slider(colr2, "Flag above", 0, 1, 0.15, 20, pad_left=8)
-        ctk.CTkLabel(colr2, text="(3D check)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
+        ctk.CTkLabel(colr2, text="3D check",
+                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(6, 0))
 
         # ==============================================================
         #  POST-PROCESSING
@@ -611,52 +598,64 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         post_sec.pack(fill="x", pady=(0, 6), padx=4)
         post = post_sec.content
 
-        # Mask dilate + Fill holes
-        pp_row = ctk.CTkFrame(post, fg_color="transparent")
-        pp_row.pack(fill="x", padx=6, pady=3)
-        self.mask_dilate_var = self._slider(pp_row, "Mask dilate", 0, 50, 0, 50,
+        # General (all image types)
+        gen_row = ctk.CTkFrame(post, fg_color="transparent")
+        gen_row.pack(fill="x", padx=6, pady=3)
+        self.mask_dilate_var = self._slider(gen_row, "Mask dilate", 0, 50, 0, 50,
                                              fmt=".0f")
-        ctk.CTkLabel(pp_row, text="px",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(gen_row, text="px",
+                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(2, 0))
         self.fill_holes_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(pp_row, text="Fill holes",
-                        variable=self.fill_holes_var, width=90).pack(side="left", padx=(8, 0))
-        ctk.CTkLabel(pp_row, text="(camera mount, equipment gaps inside mask)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
+        _fh = ctk.CTkCheckBox(gen_row, text="Fill holes",
+                               variable=self.fill_holes_var, width=0)
+        _fh.pack(side="left", padx=(40, 0))
+        Tooltip(_fh, "Fill enclosed holes inside the mask\n"
+                     "(camera mount, equipment gaps)")
 
-        # 360 / Equirect
-        eq_row = ctk.CTkFrame(post, fg_color="transparent")
-        eq_row.pack(fill="x", padx=6, pady=3)
-        self.nadir_mask_var = self._slider(eq_row, "Nadir mask", 0, 25, 0, 50,
+        # Equirectangular
+        erp_sec = _CollapsibleSection(post, "Equirectangular",
+                                      subtitle="nadir masking, pole expansion, cubemap seam overlap",
+                                      expanded=True)
+        erp_sec.pack(fill="x", pady=(0, 2), padx=2)
+        erp = erp_sec.content
+
+        erp_row1 = ctk.CTkFrame(erp, fg_color="transparent")
+        erp_row1.pack(fill="x", padx=6, pady=3)
+        self.nadir_mask_var = self._slider(erp_row1, "Nadir mask", 0, 25, 0, 50,
                                            fmt=".0f")
-        ctk.CTkLabel(eq_row, text="%",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(0, 8))
-        self.pole_expand_var = self._slider(eq_row, "Pole expand", 0, 5, 1.2, 50,
-                                            fmt=".1f")
-        ctk.CTkLabel(eq_row, text="(360° photographer body / pole distortion)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
+        _nm_unit = ctk.CTkLabel(erp_row1, text="%",
+                                font=("Consolas", 10), text_color="#9ca3af")
+        _nm_unit.pack(side="left", padx=(2, 0))
+        self.pole_expand_var = self._slider(erp_row1, "Pole expand", 0, 5, 1.2, 50,
+                                            fmt=".1f", pad_left=40)
+        Tooltip(_nm_unit, "Auto-mask the bottom N% of equirectangular images\n"
+                          "(hides nadir tripod/photographer)")
+
+        erp_row2 = ctk.CTkFrame(erp, fg_color="transparent")
+        erp_row2.pack(fill="x", padx=6, pady=3)
+        self.cubemap_overlap_var = self._slider(erp_row2, "Cubemap overlap", 0, 30, 0, 30,
+                                                 fmt=".0f")
+        ctk.CTkLabel(erp_row2, text="°",
+                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(2, 0))
 
         # Fisheye
-        fe_row = ctk.CTkFrame(post, fg_color="transparent")
+        fe_sec = _CollapsibleSection(post, "Fisheye",
+                                     subtitle="circle masking and periphery trimming",
+                                     expanded=False)
+        fe_sec.pack(fill="x", pady=(0, 2), padx=2)
+        fe = fe_sec.content
+
+        fe_row = ctk.CTkFrame(fe, fg_color="transparent")
         fe_row.pack(fill="x", padx=6, pady=3)
         self.fisheye_circle_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(fe_row, text="Fisheye circle mask",
-                        variable=self.fisheye_circle_var, width=140).pack(side="left")
+        _fc = ctk.CTkCheckBox(fe_row, text="Fisheye circle mask",
+                               variable=self.fisheye_circle_var, width=0)
+        _fc.pack(side="left")
+        Tooltip(_fc, "Mask corners and periphery outside the fisheye circle")
         self.fisheye_margin_var = self._slider(fe_row, "Margin", 0, 20, 0, 50,
-                                                fmt=".0f", pad_left=8)
-        ctk.CTkLabel(fe_row, text="% (mask corners + distorted periphery)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
-
-        # Performance
-        perf_row = ctk.CTkFrame(post, fg_color="transparent")
-        perf_row.pack(fill="x", padx=6, pady=3)
-        self.torch_compile_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(perf_row, text="torch.compile",
-                        variable=self.torch_compile_var, width=120).pack(side="left")
-        self.cubemap_overlap_var = self._slider(perf_row, "Cubemap overlap", 0, 30, 0, 30,
-                                                 fmt=".0f", pad_left=12)
-        ctk.CTkLabel(perf_row, text="° (equirect only)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
+                                                fmt=".0f", pad_left=40)
+        ctk.CTkLabel(fe_row, text="%",
+                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(2, 0))
 
         # ==============================================================
         #  RUN / CANCEL

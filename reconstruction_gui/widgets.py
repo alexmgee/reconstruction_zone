@@ -41,7 +41,7 @@ class Section(ctk.CTkFrame):
         ).pack(side="left")
         if subtitle:
             ctk.CTkLabel(
-                header, text=f"— {subtitle}",
+                header, text=subtitle,
                 font=("Consolas", 10), text_color="#9ca3af",
                 anchor="w",
             ).pack(side="left", padx=(6, 0))
@@ -82,7 +82,7 @@ class CollapsibleSection(ctk.CTkFrame):
         self._title = title
         self.toggle_btn = ctk.CTkButton(
             hdr, text=f"{'▼' if expanded else '▶'} {title}",
-            anchor="w", fg_color="transparent",
+            width=0, anchor="w", fg_color="transparent",
             hover_color=("gray75", "gray25"),
             font=ctk.CTkFont(size=12, weight="bold"),
             command=self._toggle, height=24,
@@ -90,9 +90,9 @@ class CollapsibleSection(ctk.CTkFrame):
         self.toggle_btn.pack(side="left")
         if subtitle:
             ctk.CTkLabel(
-                hdr, text=f"— {subtitle}",
+                hdr, text=subtitle,
                 font=("Consolas", 10), text_color="#9ca3af",
-            ).pack(side="left", padx=6)
+            ).pack(side="left", padx=(6, 0))
 
         self.content = ctk.CTkFrame(self, fg_color="transparent")
         if expanded:
@@ -210,7 +210,7 @@ def slider_row(
     ctk.CTkLabel(parent, text=f"{label}:").pack(side="left", padx=(pad_left, 2))
     var = ctk.DoubleVar(value=default)
     val_lbl = ctk.CTkLabel(
-        parent, text=f"{default:{fmt}}", width=40,
+        parent, text=f"{default:{fmt}}", width=0,
         font=("Consolas", 11),
     )
     slider_kwargs = dict(
@@ -219,6 +219,6 @@ def slider_row(
     )
     if steps is not None:
         slider_kwargs["number_of_steps"] = steps
-    ctk.CTkSlider(parent, **slider_kwargs).pack(side="left", padx=2)
-    val_lbl.pack(side="left")
+    ctk.CTkSlider(parent, **slider_kwargs).pack(side="left", padx=0)
+    val_lbl.pack(side="left", padx=0)
     return var
