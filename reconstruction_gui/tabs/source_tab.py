@@ -20,7 +20,7 @@ from typing import List, Optional
 
 import customtkinter as ctk
 
-from widgets import CollapsibleSection, Tooltip
+from widgets import Section, CollapsibleSection, Tooltip
 
 # ── prep360 core (optional) ────────────────────────────────────────────
 
@@ -362,7 +362,7 @@ def _update_sharpest_tier_ui(app):
     # Enable/disable the tier combo
     combo.configure(state="readonly" if is_sharpest else "disabled")
 
-    # Update tier description (always packed, toggle text to show/hide)
+    # Update tier description label (always packed, toggle text to show/hide)
     desc = getattr(app, "extract_sharpest_tier_desc", None)
     if desc:
         if is_sharpest:
@@ -370,6 +370,15 @@ def _update_sharpest_tier_ui(app):
             desc.configure(text=_TIER_INFO[tier][1])
         else:
             desc.configure(text="")
+
+    # Grey out blur filter in Sharpest Frame mode (sharpest already selects for sharpness)
+    blur_sec = getattr(app, "_blur_filter_section", None)
+    if blur_sec:
+        for child in blur_sec.content.winfo_children():
+            try:
+                child.configure(state="disabled" if is_sharpest else "normal")
+            except Exception:
+                pass
 
 
 def _update_estimate(app, *_args):
@@ -474,7 +483,7 @@ def build_source_tab(app, parent):
 # ======================================================================
 
 def _build_video_selection_section(app, parent):
-    sec = CollapsibleSection(parent, "Video Selection", expanded=True)
+    sec = Section(parent, "Video Selection")
     sec.pack(fill="x", pady=(0, 6), padx=4)
     c = sec.content
 
@@ -521,17 +530,6 @@ def _build_video_selection_section(app, parent):
         "When enabled, Analyze and Extract use the graded front/back videos below.\n"
         "Use this after splitting and color-grading outside the GUI.",
     )
-
-    split_desc = ctk.CTkLabel(
-        sc,
-        text="This is the paired extraction source for the main Extract button.\n"
-             "Top Input/Output still belong to single-video extraction and Split Lenses.",
-        font=("Consolas", 10),
-        text_color="#9ca3af",
-        anchor="w",
-        justify="left",
-    )
-    split_desc.pack(fill="x", padx=6, pady=(0, 4))
 
     split_front_frame = ctk.CTkFrame(sc, fg_color="transparent")
     split_front_frame.pack(fill="x", pady=3, padx=6)
@@ -596,26 +594,7 @@ def _build_video_selection_section(app, parent):
         split_out_btn,
     ]
 
-    # Analysis (collapsible subsection)
-    analysis_sec = CollapsibleSection(c, "Analysis", expanded=True)
-    analysis_sec.pack(fill="x", pady=(4, 0), padx=2)
-    ac = analysis_sec.content
-
-    # Button + results side by side
-    analysis_row = ctk.CTkFrame(ac, fg_color="transparent")
-    analysis_row.pack(fill="x", pady=3, padx=4)
-
-    app.analyze_run_btn = ctk.CTkButton(
-        analysis_row, text="Analyze", command=lambda: _run_analyze(app),
-        fg_color="#1976D2", hover_color="#1565C0",
-        font=ctk.CTkFont(size=12, weight="bold"), width=90,
-    )
-    app.analyze_run_btn.pack(side="left", padx=(0, 6), anchor="n")
-
-    app.analyze_results = ctk.CTkTextbox(analysis_row, height=160,
-                                         font=ctk.CTkFont(family="Consolas", size=11))
-    app.analyze_results.pack(side="left", fill="x", expand=True)
-    app.analyze_results.insert("1.0", _analysis_placeholder_text(app))
+    # Analysis moved to Frame Extraction section
 
 
 def _run_analyze(app):
@@ -794,7 +773,7 @@ def _analyze_split_worker(app, front_video: str, back_video: str):
 # ======================================================================
 
 def _build_extract_section(app, parent):
-    sec = CollapsibleSection(parent, "Frame Extraction", expanded=True)
+    sec = Section(parent, "Frame Extraction")
     sec.pack(fill="x", pady=(0, 6), padx=4)
     c = sec.content
 
@@ -807,6 +786,33 @@ def _build_extract_section(app, parent):
     app.extract_current_item_id = None
     app.extract_planned_frames: List[PlannedFrame] = []
     app.queue_item_widgets = {}
+
+    # -- Analysis (collapsible subsection inside Frame Extraction) --
+    analysis_sec = CollapsibleSection(c, "Analysis", expanded=True, core=True)
+    analysis_sec.pack(fill="x", pady=(0, 6), padx=2)
+    ac = analysis_sec.content
+
+    analysis_row = ctk.CTkFrame(ac, fg_color="transparent")
+    analysis_row.pack(fill="x", pady=3, padx=4)
+
+    app.analyze_run_btn = ctk.CTkButton(
+        analysis_row, text="Analyze", command=lambda: _run_analyze(app),
+        fg_color="#1976D2", hover_color="#1565C0",
+        font=ctk.CTkFont(size=12, weight="bold"), width=90,
+    )
+    app.analyze_run_btn.pack(side="left", padx=(0, 6), anchor="n")
+
+    app.analyze_results = ctk.CTkTextbox(analysis_row, height=160,
+                                         font=ctk.CTkFont(family="Consolas", size=11))
+    app.analyze_results.pack(side="left", fill="x", expand=True)
+    app.analyze_results.insert("1.0", _analysis_placeholder_text(app))
+
+    # -- live estimate (at top of settings, first thing visible) --
+    app.current_video_info = None
+    app.extract_estimate_label = ctk.CTkLabel(
+        c, text="Analyze the selected source to see estimates", anchor="w", justify="left",
+        text_color="gray", font=ctk.CTkFont(size=11))
+    app.extract_estimate_label.pack(fill="x", padx=8, pady=(0, 4))
 
     # -- extraction settings --
     mode_frame = ctk.CTkFrame(c, fg_color="transparent")
@@ -829,33 +835,39 @@ def _build_extract_section(app, parent):
         command=lambda _v: _update_sharpest_tier_ui(app),
     )
     app.extract_tier_combo.pack(side="left", padx=(4, 0))
-    Tooltip(app.extract_tier_combo,
-            "Controls how sharpness is measured and\n"
-            "how time windows are handled.")
 
     # Tier description inline on mode row, right of combo
-    # Fixed height (3 lines @ size 10) so the row doesn't shift when text appears
+    # Fixed height so the row doesn't shift when text appears/disappears
     app.extract_sharpest_tier_desc = ctk.CTkLabel(
         mode_frame, text="", text_color="#9ca3af",
         font=ctk.CTkFont(size=10), anchor="w", justify="left",
         height=42)
     app.extract_sharpest_tier_desc.pack(side="left", padx=(8, 0))
 
+    # Mode description (dynamic — changes with mode selection)
     app.extract_mode_desc = ctk.CTkLabel(
         c, text=_MODE_INFO["fixed"][1], text_color="#9ca3af",
         font=ctk.CTkFont(size=10), anchor="w")
-    app.extract_mode_desc.pack(fill="x", padx=12, pady=(0, 2))
+    app.extract_mode_desc.pack(fill="x", padx=68, pady=(0, 0))
 
     int_frame = ctk.CTkFrame(c, fg_color="transparent")
     int_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(int_frame, text="Interval:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(int_frame, text="Every:", width=60, anchor="w").pack(side="left")
     app.extract_interval_var = ctk.DoubleVar(value=2.0)
-    app.extract_interval_label = ctk.CTkLabel(int_frame, text="2.0s", width=40,
+    def _fmt_interval(v):
+        v = float(v)
+        fps = 1.0 / v if v > 0 else 0
+        app.extract_interval_label.configure(text=f"{v:.1f}s ({fps:.1f} fps)")
+    app.extract_interval_label = ctk.CTkLabel(int_frame, text="2.0s (0.5 fps)", width=0,
                                               font=("Consolas", 11))
     app.extract_interval_label.pack(side="right")
-    ctk.CTkSlider(int_frame, from_=0.1, to=10, variable=app.extract_interval_var,
-                  command=lambda v: app.extract_interval_label.configure(text=f"{float(v):.1f}s")
-                  ).pack(side="left", fill="x", expand=True, padx=(6, 4))
+    _int_slider = ctk.CTkSlider(int_frame, from_=0.1, to=10,
+                                variable=app.extract_interval_var,
+                                command=_fmt_interval)
+    _int_slider.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    Tooltip(_int_slider, "Time between extracted frames.\n"
+            "Lower = more frames, larger dataset.\n"
+            "2.0s is typical for walking-speed capture.")
 
     qual_frame = ctk.CTkFrame(c, fg_color="transparent")
     qual_frame.pack(fill="x", pady=3, padx=6)
@@ -868,49 +880,79 @@ def _build_extract_section(app, parent):
                   command=lambda v: app.extract_quality_label.configure(text=f"{int(v)}")
                   ).pack(side="left", fill="x", expand=True, padx=(6, 4))
 
-    fmt_frame = ctk.CTkFrame(c, fg_color="transparent")
-    fmt_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(fmt_frame, text="Format:", width=60, anchor="w").pack(side="left")
-    app.extract_format_var = ctk.StringVar(value="jpg")
-    ctk.CTkRadioButton(fmt_frame, text="JPEG", variable=app.extract_format_var,
-                       value="jpg").pack(side="left", padx=(6, 12))
-    ctk.CTkRadioButton(fmt_frame, text="PNG", variable=app.extract_format_var,
-                       value="png").pack(side="left")
+    # -- bottom row: Start/End | Format | Auto-geotag (grid, 3 equal columns) --
+    bottom_row = ctk.CTkFrame(c, fg_color="transparent")
+    bottom_row.pack(fill="x", pady=3, padx=6)
+    bottom_row.grid_columnconfigure(0, weight=0)
+    bottom_row.grid_columnconfigure(1, weight=1)
+    bottom_row.grid_columnconfigure(2, weight=0)
 
-    # -- time range --
-    time_frame = ctk.CTkFrame(c, fg_color="transparent")
-    time_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(time_frame, text="Start:", width=40, anchor="w").pack(side="left")
-    app.extract_start_entry = ctk.CTkEntry(time_frame, width=65, placeholder_text="0:00")
+    # Start/End (left)
+    left_grp = ctk.CTkFrame(bottom_row, fg_color="transparent")
+    left_grp.grid(row=0, column=0, sticky="w")
+    _start_lbl = ctk.CTkLabel(left_grp, text="Start:")
+    _start_lbl.pack(side="left")
+    Tooltip(_start_lbl, "Trim the extraction window.\n"
+            "Accepts seconds (45.5), MM:SS (1:30),\n"
+            "or HH:MM:SS (1:02:30).")
+    app.extract_start_entry = ctk.CTkEntry(left_grp, width=55, placeholder_text="0:00")
     app.extract_start_entry.pack(side="left", padx=(4, 8))
-    ctk.CTkLabel(time_frame, text="End:", width=30, anchor="w").pack(side="left")
-    app.extract_end_entry = ctk.CTkEntry(time_frame, width=65, placeholder_text="end")
+    ctk.CTkLabel(left_grp, text="End:").pack(side="left")
+    app.extract_end_entry = ctk.CTkEntry(left_grp, width=55, placeholder_text="end")
     app.extract_end_entry.pack(side="left", padx=(4, 0))
 
-    # -- live estimate --
-    app.current_video_info = None
-    app.extract_estimate_label = ctk.CTkLabel(
-        c, text="Analyze the selected source to see estimates", anchor="w", justify="left",
-        text_color="gray", font=ctk.CTkFont(size=11))
-    app.extract_estimate_label.pack(fill="x", padx=8, pady=(4, 0))
+    # Format (center)
+    center_grp = ctk.CTkFrame(bottom_row, fg_color="transparent")
+    center_grp.grid(row=0, column=1)
+    ctk.CTkLabel(center_grp, text="Format:").pack(side="left", padx=(0, 4))
+    app.extract_format_var = ctk.StringVar(value="jpg")
+    ctk.CTkRadioButton(center_grp, text="JPEG", variable=app.extract_format_var,
+                       value="jpg", width=0, radiobutton_width=16, radiobutton_height=16
+                       ).pack(side="left", padx=(0, 9))
+    ctk.CTkRadioButton(center_grp, text="PNG", variable=app.extract_format_var,
+                       value="png", width=0, radiobutton_width=16, radiobutton_height=16
+                       ).pack(side="left")
 
-    # -- Post-Processing (collapsible parent) --
+    # Auto-geotag (right)
+    right_grp = ctk.CTkFrame(bottom_row, fg_color="transparent")
+    right_grp.grid(row=0, column=2, sticky="e")
+    app.extract_geotag_enabled_var = ctk.BooleanVar(value=True)
+    _gt = ctk.CTkCheckBox(right_grp, text="Auto-geotag from SRT",
+                           variable=app.extract_geotag_enabled_var, width=0)
+    _gt.pack(side="left")
+    Tooltip(_gt,
+            "After extraction, automatically write GPS coordinates,\n"
+            "altitude, focal length, and capture datetime into each\n"
+            "frame's EXIF metadata using DJI SRT telemetry.\n\n"
+            "The SRT file is auto-detected by matching the video\n"
+            "filename (e.g. my_video.mp4 → my_video.SRT).\n"
+            "Override in Advanced → Metadata if auto-detect fails.\n\n"
+            "Requires exiftool on PATH (https://exiftool.org).")
+
+    # -- Post-Processing (collapsible parent, expanded by default) --
     pp_sec = CollapsibleSection(c, "Post-Processing",
                                 subtitle="filters applied after frame extraction",
-                                expanded=True)
-    pp_sec.pack(fill="x", pady=(4, 0), padx=2)
+                                expanded=True, core=True)
+    pp_sec.pack(fill="x", pady=(16, 0), padx=2)
     pp = pp_sec.content
 
     # -- Color & LUT (collapsible) --
-    lut_sec = CollapsibleSection(pp, "Color & LUT", expanded=False)
-    lut_sec.pack(fill="x", pady=(6, 0), padx=2)
+    lut_sec = CollapsibleSection(pp, "Color & LUT",
+                                 subtitle=".cube LUT, shadow/highlight adjustment",
+                                 expanded=False)
+    lut_sec.pack(fill="x", pady=(6, 0), padx=(10, 2))
     app.extract_lut_section = lut_sec
 
     app.extract_lut_enabled_var = ctk.BooleanVar(value=False)
+    def _on_lut_toggle():
+        lut_sec.set_active(app.extract_lut_enabled_var.get())
+        if app.extract_lut_enabled_var.get():
+            lut_sec.expand()
     ctk.CTkCheckBox(lut_sec.content, text="Apply LUT after extraction",
                     variable=app.extract_lut_enabled_var,
-                    command=lambda: lut_sec.expand() if app.extract_lut_enabled_var.get() else None,
+                    command=_on_lut_toggle,
                     ).pack(pady=3, anchor="w")
+    lut_sec.set_active(False)
 
     lut_file_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
     lut_file_frame.pack(fill="x", pady=3)
@@ -937,7 +979,9 @@ def _build_extract_section(app, parent):
 
     shadow_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
     shadow_frame.pack(fill="x", pady=3)
-    ctk.CTkLabel(shadow_frame, text="Shadows:", width=60, anchor="w").pack(side="left")
+    _shd_lbl = ctk.CTkLabel(shadow_frame, text="Shadows:", width=60, anchor="w")
+    _shd_lbl.pack(side="left")
+    Tooltip(_shd_lbl, "Lift or crush shadow detail. 50 = neutral.")
     app.extract_shadow_var = ctk.IntVar(value=50)
     app.extract_shadow_label = ctk.CTkLabel(shadow_frame, text="50", width=35,
                                             font=("Consolas", 11))
@@ -948,7 +992,9 @@ def _build_extract_section(app, parent):
 
     hl_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
     hl_frame.pack(fill="x", pady=3)
-    ctk.CTkLabel(hl_frame, text="Highlights:", width=60, anchor="w").pack(side="left")
+    _hl_lbl = ctk.CTkLabel(hl_frame, text="Highlights:", width=60, anchor="w")
+    _hl_lbl.pack(side="left")
+    Tooltip(_hl_lbl, "Lift or crush highlight detail. 50 = neutral.")
     app.extract_highlight_var = ctk.IntVar(value=50)
     app.extract_highlight_label = ctk.CTkLabel(hl_frame, text="50", width=35,
                                                font=("Consolas", 11))
@@ -957,16 +1003,18 @@ def _build_extract_section(app, parent):
                   command=lambda v: app.extract_highlight_label.configure(text=f"{int(v)}")
                   ).pack(side="left", fill="x", expand=True, padx=(4, 4))
 
-    ctk.CTkLabel(lut_sec.content, text="50 = neutral",
-                 text_color="gray", font=ctk.CTkFont(size=10)).pack(anchor="w")
-
     # -- Sky Filter (collapsible) --
-    sky_sec = CollapsibleSection(pp, "Sky Filter", expanded=False)
-    sky_sec.pack(fill="x", pady=(4, 0), padx=2)
+    sky_sec = CollapsibleSection(pp, "Sky Filter",
+                                 subtitle="remove frames that are mostly sky",
+                                 expanded=False)
+    sky_sec.pack(fill="x", pady=(4, 0), padx=(10, 2))
 
     app.extract_sky_enabled_var = ctk.BooleanVar(value=False)
     ctk.CTkCheckBox(sky_sec.content, text="Remove sky-dominated images",
-                    variable=app.extract_sky_enabled_var).pack(pady=3, anchor="w")
+                    variable=app.extract_sky_enabled_var,
+                    command=lambda: sky_sec.set_active(app.extract_sky_enabled_var.get()),
+                    ).pack(pady=3, anchor="w")
+    sky_sec.set_active(False)
 
     sky_br = ctk.CTkFrame(sky_sec.content, fg_color="transparent")
     sky_br.pack(fill="x", pady=3)
@@ -991,17 +1039,27 @@ def _build_extract_section(app, parent):
                   command=lambda v: app.extract_sky_keypoints_label.configure(text=f"{int(v)}")
                   ).pack(side="left", fill="x", expand=True, padx=(4, 4))
 
-    # -- Blur Filter (collapsible) --
-    blur_sec = CollapsibleSection(pp, "Blur Filter", expanded=False)
-    blur_sec.pack(fill="x", pady=(4, 0), padx=2)
+    # -- Blur Filter (collapsible, disabled in Sharpest Frame mode) --
+    blur_sec = CollapsibleSection(pp, "Blur Filter",
+                                  subtitle="remove the blurriest frames by sharpness score",
+                                  expanded=False)
+    blur_sec.pack(fill="x", pady=(4, 0), padx=(10, 2))
+    app._blur_filter_section = blur_sec
 
     app.extract_blur_enabled_var = ctk.BooleanVar(value=False)
     ctk.CTkCheckBox(blur_sec.content, text="Filter blurry frames after extraction",
-                    variable=app.extract_blur_enabled_var).pack(pady=3, anchor="w")
+                    variable=app.extract_blur_enabled_var,
+                    command=lambda: blur_sec.set_active(app.extract_blur_enabled_var.get()),
+                    ).pack(pady=3, anchor="w")
+    blur_sec.set_active(False)
 
     blur_pct = ctk.CTkFrame(blur_sec.content, fg_color="transparent")
     blur_pct.pack(fill="x", pady=3)
-    ctk.CTkLabel(blur_pct, text="Keep:", width=70, anchor="w").pack(side="left")
+    _keep_lbl = ctk.CTkLabel(blur_pct, text="Keep:", width=70, anchor="w")
+    _keep_lbl.pack(side="left")
+    Tooltip(_keep_lbl, "Percent of sharpest frames to keep.\n"
+            "80% removes the worst 20%.\n"
+            "Skipped when using Sharpest Frame mode.")
     app.extract_blur_percentile_var = ctk.IntVar(value=80)
     app.extract_blur_pct_label = ctk.CTkLabel(blur_pct, text="80%", width=40,
                                               font=("Consolas", 11))
@@ -1010,20 +1068,19 @@ def _build_extract_section(app, parent):
                   command=lambda v: app.extract_blur_pct_label.configure(text=f"{int(v)}%")
                   ).pack(side="left", fill="x", expand=True, padx=(4, 4))
 
-    ctk.CTkLabel(blur_sec.content, text="Percent of sharpest frames to keep",
-                 text_color="gray", font=ctk.CTkFont(size=10)).pack(anchor="w")
-
     # -- Motion Selection (inside Post-Processing) --
     motion_sec = CollapsibleSection(pp, "Motion Selection",
                                      subtitle="filter by camera movement between frames",
                                      expanded=False)
-    motion_sec.pack(fill="x", pady=(4, 0), padx=2)
+    motion_sec.pack(fill="x", pady=(4, 0), padx=(10, 2))
     mc = motion_sec.content
 
     app.extract_motion_enabled_var = ctk.BooleanVar(value=False)
     motion_cb = ctk.CTkCheckBox(mc, text="Filter by sharpness + optical flow",
-                    variable=app.extract_motion_enabled_var)
+                    variable=app.extract_motion_enabled_var,
+                    command=lambda: motion_sec.set_active(app.extract_motion_enabled_var.get()))
     motion_cb.pack(pady=3, padx=6, anchor="w")
+    motion_sec.set_active(False)
     Tooltip(motion_cb,
             "After extraction, filter frames to keep only sharp\n"
             "frames with sufficient camera motion between them.\n"
@@ -1065,7 +1122,7 @@ def _build_extract_section(app, parent):
 
     # -- Primary action: Extract / Add to Queue / Stop --
     action_row = ctk.CTkFrame(c, fg_color="transparent")
-    action_row.pack(fill="x", pady=(8, 4), padx=6)
+    action_row.pack(fill="x", pady=(16, 4), padx=6)
 
     app.extract_run_btn = ctk.CTkButton(
         action_row, text="Extract", command=lambda: _run_extract_single(app),
@@ -1098,8 +1155,8 @@ def _build_extract_section(app, parent):
     app.extract_progress_bar.pack(fill="x", padx=8, pady=(0, 4))
     app.extract_progress_bar.set(0)
 
-    # -- Batch Queue (collapsed by default) --
-    q_sec = CollapsibleSection(c, "Batch Queue", expanded=False)
+    # -- Batch Queue --
+    q_sec = CollapsibleSection(c, "Batch Queue", expanded=True)
     q_sec.pack(fill="x", pady=(6, 0), padx=2)
     qc = q_sec.content
 
@@ -1993,22 +2050,25 @@ def _queue_stop(app):
 
 
 # ======================================================================
-#  3. METADATA — SRT geotagging (+ future EXIF/XMP tools)
+#  3. ADVANCED — power-user tools (SRT geotagging, future EXIF/XMP)
 # ======================================================================
 
 def _build_metadata_section(app, parent):
-    """Metadata injection section — SRT geotagging and future EXIF tools."""
-    sec = CollapsibleSection(parent, "Metadata", expanded=False)
-    sec.pack(fill="x", pady=(0, 6), padx=4)
-    c = sec.content
+    """Advanced section — power-user tools tucked out of sight for beginners."""
+    adv_sec = CollapsibleSection(parent, "Advanced",
+                                 subtitle="SRT geotagging, metadata tools",
+                                 expanded=False)
+    adv_sec.pack(fill="x", pady=(0, 6), padx=4)
+    adv = adv_sec.content
 
-    # -- Auto-geotag after extraction --
-    app.extract_geotag_enabled_var = ctk.BooleanVar(value=True)
-    ctk.CTkCheckBox(c, text="Auto-geotag after extraction",
-                    variable=app.extract_geotag_enabled_var
-                    ).pack(pady=(2, 4), anchor="w", padx=6)
+    # -- Metadata / SRT Geotagging (collapsible inside Advanced) --
+    meta_sec = CollapsibleSection(adv, "Metadata",
+                                  subtitle="SRT override and standalone geotagging",
+                                  expanded=False)
+    meta_sec.pack(fill="x", padx=2, pady=(4, 0))
+    c = meta_sec.content
 
-    # -- Shared SRT file path (used by both auto and standalone) --
+    # -- SRT file override (used by auto-geotag when set) --
     srt_frame = ctk.CTkFrame(c, fg_color="transparent")
     srt_frame.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(srt_frame, text="SRT:", width=60, anchor="w").pack(side="left")
@@ -2020,10 +2080,10 @@ def _build_metadata_section(app, parent):
                       app.metadata_srt_entry, "Select SRT File",
                       [("SRT Files", "*.srt *.SRT"), ("All Files", "*.*")]
                   )).pack(side="left")
-
-    ctk.CTkLabel(c, text="Writes EXIF GPS, altitude, focal length, datetime via exiftool",
-                 text_color="gray", font=ctk.CTkFont(size=10)
-                 ).pack(anchor="w", padx=8, pady=(0, 6))
+    Tooltip(app.metadata_srt_entry,
+            "Override the auto-detected SRT file.\n"
+            "Leave blank to auto-detect by video filename.\n"
+            "Used by both auto-geotag and standalone geotagging.")
 
     # -- Standalone: geotag existing frames --
     sep = ctk.CTkFrame(c, height=1, fg_color="gray30")
@@ -2052,6 +2112,10 @@ def _build_metadata_section(app, parent):
         font=ctk.CTkFont(size=13, weight="bold"), height=38,
     )
     app.geotag_run_btn.pack(side="left", fill="x", expand=True)
+    Tooltip(app.geotag_run_btn,
+            "Geotag frames that were extracted without auto-geotag.\n"
+            "Requires extraction_manifest.json in the frames folder\n"
+            "(created automatically by prep360 during extraction).")
 
 
 def _run_geotag_standalone(app):
@@ -2130,7 +2194,7 @@ def _geotag_standalone_worker(app, frames_dir, srt_path):
 # ======================================================================
 
 def _build_fisheye_section(app, parent):
-    sec = CollapsibleSection(parent, "360 Video", expanded=True)
+    sec = CollapsibleSection(parent, "360 Processing", expanded=True, core=True)
     sec.pack(fill="x", pady=(0, 6), padx=4)
     c = sec.content
 
@@ -2143,19 +2207,16 @@ def _build_fisheye_section(app, parent):
     split_sec.pack(fill="x", padx=2, pady=(4, 0))
     sc = split_sec.content
 
-    split_desc = ctk.CTkLabel(
-        sc, text="Uses the top Video Selection Input + Output.\n"
-                 "This step only creates the raw front/back lens videos for external grading.\n"
-                 "After grading, go back to Video Selection and enable Split Lens Videos.",
-        font=("Consolas", 10), text_color="#9ca3af", anchor="w", justify="left")
-    split_desc.pack(fill="x", padx=6, pady=(2, 4))
-
     app.fisheye_split_btn = ctk.CTkButton(
         sc, text="Split Lenses", command=lambda: _run_split_lenses(app),
         fg_color="#1565C0", hover_color="#0D47A1",
         font=ctk.CTkFont(size=13, weight="bold"), height=36,
     )
-    app.fisheye_split_btn.pack(fill="x", padx=6, pady=(0, 4))
+    app.fisheye_split_btn.pack(fill="x", padx=6, pady=(2, 4))
+    Tooltip(app.fisheye_split_btn,
+            "Uses the Video Selection Input + Output paths.\n"
+            "Creates raw front/back lens videos for external grading.\n"
+            "After grading, enable Split Lens Videos in Video Selection.")
 
     reframe_sec = CollapsibleSection(
         c, "Reframing",
@@ -2226,18 +2287,6 @@ def _build_fisheye_section(app, parent):
     app.fisheye_calib_default_var = ctk.BooleanVar(value=True)
     app.fisheye_calib_entry = ctk.CTkEntry(ac, width=0)  # hidden storage
 
-    adv_desc = ctk.CTkLabel(
-        ac,
-        text="The built-in equidistant fisheye model works for most 360\n"
-             "cameras (DJI, Insta360, GoPro). Load a custom JSON if you\n"
-             "see warped straight lines in your output crops.\n\n"
-             "JSON format: {front: {K, D, image_size, rms_error},\n"
-             "              back: {K, D, image_size, rms_error}}\n"
-             "K = 3x3 camera matrix, D = 4 distortion coefficients.",
-        font=ctk.CTkFont(size=10), text_color="#9ca3af",
-        anchor="w", justify="left")
-    adv_desc.pack(fill="x", padx=6, pady=(2, 6))
-
     # Calibration file row
     calib_row = ctk.CTkFrame(ac, fg_color="transparent")
     calib_row.pack(fill="x", pady=3, padx=6)
@@ -2245,6 +2294,12 @@ def _build_fisheye_section(app, parent):
     app._fisheye_custom_entry = ctk.CTkEntry(
         calib_row, placeholder_text="calibration.json...")
     app._fisheye_custom_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    Tooltip(app._fisheye_custom_entry,
+            "Load a custom calibration JSON if the built-in\n"
+            "equidistant model produces warped straight lines.\n\n"
+            "JSON format: {front: {K, D, image_size, rms_error},\n"
+            "              back: {K, D, image_size, rms_error}}\n"
+            "K = 3x3 camera matrix, D = 4 distortion coefficients.")
     ctk.CTkButton(calib_row, text="...", width=36,
                   command=lambda: _load_calibration(app)).pack(side="left")
     reset_btn = ctk.CTkButton(

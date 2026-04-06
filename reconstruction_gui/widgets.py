@@ -63,12 +63,17 @@ class CollapsibleSection(ctk.CTkFrame):
         sec.collapse() # close programmatically
     """
 
+    # Title text colors (light mode, dark mode) for each visual state
+    _CLR_BRIGHT = ("#1a1a1a", "#e0e0e0")   # expanded / active / hover
+    _CLR_DIM = ("#888888", "#666666")       # collapsed / inactive
+
     def __init__(
         self,
         master,
         title: str,
         subtitle: str = "",
         expanded: bool = False,
+        core: bool = False,
         **kwargs,
     ):
         kwargs.setdefault("border_width", 1)
@@ -80,14 +85,28 @@ class CollapsibleSection(ctk.CTkFrame):
 
         self._expanded = expanded
         self._title = title
+        self._core = core          # core sections are always bright
+        self._active = False       # feature enabled via checkbox
+        self._hovering = False
+
+        # Initial text color: core sections always bright, others follow state
+        init_color = self._CLR_BRIGHT if (core or expanded) else self._CLR_DIM
+
         self.toggle_btn = ctk.CTkButton(
             hdr, text=f"{'▼' if expanded else '▶'} {title}",
             width=0, anchor="w", fg_color="transparent",
             hover_color=("gray75", "gray25"),
             font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=init_color,
             command=self._toggle, height=24,
         )
         self.toggle_btn.pack(side="left")
+
+        # Hover brightening for non-core sections
+        if not core:
+            self.toggle_btn.bind("<Enter>", self._on_hover_enter, add="+")
+            self.toggle_btn.bind("<Leave>", self._on_hover_leave, add="+")
+
         if subtitle:
             ctk.CTkLabel(
                 hdr, text=subtitle,
@@ -98,10 +117,28 @@ class CollapsibleSection(ctk.CTkFrame):
         if expanded:
             self.content.pack(fill="x", padx=4, pady=(0, 4))
 
+    def _resolve_color(self):
+        """Return the correct text color based on current state."""
+        if self._core or self._active or self._expanded or self._hovering:
+            return self._CLR_BRIGHT
+        return self._CLR_DIM
+
+    def _update_title_color(self):
+        self.toggle_btn.configure(text_color=self._resolve_color())
+
+    def _on_hover_enter(self, _event):
+        self._hovering = True
+        self._update_title_color()
+
+    def _on_hover_leave(self, _event):
+        self._hovering = False
+        self._update_title_color()
+
     def _toggle(self):
         self._expanded = not self._expanded
         self.toggle_btn.configure(
             text=f"{'▼' if self._expanded else '▶'} {self._title}")
+        self._update_title_color()
         if self._expanded:
             self.content.pack(fill="x", padx=4, pady=(0, 4))
         else:
@@ -117,6 +154,15 @@ class CollapsibleSection(ctk.CTkFrame):
     def collapse(self):
         if self._expanded:
             self._toggle()
+
+    def set_active(self, active: bool):
+        """Visually indicate whether this section's feature is enabled.
+
+        Active sections get bright title text; inactive ones go grey.
+        Call this from an enable/disable checkbox command callback.
+        """
+        self._active = active
+        self._update_title_color()
 
 
 class Tooltip:

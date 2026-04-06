@@ -1,18 +1,19 @@
 # Extract Tab
 
-The Extract tab is the starting point for every reconstruction project. It handles video analysis, frame extraction with quality filtering, and 360° fisheye-to-perspective reframing. Everything downstream — masking, review, coverage — depends on the frames this tab produces.
+The Extract tab is the starting point for every reconstruction project. It handles video analysis, frame extraction with quality filtering, SRT geotagging, and 360° fisheye-to-perspective reframing. Everything downstream — masking, review, coverage — depends on the frames this tab produces.
 
 ## Sections
 
-The tab has three collapsible sections, top to bottom:
+The tab has four collapsible sections, top to bottom:
 
 | Section | Purpose |
 |---------|---------|
-| **Video Selection** | Load a video, set output folder, optionally analyze metadata |
+| **Video Selection** | Load a video (or split-lens pair), set output folder, analyze metadata |
 | **Frame Extraction** | Pull frames from the video with mode/interval/filter controls |
-| **360 Video** | Split dual-fisheye containers, prepare raw Metashape datasets, or reframe to pinhole perspectives |
+| **360 Processing** | Split dual-fisheye containers or reframe to pinhole perspectives |
+| **Advanced** | Power-user tools: SRT file override, standalone geotagging |
 
-You'll use Video Selection + Frame Extraction for normal perspective video. Add 360 Video when working with DJI Osmo, Insta360, or GoPro Max footage.
+You'll use Video Selection + Frame Extraction for normal perspective video. Add 360 Processing when working with DJI Osmo, Insta360, or GoPro Max footage. The Advanced section is for power users who need manual SRT override or retroactive geotagging — most users won't need it.
 
 ---
 
@@ -22,12 +23,28 @@ You'll use Video Selection + Frame Extraction for normal perspective video. Add 
 
 Two paths to set before anything else:
 
-- **Input** — The source video file (`.mp4`, `.mov`, `.avi`, `.mkv`, `.360`, `.insv`)
+- **Input** — The source video file (`.mp4`, `.mov`, `.avi`, `.mkv`, `.360`, `.insv`, `.osv`)
 - **Output** — Directory where extracted frames go. Each video creates a subfolder named after the video file (e.g. `output/my_video/frame_0001.jpg`)
+
+### Split Lens Videos
+
+Collapsed by default. For dual-fisheye cameras (DJI Osmo 360, Insta360 X3/X4) where you've already split the 360 container into separate front/back lens videos and graded them externally (e.g. in DaVinci Resolve).
+
+When **Use Split Lens Videos** is checked, the Analyze and Extract buttons operate on the front/back pair instead of the single video input above.
+
+| Field | Purpose |
+|-------|---------|
+| **Front** | Graded front lens video (`.mp4` / `.mov`) |
+| **Back** | Graded back lens video (`.mp4` / `.mov`) |
+| **Clip Folder** | Per-clip working folder (auto-filled from the filename stem). Extract writes `front/frames` + `back/frames` here. |
+
+The workflow is: Split Lenses (in the 360 Processing section below) → grade externally → enable Split Lens Videos here → Extract.
 
 ### Analysis
 
-Expand the **Analysis** subsection and click **Analyze** to probe the video with ffprobe. Example output:
+Expand the **Analysis** subsection and click **Analyze** to probe the video with ffprobe.
+
+**Single video** example output:
 
 ```
 File:         my_video.mp4
@@ -53,7 +70,27 @@ Estimated Frames @ 2.0s: 161
 Recommended LUT: DJI_D-Log_M_to_Rec709.cube
 ```
 
-Analysis also stores `current_video_info` and `current_video_path` on the app — the Coverage tab reads these for bridge extraction.
+**Split-lens pair** example output:
+
+```
+Source: Split lens pair
+Front: front_graded.mp4
+Back:  back_graded.mp4
+
+=== Shared Pairing ===
+Resolution: 1920x1920 per lens
+FPS: 29.97
+Duration: 5:23 (323.4s shared)
+Frames: 9,693 shared
+
+=== Recommendations ===
+Extraction Interval: 2.0s
+Estimated Frame Pairs @ 2.0s: 161
+```
+
+When analyzing a split pair, mismatches (resolution, FPS, duration) between front and back are flagged as warnings.
+
+Analysis stores video metadata internally — the Coverage tab reads it for bridge extraction, and the live estimate uses it to calculate frame counts.
 
 ---
 
@@ -99,37 +136,58 @@ Once a video is analyzed, the estimate bar updates in real-time as you adjust se
 
 It accounts for mode, interval, time range, format, quality, and active filters.
 
-### Color & LUT
+### Post-Processing
 
-Collapsed by default. Expand to apply color correction during extraction.
+A collapsible section inside Frame Extraction containing four optional filters that run after frames are extracted. Each is independently collapsible with its own enable checkbox.
+
+#### Color & LUT
+
+> **Edition note:** This section is only visible in the `personal` edition. It is hidden in `community` and `release` builds.
+
+Collapsed by default. Applies color correction to extracted frames in place.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
+| **Apply LUT after extraction** | Off | Enable/disable the entire color pipeline |
 | **LUT file** | (none) | `.cube` file for color space conversion (e.g. D-Log → Rec.709) |
 | **Strength** | 100% | Blend between original (0%) and full LUT (100%) |
 | **Shadows** | 50 | Lift or crush shadow detail. 50 = neutral |
 | **Highlights** | 50 | Lift or crush highlight detail. 50 = neutral |
 
-### Sky Filter
+#### Sky Filter
 
 Collapsed by default. Removes images that are mostly sky — these add noise to reconstruction without contributing useful geometry.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
+| **Remove sky-dominated images** | Off | Enable/disable the filter |
 | **Brightness** | 0.85 | Minimum brightness ratio to consider "sky-like". Lower = more aggressive |
 | **Keypoints** | 50 | Minimum ORB keypoints expected. Frames below this with high brightness are flagged |
 
 The filter uses 4 metrics: brightness, saturation, keypoint count, and edge density. A frame must fail multiple metrics to be classified as sky.
 
-### Blur Filter
+#### Blur Filter
 
 Collapsed by default. Removes the blurriest frames from the extraction, keeping only the sharpest percentile.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
+| **Filter blurry frames after extraction** | Off | Enable/disable the filter |
 | **Keep** | 80% | Percentage of sharpest frames to retain. 80% removes the worst 20% |
 
 Automatically skipped when using Sharpest Frame mode (which already selects for sharpness).
+
+#### Motion Selection
+
+Collapsed by default. Filters extracted frames by camera movement — removes redundant near-identical frames from slow/stopped segments and blurry frames from fast motion.
+
+| Setting | Range | Default | Effect |
+|---------|-------|---------|--------|
+| **Filter by sharpness + optical flow** | On/Off | Off | Enable/disable the filter |
+| **Sharpness** | 10–200 | 50 | Minimum Laplacian variance. Frames below this are discarded as blurry |
+| **Target Flow** | 2–30 | 10 | Optical flow magnitude between kept frames. Higher = more camera movement required between selections |
+
+This is useful for footage where the camera moves at varying speeds. The filter examines every extracted frame pair: if two consecutive frames are too similar (low optical flow) or too blurry (low Laplacian score), the weaker frame is discarded. The same index set is applied to both front and back lenses when using split-lens extraction.
 
 ### Pipeline summary
 
@@ -141,16 +199,21 @@ When you click **Extract**, the selected mode pulls frames from the video, then 
        │  Output: {output}/{video_name}/frame_NNNN.{jpg|png}
        │
        ▼
- Post-processing (each step is optional)
+ Post-processing (each step is optional, runs in order)
        │
-       ├─ 1. LUT          → color-correct in place
-       ├─ 2. Shadows/HL   → adjust tonality in place
-       ├─ 3. Sky Filter   → delete sky-dominated frames
-       └─ 4. Blur Filter  → delete blurriest frames
-                             (skipped in Sharpest mode)
+       ├─ 1. LUT              → color-correct in place (personal edition only)
+       ├─ 2. Shadows/HL       → adjust tonality in place (personal edition only)
+       ├─ 3. Sky Filter        → delete sky-dominated frames
+       ├─ 4. Blur Filter       → delete blurriest frames (skipped in Sharpest mode)
+       └─ 5. Motion Selection  → delete redundant/blurry frames by optical flow
+       │
+       ▼
+ Auto-geotag (if enabled in Advanced → Metadata)
+       │
+       └─ Write GPS, altitude, focal length, datetime → EXIF via exiftool
 ```
 
-Each post-processing step reads from disk, processes, and either overwrites (LUT, shadow/highlight) or deletes (sky, blur) in place. The cancel flag is checked between frames.
+Each post-processing step reads from disk, processes, and either overwrites (LUT, shadow/highlight) or deletes (sky, blur, motion) in place. Geotagging runs last so it only tags surviving frames. The cancel flag is checked between frames.
 
 ---
 
@@ -199,17 +262,14 @@ Queue workflow:
 
 ---
 
-## 360 Video
+## 360 Processing
 
-For dual-fisheye cameras (DJI Osmo Action 360, Insta360 X3/X4, GoPro Max).
+For dual-fisheye cameras (DJI Osmo Action 360, Insta360 X3/X4, GoPro Max). Contains two collapsible subsections: Split Lenses and Reframing.
 
-- **Video Selection** now owns the extraction source choice:
-  - a single video file, or
-  - a graded front/back split-video pair
-- **360 Video** now focuses on:
-  - **Split Lenses** — raw lossless demux from a 360 container
-  - **Reframing** — fisheye/ERP to pinhole perspectives
-- **Metashape Session** at the bottom of the tab assembles a no-copy handoff manifest from finished clip folders
+There are two distinct 360 workflows, and they can be combined:
+
+1. **Raw dual-fisheye → Metashape** — Split Lenses demuxes the 360 container, you grade externally, then use Split Lens Videos (in Video Selection) to extract frame pairs for direct Metashape import.
+2. **360 → pinhole perspectives** — Reframing converts fisheye or equirectangular frames into standard perspective crops for COLMAP/3DGS pipelines.
 
 ### Pipeline overview
 
@@ -229,39 +289,42 @@ For dual-fisheye cameras (DJI Osmo Action 360, Insta360 X3/X4, GoPro Max).
      │ demux into │           │ perspective    │
      │ front.mp4  │           │ crops          │
      │ back.mp4   │           │                │
-     └────────────┘           └───────┬────────┘
-                                      │
-                   ┌────────────────▼────────────────┐
-                   │ Video Selection                 │
-                   │ • enable Split Lens Videos      │
-                   │ • analyze graded front/back     │
-                   │ • main Extract button writes    │
-                   │   clip_folder/front/frames      │
-                   │   clip_folder/back/frames       │
-                   └────────────────┬────────────────┘
-                                    │
-                 ┌──────────────────▼───────────────────┐
-                 │ Later: Metashape Session            │
-                 │ • scan clip folders                 │
-                 │ • validate frames/masks             │
-                 │ • write one no-copy session JSON    │
-                 └──────────────────────────────────────┘
+     └─────┬──────┘           └───────┬────────┘
+           │                          │
+           ▼                          ▼
+     Grade externally           Output: pinhole
+     (DaVinci Resolve)          perspectives for
+     then use Split Lens        COLMAP / 3DGS
+     Videos in Video
+     Selection to extract
 ```
 
-The raw dual-fisheye path now looks like this:
+### Split Lenses
 
-- **Split Lenses** creates the front/back lens videos
-- grade those outside the GUI if needed
-- **Video Selection → Split Lens Videos** selects the graded pair as the extraction source
-- the standard **Extract** button writes one clip working folder with `front/frames` + `back/frames`
-- **Mask** can now write directly into `front/masks` + `back/masks`
-- **Metashape Session** writes one session manifest that references all approved clip folders without copying them
+Collapsed by default. Performs a lossless demux from a 360 container (`.osv`, `.360`, `.insv`) into separate front and back lens video files. Uses the **Video Selection** Input and Output paths.
 
-**Reframing** is a separate path for pinhole-perspective extraction.
+After splitting, the GUI stops at the two lens videos. This is the handoff point for any external grading workflow (DaVinci Resolve, etc.). Once graded, return to **Video Selection → Split Lens Videos** to use the graded pair as the extraction source.
 
-### Custom Calibration
+### Reframing
 
-Collapsed by default. The built-in equidistant fisheye model works for most 360 cameras. Only load a custom calibration JSON if you see warped straight lines in your output crops.
+Collapsed by default. Converts dual-fisheye frames or equirectangular (ERP) frames into standard pinhole perspective crops suitable for COLMAP and photogrammetry pipelines.
+
+#### Inputs
+
+The Reframing section has four path fields, giving flexibility for different source types:
+
+| Field | Purpose | When to use |
+|-------|---------|-------------|
+| **Video** | `.osv` / `.360` / `.insv` file | Direct extraction from a 360 video — extracts frame pairs at the configured interval, then reframes |
+| **Frames** | Existing ERP frames folder | Reframe pre-extracted equirectangular frames (skips video extraction) |
+| **Masks** | Masks for ERP or fisheye frames | Optional — masks are reframed alongside images, producing per-perspective masks |
+| **Output** | Perspective output directory | Where pinhole crops are saved |
+
+You can provide a Video (extract + reframe in one step), or Frames (reframe existing images), or both. If both are set, the video is extracted first, then all frames are reframed.
+
+#### Custom Calibration
+
+Collapsed inside Reframing. The built-in equidistant fisheye model works for most 360 cameras (DJI, Insta360, GoPro). Only load a custom calibration JSON if you see warped straight lines in your output crops.
 
 JSON format:
 ```json
@@ -274,58 +337,6 @@ JSON format:
 - **K** — 3×3 camera intrinsic matrix
 - **D** — 4 distortion coefficients
 - Click **Reset** to revert to the built-in model
-
-### Split Lenses
-
-This subsection now does one thing:
-
-- **Split Lenses** — lossless demux from the source 360 container using the top **Video Selection** input/output
-
-After splitting, the GUI stops at the two lens videos. This is the handoff point for any external grading workflow such as DaVinci Resolve.
-
-### Reframing
-
-Collapsed by default. This subsection is only for pinhole-perspective extraction workflows and is separate from the raw split-lens Metashape path.
-
-### Reframe to Pinhole Perspectives
-
-This is the main 360 workflow. Converts dual-fisheye frames into standard perspective crops suitable for COLMAP/photogrammetry.
-
-#### Process
-
-```
-┌─ STEP 1: EXTRACT FISHEYE FRAMES ────────────────────────────┐
-│                                                               │
-│  OSVHandler extracts frame pairs at the configured interval  │
-│  from both streams (front + back lens)                       │
-│                                                               │
-│  Output: clip_folder/front/frames/NNNN.jpg                  │
-│          clip_folder/back/frames/NNNN.jpg                   │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌─ STEP 1.5: MOTION SELECTION (optional) ──────────────────────┐
-│                                                               │
-│  If enabled, MotionSelector filters frame pairs:             │
-│  • Reject frames below sharpness threshold (Laplacian)       │
-│  • Keep frames with sufficient optical flow between them     │
-│  • Reduces redundant/blurry frames from slow movement        │
-│                                                               │
-│  Same index set applied to both front and back               │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌─ STEP 2: REFRAME TO PERSPECTIVES ────────────────────────────┐
-│                                                               │
-│  For each frame pair:                                        │
-│  • Apply fisheye calibration (undistort)                     │
-│  • Project through each view in the preset layout            │
-│  • Render pinhole perspective crop at configured resolution  │
-│  • Skip crops with <50% content coverage                     │
-│                                                               │
-│  Output: perspectives/front_h{yaw}_y{pitch}.jpg             │
-└──────────────────────────────────────────────────────────────┘
-```
 
 #### Preset
 
@@ -345,20 +356,22 @@ Built-in presets cover common camera configurations: `prep360_default`, `dji_osm
 
 | Setting | Range | Default | Effect |
 |---------|-------|---------|--------|
-| **Crop** | 1280 / 1600 / 1920 | 1600 | Output resolution per crop (square). 1600 balances detail and file size |
+| **Crop** | 1280 / 1600 / 1920 | 1600 | Output resolution per pinhole crop (square). 1600 balances detail and file size |
 | **Quality** | 70–100 | 95 | JPEG quality for output crops |
-| **Interval** | 0.5–10.0s | 2.0s | Extract one frame pair every N seconds |
+| **Interval** | 0.5–10.0s | 2.0s | Extract one frame pair every N seconds from the video |
 
-#### Motion-Aware Selection
+#### Station dirs (for Metashape)
 
-Collapsed by default. When enabled, filters extracted frame pairs before reframing.
+Enabled by default. Organizes output into per-source subdirectories — each subdirectory represents a Metashape **station** (shared camera position).
 
-| Setting | Range | Default | Effect |
-|---------|-------|---------|--------|
-| **Sharpness** | 10–200 | 50 | Minimum Laplacian variance. Frames below are discarded as blurry |
-| **Target Flow** | 2–30 | 10 | Optical flow magnitude between kept frames. Higher = more motion required |
+When enabled:
+- Images: `output/images/{station}/{label}.jpg`
+- Masks: `output/masks/{station}/{label}_mask.png` (separate parallel tree)
+- Metadata: `output/reframe_metadata.json` with pinhole intrinsics, view configs, station list
 
-This is useful for footage where the camera moves at varying speeds — removes redundant frames from slow/stopped segments and blurry frames from fast motion.
+When disabled: all perspectives are written flat into the output directory.
+
+**Metashape import:** Drag all station subdirectories into an empty chunk, then set the group type to Station. Use the [import_masks_reframed.py](https://github.com/alexmgee/reconstruction-zone) script to load masks (Metashape's built-in mask import can't traverse subdirectories).
 
 #### Output estimate
 
@@ -370,23 +383,103 @@ A live estimate updates as you change settings. Example:
 
 This requires a video to be probed first (selecting the input file triggers an automatic probe).
 
-### Output structure
+#### Process
+
+When you click **Extract & Reframe**:
 
 ```
-{output}/
-├── fisheye_frames/         ← raw extracted fisheye pairs
-│   ├── front_0001.jpg
-│   ├── back_0001.jpg
-│   ├── front_0002.jpg
-│   ├── back_0002.jpg
-│   └── ...
-└── perspectives/           ← reframed pinhole crops
-    ├── front_0001_h0_y0.jpg
-    ├── front_0001_h30_y0.jpg
-    ├── front_0001_h60_y0.jpg
-    ├── back_0001_h0_y0.jpg
-    └── ...
+┌─ STEP 1: EXTRACT FISHEYE FRAMES ────────────────────────────┐
+│                                                               │
+│  OSVHandler extracts frame pairs at the configured interval  │
+│  from both streams (front + back lens)                       │
+│  (Skipped if only Frames path is set — uses existing images) │
+│                                                               │
+└───────────────────────────┬──────────────────────────────────┘
+                            │
+                            ▼
+┌─ STEP 2: REFRAME TO PERSPECTIVES ────────────────────────────┐
+│                                                               │
+│  For each frame pair:                                        │
+│  • Apply fisheye calibration (undistort)                     │
+│  • Project through each view in the preset layout            │
+│  • Render pinhole perspective crop at configured resolution  │
+│  • Skip crops with <50% content coverage                     │
+│  • If masks provided, reframe masks in parallel              │
+│                                                               │
+└──────────────────────────────────────────────────────────────┘
 ```
+
+### Output structure
+
+**With station dirs enabled** (default):
+```
+{output}/
+├── images/
+│   ├── frame_0001/              ← one station per source frame
+│   │   ├── front_h0_y0.jpg
+│   │   ├── front_h30_y0.jpg
+│   │   └── ...
+│   └── frame_0002/
+│       └── ...
+├── masks/                        ← parallel tree (if masks provided)
+│   ├── frame_0001/
+│   │   ├── front_h0_y0_mask.png
+│   │   └── ...
+│   └── ...
+└── reframe_metadata.json         ← pinhole intrinsics + station mapping
+```
+
+**With station dirs disabled**:
+```
+{output}/
+├── front_0001_h0_y0.jpg
+├── front_0001_h30_y0.jpg
+├── back_0001_h0_y0.jpg
+└── ...
+```
+
+---
+
+## Advanced
+
+Collapsed by default. Contains power-user tools that most users won't need. Expanding this section reveals subsections for manual metadata operations.
+
+### Metadata
+
+Collapsed inside Advanced. Handles SRT geotagging — writing GPS coordinates, altitude, focal length, and capture datetime into frame EXIF metadata using DJI SRT telemetry files.
+
+#### Auto-geotag after extraction
+
+Enabled by default. After extraction and all post-processing filters complete, the pipeline automatically geotags every surviving frame. This uses DJI SRT telemetry files — the `.SRT` file recorded alongside the video by DJI drones and action cameras.
+
+**How it works:** prep360 writes an `extraction_manifest.json` alongside the extracted frames during extraction. This manifest records the exact video timestamp for every frame. The geotagger reads the manifest, looks up each timestamp in the SRT data, and writes the corresponding GPS/altitude/focal-length/datetime into the frame's EXIF via [exiftool](https://exiftool.org).
+
+The SRT file is auto-detected by matching the video filename (e.g. `my_video.mp4` → `my_video.SRT` in the same directory). If auto-detection fails, use the SRT override below.
+
+**Requirements:** [exiftool](https://exiftool.org) must be installed and on PATH. If exiftool is not found, geotagging is silently skipped — extraction still works normally.
+
+**When to disable:** If your video has no SRT file, or if you don't need georeferenced frames. Disabling prevents the "no matching SRT file found" log message.
+
+#### SRT file override
+
+The auto-geotag checkbox in Frame Extraction normally auto-detects the SRT file by matching the video filename. If auto-detection fails (e.g. the SRT has a different name, or is in a different directory), you can manually specify the path here.
+
+| Field | Purpose |
+|-------|---------|
+| **SRT** | Path to a `.SRT` telemetry file. Leave blank for auto-detection. Used by both auto-geotag and standalone geotagging. |
+
+#### Apply to folder (standalone geotagging)
+
+For when you already have extracted frames but didn't geotag them during extraction. Point it at a frames folder and an SRT file, click **Geotag**.
+
+| Field | Purpose |
+|-------|---------|
+| **Frames** | Directory containing previously extracted frames |
+| **Geotag** button | Runs geotagging on the selected folder |
+
+**Reliability note:** This requires an `extraction_manifest.json` file in the frames folder. This manifest is automatically created by prep360 during extraction — it records the exact video timestamp for every frame, ensuring accurate SRT-to-frame matching. If the manifest is missing (e.g. frames were extracted by a different tool), standalone geotagging will refuse to proceed rather than guess.
+
+**Requirements:** [exiftool](https://exiftool.org) must be installed and on PATH.
 
 ---
 
@@ -399,9 +492,20 @@ This requires a video to be probed first (selecting the input file triggers an a
 4.                  → Adjust interval (2.0s default, lower for dense capture)
 5. (Optional)       → Enable Blur Filter at 80% to remove worst frames
 6. (Optional)       → Enable Sky Filter if outdoor scene has upward-facing frames
-7. (If log video)   → Expand Color & LUT, enable LUT, select .cube file
-8.                  → Click Extract
-9.                  → Frames appear in {output}/{video_name}/
+7.                  → Click Extract
+8.                  → Frames appear in {output}/{video_name}/
+```
+
+## Typical workflow: drone video with GPS
+
+```
+1. Video Selection  → Browse to drone video, set output folder
+2.                  → Analyze to check metadata (confirms log format, interval)
+3. Frame Extraction → Choose mode, adjust settings
+4.                  → Auto-geotag is on by default (Advanced → Metadata)
+5.                  → Click Extract
+6.                  → Frames extracted + GPS/altitude/focal length written to EXIF
+7. (If SRT not found) → Advanced → Metadata: manually set the SRT file path
 ```
 
 ## Typical workflow: batch processing
@@ -416,25 +520,37 @@ This requires a video to be probed first (selecting the input file triggers an a
 7.                  → Each video gets its own subfolder in output
 ```
 
-## Typical workflow: 360 fisheye video
+## Typical workflow: 360 → pinhole perspectives
 
 ```
-1. 360 Video        → Browse to .osv / .360 / .insv file
-2.                  → Set output folder
-3. (Optional)       → Split Lenses (if you need raw hemispheres)
-4. Reframe section  → Select preset matching your camera
+1. 360 Processing        → Expand Reframing subsection
+2.                  → Browse to .osv / .360 / .insv file (Video field)
+3.                  → Set Output directory
+4.                  → Select preset matching your camera
 5.                  → Adjust crop size, quality, interval
-6. (Optional)       → Enable Motion-Aware Selection for varied-pace footage
-7.                  → Click Extract Pinhole Views
-8.                  → Perspective crops appear in {output}/perspectives/
-9. (Next step)      → Run COLMAP on the perspectives/ folder
+6.                  → Click Extract & Reframe
+7.                  → Perspective crops appear in output
+8. (Next step)      → Run COLMAP on the perspectives folder
+```
+
+## Typical workflow: 360 raw → Metashape
+
+```
+1. 360 Processing        → Expand Split Lenses, click Split Lenses
+2.                  → front.mp4 + back.mp4 appear in output
+3. (External)       → Grade in DaVinci Resolve or similar
+4. Video Selection  → Enable Split Lens Videos, load graded front/back
+5.                  → Analyze to verify pair consistency
+6. Frame Extraction → Configure mode + interval
+7.                  → Click Extract
+8.                  → Clip folder with front/frames + back/frames ready for Metashape
 ```
 
 ## Typical workflow: 360 with coverage feedback
 
 ```
-1. 360 Video        → Extract pinhole views (steps 1-8 above)
-2. (External)       → Run COLMAP on perspectives/
+1. 360 Processing        → Extract & Reframe (steps 1-7 from "360 → pinhole" above)
+2. (External)       → Run COLMAP on perspectives
 3. Coverage tab     → Analyze gaps in the reconstruction
 4. Coverage tab     → Extract bridges (check "Reframe fisheye → perspective")
                       Reads calibration + preset from this tab's 360 section
