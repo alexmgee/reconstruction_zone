@@ -21,12 +21,67 @@ Example::
 """
 
 import json
+import logging
+import logging.handlers
 import queue
 import sys
 import threading
+import traceback
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
 from typing import Dict, Optional
+
+# ── File-based crash-resilient logger ──────────────────────────────────
+# Survives GUI freezes and pythonw.exe (no console).  Writes to
+# ~/.reconstruction_zone/crash.log with rotation (3 × 2 MB).
+
+_LOG_DIR = Path.home() / ".reconstruction_zone"
+_LOG_FILE = _LOG_DIR / "crash.log"
+
+def _init_file_logger() -> logging.Logger:
+    """Create (or return existing) file logger for the application."""
+    logger = logging.getLogger("reconstruction_zone")
+    if logger.handlers:
+        return logger  # already initialised
+
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        _LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=3,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s  %(levelname)-7s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    return logger
+
+_file_logger = _init_file_logger()
+
+
+def _unhandled_exception_hook(exc_type, exc_value, exc_tb):
+    """Last-resort handler: write unhandled exceptions to crash.log."""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+        return
+    text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    _file_logger.critical("UNHANDLED EXCEPTION (main thread):\n%s", text)
+
+sys.excepthook = _unhandled_exception_hook
+
+
+def _unhandled_thread_exception_hook(args):
+    """Same for worker threads (Python 3.8+)."""
+    if issubclass(args.exc_type, SystemExit):
+        return
+    text = "".join(traceback.format_exception(
+        args.exc_type, args.exc_value, args.exc_traceback))
+    _file_logger.critical(
+        "UNHANDLED EXCEPTION (thread %s):\n%s", args.thread, text)
+
+threading.excepthook = _unhandled_thread_exception_hook
 
 
 class AppInfrastructure:
@@ -54,19 +109,27 @@ class AppInfrastructure:
         q = self.log_queue
 
         class _QW:
-            def __init__(self):
+            """Routes print()/stderr to both the GUI queue and crash.log."""
+            def __init__(self, level=logging.INFO):
                 self.q = q
+                self.level = level
             def write(self, text):
                 if text.strip():
-                    self.q.put(text.rstrip())
+                    clean = text.rstrip()
+                    self.q.put(clean)
+                    _file_logger.log(self.level, clean)
             def flush(self):
                 pass
 
-        sys.stdout = _QW()
-        sys.stderr = _QW()
+        sys.stdout = _QW(logging.INFO)
+        sys.stderr = _QW(logging.WARNING)
+        _file_logger.info("═" * 60)
+        _file_logger.info("Session started: %s", datetime.now().isoformat())
+        _file_logger.info("═" * 60)
 
     def log(self, msg: str):
         self.log_queue.put(msg)
+        _file_logger.info(msg)
 
     def _poll_log_queue(self):
         try:
