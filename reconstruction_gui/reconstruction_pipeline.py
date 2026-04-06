@@ -729,6 +729,7 @@ class SAM3Segmenter(BaseSegmenter):
         geometry: ImageGeometry = ImageGeometry.PINHOLE
     ) -> List[MaskResult]:
         """Segment image using SAM3 text prompts."""
+        from contextlib import nullcontext
         from PIL import Image as PILImage
 
         # Preprocess based on geometry
@@ -738,75 +739,80 @@ class SAM3Segmenter(BaseSegmenter):
         image_rgb = cv2.cvtColor(image_processed, cv2.COLOR_BGR2RGB)
         pil_image = PILImage.fromarray(image_rgb)
 
-        # Set image (encodes once, reused for all prompts)
-        inference_state = self.processor.set_image(pil_image)
+        # SAM 3.1's fused MLP (perflib/fused.py) casts fc1 to bfloat16;
+        # autocast is required so fc2 matches — same as Meta's eval scripts.
+        autocast = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if self.device == 'cuda' else nullcontext()
 
-        # Get prompts
-        if prompts is None:
-            prompts = {
-                'remove': self.config.remove_prompts,
-                'keep': self.config.keep_prompts
-            }
+        with autocast:
+            # Set image (encodes once, reused for all prompts)
+            inference_state = self.processor.set_image(pil_image)
 
-        results = []
+            # Get prompts
+            if prompts is None:
+                prompts = {
+                    'remove': self.config.remove_prompts,
+                    'keep': self.config.keep_prompts
+                }
 
-        # Process each text prompt
-        for prompt_text in prompts.get('remove', []):
-            try:
-                # Reset prompts between calls to avoid stale state
-                self.processor.reset_all_prompts(inference_state)
+            results = []
 
-                output = self.processor.set_text_prompt(
-                    state=inference_state, prompt=prompt_text
-                )
+            # Process each text prompt
+            for prompt_text in prompts.get('remove', []):
+                try:
+                    # Reset prompts between calls to avoid stale state
+                    self.processor.reset_all_prompts(inference_state)
 
-                masks = output.get('masks')
-                scores = output.get('scores')
-                boxes = output.get('boxes')
+                    output = self.processor.set_text_prompt(
+                        state=inference_state, prompt=prompt_text
+                    )
 
-                if masks is None or len(masks) == 0:
-                    continue
+                    masks = output.get('masks')
+                    scores = output.get('scores')
+                    boxes = output.get('boxes')
 
-                # Process each detected instance
-                for i in range(len(masks)):
-                    mask = masks[i]
+                    if masks is None or len(masks) == 0:
+                        continue
 
-                    # Convert to numpy uint8 if tensor
-                    if hasattr(mask, 'cpu'):
-                        mask = mask.cpu().numpy()
+                    # Process each detected instance
+                    for i in range(len(masks)):
+                        mask = masks[i]
 
-                    # SAM3 returns (1, H, W) per mask — squeeze to (H, W)
-                    if mask.ndim == 3 and mask.shape[0] == 1:
-                        mask = mask[0]
+                        # Convert to numpy uint8 if tensor
+                        if hasattr(mask, 'cpu'):
+                            mask = mask.cpu().numpy()
 
-                    mask = (mask > 0.5).astype(np.uint8)
+                        # SAM3 returns (1, H, W) per mask — squeeze to (H, W)
+                        if mask.ndim == 3 and mask.shape[0] == 1:
+                            mask = mask[0]
 
-                    # Resize if needed
-                    if mask.shape[:2] != image.shape[:2]:
-                        mask = cv2.resize(
-                            mask, (image.shape[1], image.shape[0]),
-                            interpolation=cv2.INTER_NEAREST
-                        )
+                        mask = (mask > 0.5).astype(np.uint8)
 
-                    # Postprocess based on geometry
-                    mask_processed = self.postprocess_mask(mask, geometry)
+                        # Resize if needed
+                        if mask.shape[:2] != image.shape[:2]:
+                            mask = cv2.resize(
+                                mask, (image.shape[1], image.shape[0]),
+                                interpolation=cv2.INTER_NEAREST
+                            )
 
-                    score = float(scores[i]) if scores is not None and i < len(scores) else 0.8
-                    box = boxes[i].tolist() if boxes is not None and i < len(boxes) else None
+                        # Postprocess based on geometry
+                        mask_processed = self.postprocess_mask(mask, geometry)
 
-                    results.append(MaskResult(
-                        mask=mask_processed,
-                        confidence=score,
-                        quality=self._evaluate_mask_quality(mask_processed, score),
-                        metadata={
-                            'prompt': prompt_text,
-                            'geometry': geometry.value,
-                            'model': 'sam3',
-                            'box': box
-                        }
-                    ))
-            except Exception as e:
-                logger.warning(f"SAM3 prompt '{prompt_text}' failed: {e}")
+                        score = float(scores[i]) if scores is not None and i < len(scores) else 0.8
+                        box = boxes[i].tolist() if boxes is not None and i < len(boxes) else None
+
+                        results.append(MaskResult(
+                            mask=mask_processed,
+                            confidence=score,
+                            quality=self._evaluate_mask_quality(mask_processed, score),
+                            metadata={
+                                'prompt': prompt_text,
+                                'geometry': geometry.value,
+                                'model': 'sam3',
+                                'box': box
+                            }
+                        ))
+                except Exception as e:
+                    logger.warning(f"SAM3 prompt '{prompt_text}' failed: {e}")
 
         # Merge overlapping masks from same prompt
         return self._merge_similar_masks(results)
