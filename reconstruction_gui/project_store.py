@@ -1,8 +1,8 @@
 """
 Project Tracker — Data Model and Store
 =======================================
-Central registry for photogrammetry projects. Tracks lifecycle stages,
-source media paths across drives, and Metashape project references.
+Central registry for photogrammetry projects. Tracks per-source pipeline
+stages, media paths across drives, and tool references (Metashape, COLMAP, etc.).
 
 GUI-independent — usable from CLI, Metashape scripts, or the Projects tab.
 """
@@ -60,54 +60,25 @@ class ProjectSource:
 
 
 @dataclass
-class ProjectStage:
-    """Status of one processing stage."""
-    status: str = "not_started"  # not_started, in_progress, done, skipped
-    updated_at: str = ""
-    notes: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ProjectStage":
-        return cls(
-            status=data.get("status", "not_started"),
-            updated_at=data.get("updated_at", ""),
-            notes=data.get("notes", ""),
-        )
-
-
-@dataclass
 class Project:
     """A single photogrammetry project."""
     id: str
     title: str
-    scene_type: str = ""
     created_at: str = ""
     updated_at: str = ""
     sources: List[ProjectSource] = field(default_factory=list)
-    stages: Dict[str, ProjectStage] = field(default_factory=dict)
-    metashape_path: str = ""
-    export_paths: List[str] = field(default_factory=list)
     notes: str = ""
     tags: List[str] = field(default_factory=list)
-    archived: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "title": self.title,
-            "scene_type": self.scene_type,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "sources": [s.to_dict() for s in self.sources],
-            "stages": {k: v.to_dict() for k, v in self.stages.items()},
-            "metashape_path": self.metashape_path,
-            "export_paths": self.export_paths,
             "notes": self.notes,
             "tags": self.tags,
-            "archived": self.archived,
         }
 
     @classmethod
@@ -115,43 +86,23 @@ class Project:
         return cls(
             id=data.get("id", str(uuid.uuid4())),
             title=data.get("title", "Untitled"),
-            scene_type=data.get("scene_type", ""),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
             sources=[ProjectSource.from_dict(s) for s in data.get("sources", [])],
-            stages={k: ProjectStage.from_dict(v) for k, v in data.get("stages", {}).items()},
-            metashape_path=data.get("metashape_path", ""),
-            export_paths=data.get("export_paths", []),
             notes=data.get("notes", ""),
             tags=data.get("tags", []),
-            archived=data.get("archived", False),
         )
 
     @classmethod
-    def create(cls, title: str, scene_type: str = "") -> "Project":
-        """Create a new project with default stages."""
+    def create(cls, title: str) -> "Project":
+        """Create a new project."""
         now = datetime.now().isoformat()
-        stages = {name: ProjectStage() for name in STAGE_ORDER}
         return cls(
             id=str(uuid.uuid4()),
             title=title,
-            scene_type=scene_type,
             created_at=now,
             updated_at=now,
-            stages=stages,
         )
-
-    def set_stage(self, stage: str, status: str, notes: str = ""):
-        """Update a stage's status and timestamp."""
-        if stage not in STAGE_ORDER:
-            raise ValueError(f"Unknown stage: {stage}. Must be one of {STAGE_ORDER}")
-        if stage not in self.stages:
-            self.stages[stage] = ProjectStage()
-        self.stages[stage].status = status
-        self.stages[stage].updated_at = datetime.now().isoformat()
-        if notes:
-            self.stages[stage].notes = notes
-        self.updated_at = datetime.now().isoformat()
 
     def add_source(self, label: str, path: str, media_type: str, notes: str = "") -> ProjectSource:
         """Add a source media path. Auto-counts files if path is a directory."""
@@ -165,15 +116,6 @@ class Project:
         self.updated_at = datetime.now().isoformat()
         return source
 
-    def current_stage(self) -> str:
-        """Return the name of the most advanced stage that is done or in_progress."""
-        latest = ""
-        for name in STAGE_ORDER:
-            st = self.stages.get(name)
-            if st and st.status in ("done", "in_progress"):
-                latest = name
-        return latest or STAGE_ORDER[0]
-
 
 class ProjectStore:
     """Persistent collection of projects. Saves to a JSON file.
@@ -181,15 +123,14 @@ class ProjectStore:
     Usage::
 
         store = ProjectStore("D:/tracker.json")
-        proj = store.create_project("My Scan", scene_type="interior")
+        proj = store.create_project("My Scan")
         proj.add_source("ERP frames", "D:/scans/360/frames", "images")
-        proj.set_stage("captured", "done")
         store.save()
 
         # Later...
         store = ProjectStore("D:/tracker.json")
         for p in store.list_projects():
-            print(p.title, p.current_stage())
+            print(p.title, len(p.sources), "sources")
     """
 
     VERSION = 1
@@ -225,9 +166,9 @@ class ProjectStore:
 
     # -- CRUD --
 
-    def create_project(self, title: str, scene_type: str = "") -> Project:
+    def create_project(self, title: str) -> Project:
         """Create and register a new project."""
-        proj = Project.create(title, scene_type)
+        proj = Project.create(title)
         self._projects[proj.id] = proj
         self.save()
         return proj
@@ -241,35 +182,19 @@ class ProjectStore:
         self._projects.pop(project_id, None)
         self.save()
 
-    def archive_project(self, project_id: str):
-        """Soft-delete: mark as archived (hidden from default list)."""
-        proj = self._projects.get(project_id)
-        if proj:
-            proj.archived = True
-            proj.updated_at = datetime.now().isoformat()
-            self.save()
-
     def list_projects(
         self,
-        include_archived: bool = False,
-        stage_filter: str = "",
         tag_filter: str = "",
         search: str = "",
     ) -> List[Project]:
         """List projects with optional filters.
 
         Args:
-            include_archived: Include archived projects
-            stage_filter: Only show projects whose current_stage matches
             tag_filter: Only show projects that have this tag
             search: Case-insensitive substring match on title or notes
         """
         results = []
         for p in self._projects.values():
-            if not include_archived and p.archived:
-                continue
-            if stage_filter and p.current_stage() != stage_filter:
-                continue
             if tag_filter and tag_filter not in p.tags:
                 continue
             if search:
@@ -300,11 +225,4 @@ class ProjectStore:
         proj = self._projects.get(project_id)
         if not proj:
             return {}
-        results = {}
-        for src in proj.sources:
-            results[src.path] = Path(src.path).exists()
-        if proj.metashape_path:
-            results[proj.metashape_path] = Path(proj.metashape_path).exists()
-        for ep in proj.export_paths:
-            results[ep] = Path(ep).exists()
-        return results
+        return {src.path: Path(src.path).exists() for src in proj.sources}

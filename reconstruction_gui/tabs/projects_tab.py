@@ -127,7 +127,7 @@ def _refresh_project_list(app):
     app._proj_list_widgets.clear()
 
     search = app._proj_search_var.get().strip()
-    projects = app._project_store.list_projects(include_archived=False, search=search)
+    projects = app._project_store.list_projects(search=search)
 
     for proj in projects:
         row = _create_project_list_row(app, proj)
@@ -245,7 +245,7 @@ def _build_pipeline_header(app, parent, proj):
 # ── Project Info section ──
 
 def _build_project_info_section(app, parent, proj):
-    """Editable project info: title, subject, capture method checkboxes, notes."""
+    """Editable project info: title and capture method checkboxes."""
     sec = CollapsibleSection(parent, "Project Info", expanded=True)
     sec.pack(fill="x", padx=4, pady=(0, 6))
     c = sec.content
@@ -825,14 +825,14 @@ def _do_export(app, current_project_id: str):
 def _export_single_md(proj, path: Path) -> str:
     """Export a single project to markdown."""
     from project_store import STAGE_ORDER
+
+    METHOD_LABELS = ("Metashape", "RealityScan", "COLMAP")
     lines = [
         f"# {proj.title}",
         "",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
     ]
-    if proj.scene_type:
-        lines.append(f"**Subject:** {proj.scene_type}")
     if proj.tags:
         lines.append(f"**Tags:** {', '.join(proj.tags)}")
     lines.append("")
@@ -843,17 +843,11 @@ def _export_single_md(proj, path: Path) -> str:
             exists = Path(src.path).exists()
             status = "" if exists else " [MISSING]"
             count = f" ({src.file_count} files)" if src.file_count else ""
-            lines.append(f"- {src.label}: `{src.path}`{count}{status}")
+            stage = ""
+            if src.label not in METHOD_LABELS and src.stage:
+                stage = f" — {src.stage.replace('_', ' ').title()}"
+            lines.append(f"- {src.label}: `{src.path}`{count}{status}{stage}")
         lines.append("")
-
-    lines.append("## Pipeline")
-    for sn in STAGE_ORDER:
-        st = proj.stages.get(sn)
-        status = st.status if st else "not_started"
-        marker = "[x]" if status == "done" else "[-]" if status == "in_progress" else "[ ]"
-        label = sn.replace("_", " ").title()
-        lines.append(f"- {marker} {label}")
-    lines.append("")
 
     if proj.notes:
         lines.append("## Notes")
@@ -867,22 +861,9 @@ def _export_single_md(proj, path: Path) -> str:
 def _export_single_html(proj, path: Path) -> str:
     """Export a single project to styled HTML."""
     from project_store import STAGE_ORDER
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    done = sum(1 for s in proj.stages.values() if s.status == "done")
-    pct = int(done / len(STAGE_ORDER) * 100)
 
-    stages_html = ""
-    for sn in STAGE_ORDER:
-        st = proj.stages.get(sn)
-        status = st.status if st else "not_started"
-        if status == "done":
-            icon, color = "+", "#22c55e"
-        elif status == "in_progress":
-            icon, color = "o", "#f59e0b"
-        else:
-            icon, color = "-", "#6b7280"
-        label = sn.replace("_", " ").title()
-        stages_html += f'<span style="color:{color};margin-right:16px">{icon} {label}</span>'
+    METHOD_LABELS = ("Metashape", "RealityScan", "COLMAP")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     sources_html = ""
     if proj.sources:
@@ -892,10 +873,24 @@ def _export_single_html(proj, path: Path) -> str:
             clr = "#22c55e" if exists else "#ef4444"
             ind = "OK" if exists else "MISSING"
             cnt = f" ({src.file_count})" if src.file_count else ""
+            stage_html = ""
+            if src.label not in METHOD_LABELS and src.stage:
+                try:
+                    stage_idx = STAGE_ORDER.index(src.stage)
+                except ValueError:
+                    stage_idx = -1
+                pills = []
+                for si, sn in enumerate(STAGE_ORDER):
+                    pill_color = "#22c55e" if si <= stage_idx else "#6b7280"
+                    pills.append(
+                        f'<span style="color:{pill_color};font-size:10px;margin-right:6px">'
+                        f'{"+" if si <= stage_idx else "-"} {sn.replace("_"," ").title()}</span>'
+                    )
+                stage_html = '<div style="padding-left:20px;margin-top:2px">' + "".join(pills) + '</div>'
             items.append(
                 f'<div style="font-family:monospace;font-size:12px;padding:2px 0">'
                 f'<span style="color:{clr}">[{ind}]</span> '
-                f'<b>{src.label}</b>: {src.path}{cnt}</div>'
+                f'<b>{src.label}</b>: {src.path}{cnt}</div>{stage_html}'
             )
         sources_html = "<div style='margin:12px 0'>" + "\n".join(items) + "</div>"
 
@@ -905,8 +900,6 @@ def _export_single_html(proj, path: Path) -> str:
 </head><body>
 <h1>{proj.title}</h1>
 <p style="color:#9ca3af">Generated: {now}</p>
-<div style="background:#374151;border-radius:4px;height:6px;margin:8px 0"><div style="background:#3b82f6;border-radius:4px;height:6px;width:{pct}%"></div></div>
-<div style="margin:12px 0">{stages_html}</div>
 {sources_html}
 {f'<div style="color:#9ca3af;margin-top:12px"><b>Notes:</b><br>{proj.notes}</div>' if proj.notes else ''}
 {f'<div style="margin-top:8px"><b>Tags:</b> {", ".join(proj.tags)}</div>' if proj.tags else ''}
@@ -1070,7 +1063,6 @@ def _import_scan_result(app, scan_result):
             label=Path(vid).name, path=vid, media_type="video",
         ))
 
-    proj.set_stage("extracted", "done")
     app._project_store.save()
     _refresh_project_list(app)
     _show_project_detail(app, proj.id)
