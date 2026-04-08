@@ -92,12 +92,11 @@ python reconstruction_gui/reconstruction_zone.py
 
 ## Workflow
 
-The pipeline takes raw captures through four stages — each handled by a tab in the GUI:
-
-*Workflow diagram coming soon.*
+The pipeline takes raw captures through five stages — each handled by a tab in the GUI:
 
 | Tab | What it does | Guide |
 |-----|-------------|-------|
+| **Projects** | Central registry for photogrammetry projects. Track sources, processing stages, and export status. | [Projects Guide](reconstruction_gui/docs/PROJECTS_TAB.md) |
 | **Extract** | Pull frames from 360° video, fisheye, or standard video. Equirect-to-perspective reframing with configurable view rings. | [Extract Guide](reconstruction_gui/docs/EXTRACT_TAB.md) |
 | **Mask** | Auto-detect and mask objects using text prompts or class selection. Supports 360°-aware cubemap decomposition. | [Mask Guide](reconstruction_gui/docs/MASK_TAB.md) |
 | **Review** | Thumbnail grid with accept/reject/skip workflow. Open any mask in the interactive editor for brush, flood fill, and lasso touch-ups. | [Review Guide](reconstruction_gui/docs/REVIEW_TAB.md) |

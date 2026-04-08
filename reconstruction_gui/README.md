@@ -8,10 +8,11 @@ Masking Studio is the GUI application within the [Reconstruction Zone](../README
 
 ## Tabs
 
-The GUI has 4 tabs:
+The GUI has 5 tabs:
 
 | Tab | Purpose | Guide |
 |-----|---------|-------|
+| **Projects** | Central project registry — track sources, processing stages, exports | [PROJECTS_TAB.md](docs/PROJECTS_TAB.md) |
 | **Extract** | Video analysis, frame extraction, batch queue, fisheye calibration | [EXTRACT_TAB.md](docs/EXTRACT_TAB.md) |
 | **Mask** | Model selection, detection, refinement, post-processing — the core pipeline | [MASK_TAB.md](docs/MASK_TAB.md) |
 | **Review** | Thumbnail grid, accept/reject/edit, interactive OpenCV mask editor | [REVIEW_TAB.md](docs/REVIEW_TAB.md) |

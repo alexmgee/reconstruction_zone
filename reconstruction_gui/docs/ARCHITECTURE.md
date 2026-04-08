@@ -8,7 +8,7 @@ A deep dive into how the masking pipeline works, why it's designed this way, and
 ┌─────────────────────────────────────────────────────────────────┐
 │  GUI Layer                                                       │
 │  reconstruction_zone.py + tabs/ + widgets.py + app_infra.py           │
-│  CustomTkinter app, 4 tabs, threading, preview, review grid      │
+│  CustomTkinter app, 5 tabs, threading, preview, review grid      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Pipeline Layer                                                   │
 │  reconstruction_pipeline.py — MaskingPipeline orchestrator                     │
@@ -34,21 +34,27 @@ A deep dive into how the masking pipeline works, why it's designed this way, and
 
 | File | Lines | Key classes | Purpose |
 |------|-------|-------------|---------|
-| `reconstruction_pipeline.py` | ~1500 | `MaskingPipeline`, `MaskConfig`, `MaskResult`, `BaseSegmenter`, `CubemapProjection`, `TemporalConsistency` | Core pipeline — segmentation, cubemap geometry, postprocessing, batch processing |
-| `reconstruction_zone.py` | ~3400 | `ReconstructionZone` | GUI app — 4 tabs (Extract, Mask, Review, Coverage), preview panel, mask/review integration |
-| `sam3_pipeline.py` | ~500 | `SAM3VideoPipeline`, `SAM3VideoConfig` | SAM 3 video predictor for unified detect+track across frames |
-| `sam_refinement.py` | ~550 | `SAMMaskRefiner`, `SAMRefinementConfig`, `SAMWeightManager` | Boundary refinement using SAM point/box prompts from coarse masks |
-| `matting.py` | ~300 | `MattingRefiner`, `MattingConfig` | Binary mask → soft alpha matte via [ViTMatte](https://github.com/hustvl/ViTMatte) |
-| `vos_propagation.py` | ~450 | `VOSPropagator`, `VOSConfig` | Temporal propagation via [LiVOS](https://github.com/hkchengrex/LiVOS) or [Cutie](https://github.com/hkchengrex/Cutie) |
-| `shadow_detection.py` | ~950 | `ShadowPipeline`, `ShadowConfig` | Multi-method shadow detection (brightness, chromaticity, deep learning) |
-| `colmap_validation.py` | ~700 | `GeometricValidator`, `ValidationConfig` | Validate mask consistency against COLMAP 3D reconstruction |
-| `review_gui.py` | ~600 | `ThumbnailWidget`, `load_overlay_thumbnail` | Review app + reusable overlay/thumbnail functions |
-| `review_status.py` | ~150 | `ReviewStatusManager`, `MaskStatus` | Persistent review state (accept/reject/edit) per mask |
-| `review_masks.py` | ~800 | — | Interactive OpenCV mask editor (brush, flood fill, lasso, zoom/pan) |
-| `app_infra.py` | ~200 | `AppInfrastructure` | GUI mixin: logging, threading, preferences, file dialogs |
-| `widgets.py` | ~150 | `Section`, `CollapsibleSection`, `slider_row` | Shared UI building blocks |
-| `tabs/source_tab.py` | ~1800 | — | Extract tab: video analysis, extraction queue, fisheye |
-| `tabs/gaps_tab.py` | ~500 | — | Coverage tab: spatial gap detection, bridge extraction |
+| `reconstruction_pipeline.py` | ~3250 | `MaskingPipeline`, `MaskConfig`, `MaskResult`, `BaseSegmenter`, `CubemapProjection`, `TemporalConsistency` | Core pipeline — segmentation, cubemap geometry, postprocessing, batch processing |
+| `reconstruction_zone.py` | ~2680 | `ReconstructionZone` | GUI app — 5 tabs (Projects, Extract, Mask, Review, Coverage), preview panel, mask/review integration |
+| `sam3_pipeline.py` | ~340 | `SAM3VideoPipeline`, `SAM3VideoConfig` | SAM 3 video predictor for unified detect+track across frames |
+| `sam_refinement.py` | ~480 | `SAMMaskRefiner`, `SAMRefinementConfig`, `SAMWeightManager` | Boundary refinement using SAM point/box prompts from coarse masks |
+| `matting.py` | ~260 | `MattingRefiner`, `MattingConfig` | Binary mask → soft alpha matte via [ViTMatte](https://github.com/hustvl/ViTMatte) |
+| `vos_propagation.py` | ~350 | `VOSPropagator`, `VOSConfig` | Temporal propagation via [LiVOS](https://github.com/hkchengrex/LiVOS) or [Cutie](https://github.com/hkchengrex/Cutie) (API only — not exposed in GUI) |
+| `shadow_detection.py` | ~1480 | `ShadowPipeline`, `ShadowConfig` | Multi-method shadow detection (targeted person, brightness, chromaticity) |
+| `colmap_validation.py` | ~660 | `GeometricValidator`, `ValidationConfig` | Validate mask consistency against COLMAP 3D reconstruction |
+| `masking_queue.py` | ~230 | `MaskingQueue`, `MaskingQueueItem` | Persistent batch queue for the Mask tab (folder-based, JSON-backed) |
+| `model_downloader.py` | ~110 | `ModelDownloadDialog`, `check_missing_models` | First-run model weight download check with CTk progress UI |
+| `review_gui.py` | ~610 | `ThumbnailWidget`, `load_overlay_thumbnail` | Review app + reusable overlay/thumbnail functions |
+| `review_status.py` | ~115 | `ReviewStatusManager`, `MaskStatus` | Persistent review state (accept/reject/edit) per mask |
+| `review_masks.py` | ~1050 | — | Interactive OpenCV mask editor (brush, flood fill, lasso, zoom/pan) |
+| `project_store.py` | ~230 | `ProjectStore`, `Project`, `Source` | Persistent project registry (JSON-backed CRUD) |
+| `project_scanner.py` | ~200 | `scan_drive_for_projects` | Discover existing project directories on disk |
+| `project_exporters.py` | ~170 | `export_metashape_script`, etc. | Generate export scripts for Metashape and COLMAP |
+| `app_infra.py` | ~280 | `AppInfrastructure` | GUI mixin: logging, threading, preferences, crash-resilient file logger |
+| `widgets.py` | ~270 | `Section`, `CollapsibleSection`, `Tooltip`, `slider_row` | Shared UI building blocks |
+| `tabs/projects_tab.py` | ~1080 | — | Projects tab: project list, detail panel, source tracking, export |
+| `tabs/source_tab.py` | ~3380 | — | Extract tab: video analysis, extraction queue, fisheye, frame quality filter |
+| `tabs/gaps_tab.py` | ~400 | — | Coverage tab: spatial gap detection, bridge extraction |
 
 ## The equirectangular problem
 
@@ -186,6 +192,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a new segmenter.
 
 ## Temporal propagation
 
+> **GUI note:** VOS temporal propagation is not currently exposed in the GUI. It remains available via the Python API (`MaskConfig(vos_propagation=True)`). The GUI offers SAM3 Unified Video mode as the primary temporal consistency approach. The sections below describe the API-level behavior.
+
 For video sequences (ordered frames), you have two temporal strategies:
 
 ### Sliding-window averaging (built-in)
@@ -269,8 +277,9 @@ The GUI (`reconstruction_zone.py`) inherits from both `AppInfrastructure` (loggi
 │  ┌──────────────────────┬───────────────────────────────────┐ │
 │  │  Tab View (35%)       │  Preview Panel (65%)              │ │
 │  │  ┌─────────────────┐ │  ┌─────────────────────────────┐ │ │
-│  │  │ Extract         │ │  │ Image overlay / mask view    │ │ │
-│  │  │ Mask            │ │  │                             │ │ │
+│  │  │ Projects        │ │  │ Image overlay / mask view    │ │ │
+│  │  │ Extract         │ │  │  (or Project detail panel    │ │ │
+│  │  │ Mask            │ │  │   when Projects tab active)  │ │ │
 │  │  │ Review          │ │  │                             │ │ │
 │  │  │ Coverage        │ │  ├─────────────────────────────┤ │ │
 │  │  └─────────────────┘ │  │ Navigator slider            │ │ │

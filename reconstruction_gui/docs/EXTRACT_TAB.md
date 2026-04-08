@@ -4,16 +4,16 @@ The Extract tab is the starting point for every reconstruction project. It handl
 
 ## Sections
 
-The tab has four collapsible sections, top to bottom:
+The tab has four top-level sections — two always-visible and two collapsible:
 
-| Section | Purpose |
-|---------|---------|
-| **Video Selection** | Load a video (or split-lens pair), set output folder, analyze metadata |
-| **Frame Extraction** | Pull frames from the video with mode/interval/filter controls |
-| **360 Processing** | Split dual-fisheye containers or reframe to pinhole perspectives |
-| **Advanced** | Power-user tools: SRT file override, standalone geotagging |
+| Section | Type | Purpose |
+|---------|------|---------|
+| **Video Selection** | Always visible | Load a video (or split-lens pair), set output folder |
+| **Frame Extraction** | Always visible | Analysis, extraction settings, post-processing filters, batch queue |
+| **360 Processing** | Collapsible | Split dual-fisheye containers or reframe to pinhole perspectives |
+| **Advanced** | Collapsible (default: collapsed) | Frame quality filter for existing frames, SRT geotagging |
 
-You'll use Video Selection + Frame Extraction for normal perspective video. Add 360 Processing when working with DJI Osmo, Insta360, or GoPro Max footage. The Advanced section is for power users who need manual SRT override or retroactive geotagging — most users won't need it.
+You'll use Video Selection + Frame Extraction for normal perspective video. Add 360 Processing when working with DJI Osmo, Insta360, or GoPro Max footage. The Advanced section contains power-user tools — a standalone frame quality filter for re-scoring existing frames, and manual SRT geotagging.
 
 ---
 
@@ -40,9 +40,13 @@ When **Use Split Lens Videos** is checked, the Analyze and Extract buttons opera
 
 The workflow is: Split Lenses (in the 360 Processing section below) → grade externally → enable Split Lens Videos here → Extract.
 
+---
+
+## Frame Extraction
+
 ### Analysis
 
-Expand the **Analysis** subsection and click **Analyze** to probe the video with ffprobe.
+A collapsible subsection inside Frame Extraction (expanded by default). Click **Analyze** to probe the video with ffprobe.
 
 **Single video** example output:
 
@@ -92,27 +96,25 @@ When analyzing a split pair, mismatches (resolution, FPS, duration) between fron
 
 Analysis stores video metadata internally — the Coverage tab reads it for bridge extraction, and the live estimate uses it to calculate frame counts.
 
----
+### Sharpness and Scene Detection
 
-## Frame Extraction
+Two composable controls determine how frames are selected:
 
-### Extraction modes
+**Sharpness** (radio buttons: Tenengrad / Laplacian / None)
 
-Four modes control how frames are selected from the video:
+Controls whether the extractor scores every frame for sharpness and picks the best per interval window, or simply grabs frames at fixed intervals.
 
-- **Fixed Interval** — Extracts one frame every N seconds, evenly spaced through the video. The simplest and most predictable mode. Use this unless you have a specific reason to try the others.
+- **Tenengrad** — Scores every frame via Tenengrad (Sobel gradient energy). Better noise robustness than Laplacian — use for action cameras, high-ISO footage, or heavily compressed source video.
+- **Laplacian** (default) — Scores every frame via Laplacian variance (second-derivative energy). Fast, reliable, and the ecosystem standard for 3DGS/NeRF preprocessing.
+- **None** — Fixed interval extraction. One frame every N seconds, evenly spaced. Simplest and fastest.
 
-- **Scene Detection** — Starts with the same interval baseline as Fixed, but also extracts additional frames at scene cuts (large visual changes between consecutive frames). Useful for walkthroughs where the camera moves through distinct rooms or areas — the scene-cut frames capture transitions that a fixed interval might skip.
+Both Laplacian and Tenengrad analyze frames at 1920px width (configurable) and run at near-realtime speed via OpenCV.
 
-- **Adaptive Density** — Dynamically adjusts extraction density based on motion. High-motion segments get more frames; static segments get fewer. Good for varied-pace captures where the camera alternates between walking and pausing.
+**Scene Detection** (checkbox, default: on)
 
-- **Sharpest Frame** — Divides the video into N-second windows and picks the single sharpest frame from each window, scoring every frame in the window using ffmpeg's blurdetect filter. More expensive than other modes (analyzes all frames, not just sampled ones) but produces the highest-quality dataset from shaky or handheld footage.
+When enabled alongside a sharpness method, splits time windows at scene boundaries (detected via HSV histogram correlation) so both sides of a visual transition get a sharp representative frame. Greyed out when Sharpness is set to None, since there's no frame-by-frame scoring loop to piggyback scene detection on.
 
-When **Video Selection → Split Lens Videos** is enabled and **Sharpest Frame** is selected, a paired sharpness tier appears:
-
-- **Fast** — Quick pair scoring from both lenses
-- **Balanced** — blurdetect on both lenses, fixed time windows
-- **Best** — blurdetect on both lenses with scene-aware pair selection
+When using **Split Lens Videos**, both controls apply to paired extraction — the scoring and scene detection run on both front and back lenses simultaneously, selecting the sharpest shared frame index per window.
 
 ### Settings
 
@@ -123,6 +125,8 @@ When **Video Selection → Split Lens Videos** is enabled and **Sharpest Frame**
 | **Format** | jpg / png | jpg | JPEG is smaller; PNG is lossless |
 | **Start** | time | 0:00 | Skip video before this point |
 | **End** | time | end | Stop extracting after this point |
+| **Sharpness** | None / Laplacian / Tenengrad | Laplacian | Frame scoring method |
+| **Scene Detection** | on / off | on | Split windows at scene cuts |
 
 Time values accept seconds (`45.5`), `MM:SS` (`1:30`), or `HH:MM:SS` (`1:02:30`).
 
@@ -442,7 +446,7 @@ When you click **Extract & Reframe**:
 
 ## Advanced
 
-Collapsed by default. Contains power-user tools that most users won't need. Expanding this section reveals subsections for manual metadata operations.
+Collapsed by default. Contains two subsections for power-user tools: a standalone frame quality filter and SRT geotagging.
 
 ### Metadata
 
@@ -450,7 +454,7 @@ Collapsed inside Advanced. Handles SRT geotagging — writing GPS coordinates, a
 
 #### Auto-geotag after extraction
 
-Enabled by default. After extraction and all post-processing filters complete, the pipeline automatically geotags every surviving frame. This uses DJI SRT telemetry files — the `.SRT` file recorded alongside the video by DJI drones and action cameras.
+Enabled by default (the checkbox is in Frame Extraction's settings row, not here). After extraction and all post-processing filters complete, the pipeline automatically geotags every surviving frame. This uses DJI SRT telemetry files — the `.SRT` file recorded alongside the video by DJI drones and action cameras.
 
 **How it works:** prep360 writes an `extraction_manifest.json` alongside the extracted frames during extraction. This manifest records the exact video timestamp for every frame. The geotagger reads the manifest, looks up each timestamp in the SRT data, and writes the corresponding GPS/altitude/focal-length/datetime into the frame's EXIF via [exiftool](https://exiftool.org).
 
@@ -480,6 +484,56 @@ For when you already have extracted frames but didn't geotag them during extract
 **Reliability note:** This requires an `extraction_manifest.json` file in the frames folder. This manifest is automatically created by prep360 during extraction — it records the exact video timestamp for every frame, ensuring accurate SRT-to-frame matching. If the manifest is missing (e.g. frames were extracted by a different tool), standalone geotagging will refuse to proceed rather than guess.
 
 **Requirements:** [exiftool](https://exiftool.org) must be installed and on PATH.
+
+### Frame Quality Filter
+
+Collapsed inside Advanced. A standalone tool for scoring and filtering existing extracted frames — useful when you want to thin an already-extracted dataset without re-extracting from video.
+
+This is a two-step workflow: **Analyze** scores all frames non-destructively, then **Filter** applies the enabled filters and removes rejected frames. You can adjust thresholds between the two steps and see the effect in real-time via the analysis summary.
+
+#### Folder
+
+| Field | Purpose |
+|-------|---------|
+| **Folder** | Directory of previously extracted frames to score and filter |
+
+#### Sharpness
+
+Collapsible subsection (expanded by default, enabled by default). Rejects blurry frames by Laplacian variance scoring.
+
+**Mode toggle** — two scoring strategies:
+
+- **Percentile** (default) — Keep the sharpest N% of frames. The threshold adapts to your dataset's score distribution.
+- **Absolute** — Reject any frame below a fixed Laplacian variance score. Use when you know your acceptable quality floor.
+
+| Setting | Mode | Range | Default | Effect |
+|---------|------|-------|---------|--------|
+| **Keep** | Percentile | 50–99% | 80% | Keep the sharpest N%. 80% removes the worst 20% |
+| **Min** | Absolute | 10–500 | 50 | Reject frames with Laplacian variance below this score |
+
+When both Sharpness and Motion filters are enabled, the Motion filter's sharpness floor auto-syncs from the Sharpness filter settings (shown as "synced" in the UI). Disable the Sharpness filter to control the Motion filter's sharpness threshold independently.
+
+#### Motion
+
+Collapsible subsection (collapsed by default, disabled by default). Thins redundant frames by optical flow — removes near-identical frames from slow/stopped segments.
+
+| Setting | Range | Default | Effect |
+|---------|-------|---------|--------|
+| **Sharpness** | 10–200 | 50 (synced) | Minimum Laplacian variance. Auto-synced from Sharpness filter when both are enabled |
+| **Target flow** | 2–30 | 10 | Optical flow magnitude between kept frames. Higher = more camera movement required between selections |
+
+#### Safety
+
+| Option | Behavior |
+|--------|----------|
+| **Move to _rejected/** (default) | Rejected frames are moved to a `_rejected/` subdirectory inside the frames folder. Recoverable. |
+| **Delete permanently** | Rejected frames are deleted from disk. Not recoverable. |
+
+#### Workflow
+
+1. Click **Analyze** — scores every frame for sharpness (non-destructive). The summary panel shows score range, distribution, and how many frames would be cut at current settings.
+2. Adjust thresholds — the summary updates live as you move sliders.
+3. Click **Filter** — applies the enabled filters. Rejected frames are moved or deleted based on the safety toggle.
 
 ---
 
@@ -544,6 +598,20 @@ For when you already have extracted frames but didn't geotag them during extract
 6. Frame Extraction → Configure mode + interval
 7.                  → Click Extract
 8.                  → Clip folder with front/frames + back/frames ready for Metashape
+```
+
+## Typical workflow: filter existing frames
+
+```
+1. Advanced           → Expand Frame Quality Filter
+2.                    → Browse to folder of previously extracted frames
+3. Sharpness          → Choose Percentile (keep 80%) or Absolute (min 50)
+4. (Optional)         → Enable Motion filter, adjust target flow
+5.                    → Select safety: Move to _rejected/ (recommended) or Delete
+6.                    → Click Analyze to score all frames (non-destructive)
+7.                    → Review the summary: score range, how many would be cut
+8.                    → Adjust thresholds if needed (summary updates live)
+9.                    → Click Filter to apply
 ```
 
 ## Typical workflow: 360 with coverage feedback

@@ -1,20 +1,20 @@
 # Mask Tab
 
-The Mask tab is the core of Masking Studio. It runs automated object detection and segmentation on your images, producing binary masks that tell COLMAP/Metashape/3DGS which pixels to ignore during reconstruction. The tab is organized into three collapsible sections — Core Process, Detection & Refinement, and Post-Processing — followed by Run/Cancel controls at the bottom.
+The Mask tab is the core of Masking Studio. It runs automated object detection and segmentation on your images, producing binary masks that tell COLMAP/Metashape/3DGS which pixels to ignore during reconstruction. The tab is organized into three collapsible sections — Detection, Detection & Refinement, and Post-Processing — followed by Run/Cancel controls, a Batch Queue, and a progress bar.
 
 ## Sections
 
 | Section | Default | Purpose |
 |---------|---------|---------|
-| **Core Process** | Expanded | Input/output paths, model selection, prompts, file options, output modes |
+| **Detection** | Expanded | Input/output paths, model selection, prompts, file options, output modes |
 | **Detection & Refinement** | Expanded | Optional pipeline stages that improve detection quality |
-| **Post-Processing** | Expanded | Mask cleanup, 360° corrections, performance tuning |
+| **Post-Processing** | Expanded | Mask cleanup, geometry-specific corrections |
 
-Below the sections: **Run Masking** / **Cancel** buttons, progress bar, and status label.
+Below the sections: **Preview** / **Run Masking** / **Stop** buttons, a collapsible **Batch Queue**, progress bar, and status label.
 
 ---
 
-## Core Process
+## Detection
 
 Expanded by default. Contains everything needed for a basic masking run.
 
@@ -27,7 +27,7 @@ Expanded by default. Contains everything needed for a basic masking run.
 
 Two modes control how SAM3 processes a directory of images:
 
-- **Hybrid** (default) — Each frame is processed independently: the selected detector (YOLO, RF-DETR, etc.) finds objects per frame, then SAM segments them. Optionally, VOS propagation can be enabled to smooth masks across frames after the fact — but each frame's detections are still independent.
+- **Hybrid** (default) — Each frame is processed independently: the selected detector (YOLO, RF-DETR, etc.) finds objects per frame, then SAM segments them. Each frame's detections are independent.
 
 - **Unified Video** — Loads the entire directory as a video sequence into SAM3's video predictor. You provide text prompts (the Remove/Keep fields), SAM3 detects objects on the first frame using Promptable Concept Segmentation, then propagates those detections forward through all frames with built-in temporal tracking. Objects only need to be found once — SAM3 tracks them across frames automatically. This bypasses the per-frame detector entirely. Requires the SAM3 model.
 
@@ -58,6 +58,7 @@ These settings are used in Hybrid mode only. They are dimmed and disabled when U
 | **YOLO size** | n, s, m, l, x | n | YOLO model variant. `n` (nano) is fastest; `x` is most accurate but slowest |
 | **Geometry** | pinhole, equirect, fisheye, cubemap | pinhole | Image projection type. `equirect` triggers cubemap decomposition — the image is split into 6 cube faces, each face is segmented independently, then masks are merged back to equirectangular |
 | **Conf** | 0.0–1.0 | 0.70 | Detection confidence threshold. Lower = more detections (more recall, more false positives) |
+| **torch.compile** | On/Off | Off | JIT-compile the detection model for ~20-50% faster GPU inference. Adds startup time (warmup). Requires PyTorch 2.0+ and CUDA |
 
 ### Prompts and Classes
 
@@ -69,6 +70,14 @@ Two ways to specify what to mask:
 
 **Mask targets** (used by YOLO/RF-DETR in Hybrid mode):
 Checkboxes for common classes: person, backpack, car, camera, selfie stick. Defaults: person, backpack, and selfie stick are checked. Checked targets are passed as class filters to the detector. Custom prompts in the Remove field are also sent as text prompts to SAM3 if the model supports it. Dimmed and disabled in Unified Video mode.
+
+### Multi-pass SAM3
+
+When enabled, SAM3 runs once per prompt with individual confidence thresholds, then unions all masks together. This is useful when different objects need different sensitivity — e.g. a person at 0.7 confidence but a thin selfie stick at 0.4.
+
+Each row specifies a prompt string and a confidence threshold. Click **+ Add Pass** to add rows, **Remove** to delete the last row.
+
+This bypasses the global Conf slider for SAM3 — each pass uses its own threshold.
 
 ### File Types, Skip Existing, Review Threshold
 
@@ -82,6 +91,8 @@ Checkboxes for common classes: person, backpack, car, camera, selfie stick. Defa
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
+| **Create review folder** | Off | Creates `masks/` and `review/` subdirectories inside the output folder |
+| **Include rejects** | On | Generate a mask for every image regardless of confidence score (low-confidence masks still get quality flags) |
 | **Multi-label output** | Off | Save per-class segmentation maps alongside binary masks. Each pixel value is a class ID (0 = background, 1 = person, 2 = backpack, etc.). Saved to `{output}/segmaps/` |
 | **Inpaint masked** | Off | Fill masked regions with plausible texture using OpenCV inpainting (Telea algorithm). Saves separate files to `{output}/inpainted/`. For 3DGS training where black holes in masked regions cause dark splat artifacts |
 
@@ -106,9 +117,6 @@ SAM Mask Refinement ── tighten edges with SAM point prompts
 Edge Injection ── add thin structures via Canny edges
     |
     v
-VOS Temporal Propagation ── smooth masks across frames
-    |
-    v
 Alpha Matting ── generate soft edges
     |
     v
@@ -121,7 +129,7 @@ Detects shadows cast by masked objects and includes them in the mask. Shadows fr
 
 | Setting | Options | Default | Purpose |
 |---------|---------|---------|---------|
-| **Detector** | brightness, c1c2c3, hybrid, sddnet, careaga | brightness | Shadow detection algorithm. `brightness` is fastest; `sddnet` and `careaga` are neural-network-based |
+| **Detector** | targeted_person, brightness, c1c2c3, hybrid | targeted_person | Shadow detection algorithm. `targeted_person` detects shadows beneath detected persons using depth-aware ground plane estimation; `brightness` is a fast heuristic; `c1c2c3` uses chromaticity-invariant color space; `hybrid` combines brightness + chromaticity |
 | **Verify** | none, c1c2c3, hybrid, brightness | none | Optional second-pass verification to reduce false positives |
 | **Spatial** | all, near_objects, connected | near_objects | Where to look for shadows. `near_objects` only checks regions near detected objects; `connected` requires shadows to touch the object mask |
 | **Dilation** | 0–200 px | 50 | Expand shadow search region around objects |
@@ -163,15 +171,6 @@ Runs multiple detectors on each image and merges their masks using Weighted Mask
 
 Adds Canny edge detection to catch thin structures that object detectors typically miss — wires, cables, antennas, thin poles. The edge map is combined with the object mask before post-processing. Only a checkbox to enable/disable; no additional parameters.
 
-### VOS Temporal Propagation
-
-Video Object Segmentation — propagates masks from keyframes to neighboring frames using learned temporal models (LiVOS or Cutie). Produces temporally consistent masks across a sequence, reducing frame-to-frame flickering.
-
-| Setting | Options | Default | Purpose |
-|---------|---------|---------|---------|
-| **Backend** | auto, livos, cutie | auto | VOS model. `auto` picks whichever is installed |
-| **Keyframe every** | 1–30 | 5 | How often to use detector masks as keyframes. Between keyframes, masks are propagated. Lower = more keyframes = closer to per-frame detection |
-
 ### COLMAP Geometric Validation
 
 Cross-checks masks against an existing COLMAP sparse reconstruction. Projects 3D points into each camera view and checks whether masked pixels coincide with reconstructed geometry. Flags masks that contradict the 3D model.
@@ -181,6 +180,8 @@ Cross-checks masks against an existing COLMAP sparse reconstruction. Projects 3D
 | **Sparse dir** | (browse) | Path to COLMAP sparse reconstruction (e.g. `sparse/0/`) |
 | **Agreement** | 0.70 | Minimum fraction of projected 3D points that must agree with the mask |
 | **Flag above** | 0.15 | Fraction of disagreeing points above which the mask is flagged for review |
+
+> **Note:** VOS temporal propagation (LiVOS/Cutie) is available via the Python API (`vos_propagation=True` in MaskConfig) but is not currently exposed in the GUI.
 
 ---
 
@@ -203,13 +204,32 @@ Only relevant when Geometry is set to `equirect`.
 |---------|---------|---------|
 | **Nadir mask** | 0% | Mask the bottom N% of the equirectangular image. Covers the nadir pole where the camera mount / tripod head is always visible |
 | **Pole expand** | 1.2x | Expansion factor for masks near the poles. Objects near the poles are stretched in equirectangular projection, so masks need to be expanded to compensate |
+| **Cubemap overlap** | 0° | Overlap angle between adjacent cubemap faces. Non-zero values reduce seam artifacts at face boundaries but increase computation |
 
-### Performance
+### Fisheye
+
+Only relevant when processing raw fisheye images (not reframed perspectives).
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| **torch.compile** | Off | JIT-compile the detection model for faster inference. Adds startup time but speeds up batch processing |
-| **Cubemap overlap** | 0° | Overlap angle between adjacent cubemap faces (equirect only). Non-zero values reduce seam artifacts at face boundaries but increase computation |
+| **Fisheye circle mask** | On | Mask the corners and periphery outside the fisheye image circle |
+| **Margin** | 0% | Extra margin to trim from the fisheye circle edge. Increase if the lens has soft edges or chromatic aberration at the periphery |
+
+---
+
+## Batch Queue
+
+Collapsed by default. Process multiple image folders with the same masking settings.
+
+| Button | Purpose |
+|--------|---------|
+| **Add Current** | Add the current Input folder to the queue |
+| **Add Subfolders** | Scan a parent directory and add each image-containing subfolder |
+| **Remove** | Remove the selected queue item |
+| **Clear Done** | Remove all completed items from the queue |
+| **Process Queue** | Run masking on all pending items sequentially |
+
+Each queue item shows its folder name, status (pending / processing / done / error), and progress percentage. The queue persists between sessions.
 
 ---
 
@@ -219,14 +239,13 @@ Only relevant when Geometry is set to `equirect`.
 Input images
       |
       v
-Core Process: detect objects per frame (or SAM3 unified tracking)
+Detection: detect objects per frame (or SAM3 unified tracking)
       |
       v
 Detection & Refinement (each optional):
       |-- Shadow Detection
       |-- SAM Mask Refinement
       |-- Edge Injection
-      |-- VOS Temporal Propagation
       |-- Alpha Matting
       |-- COLMAP Geometric Validation
       |
@@ -235,6 +254,7 @@ Post-Processing:
       |-- Mask dilation
       |-- Fill holes
       |-- Nadir mask / pole expand (equirect)
+      |-- Fisheye circle mask (fisheye)
       |
       v
 Output:
@@ -249,8 +269,8 @@ Output:
 ## Typical workflow: perspective images
 
 ```
-1. Core Process  -> Set input folder and output folder
-2.               -> Model = auto, Geometry = pinhole
+1. Detection     -> Set input folder and output folder
+2.               -> Model = auto, Geometry = pinhole (default)
 3.               -> Check target classes (person, backpack, etc.)
 4.               -> File types = *.jpg *.png
 5.               -> Click Run Masking
@@ -261,7 +281,7 @@ Output:
 ## Typical workflow: 360° equirectangular images
 
 ```
-1. Core Process  -> Set input folder and output folder
+1. Detection     -> Set input folder and output folder
 2.               -> Model = auto, Geometry = equirect
 3.               -> Check target classes
 4. Post-Proc     -> Set Nadir mask to ~5-10% (covers tripod head)
@@ -274,21 +294,18 @@ Output:
 ## Typical workflow: video sequence with temporal consistency
 
 ```
-1. Core Process  -> Set input folder (frames from a video)
+1. Detection     -> Set input folder (frames from a video)
 2.               -> SAM3 mode = Unified Video
 3.               -> Type prompts in Remove field: person, tripod
 4.               -> Click Run Masking
-   OR
-1. Core Process  -> SAM3 mode = Hybrid (default)
-2. Det & Refine  -> Enable VOS Temporal Propagation
-3.               -> Set keyframe interval (5 = every 5th frame uses detector)
-4.               -> Click Run Masking
 ```
+
+Unified Video mode uses SAM3's built-in temporal tracking — objects are detected on the first frame and tracked through all subsequent frames automatically.
 
 ## Typical workflow: maximum quality (slow)
 
 ```
-1. Core Process  -> Model = auto, Geometry = pinhole
+1. Detection     -> Model = auto, Geometry = pinhole
 2. Det & Refine  -> Enable Shadow Detection (hybrid detector)
 3.               -> Enable SAM Mask Refinement (vit_b)
 4.               -> Enable Ensemble Detection (YOLO26 + RF-DETR)
