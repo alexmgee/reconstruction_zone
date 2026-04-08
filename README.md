@@ -56,30 +56,6 @@ SAM 3 weights (~2 GB) download automatically on first run once authenticated. Wh
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 ```
 
-<details>
-<summary><strong>Temporal propagation</strong> (optional — masks propagate across video frames)</summary>
-
-```bash
-# LiVOS (recommended)
-git clone https://github.com/hkchengrex/LiVOS.git
-cd LiVOS && pip install -e .
-
-# Or Cutie (alternative)
-git clone https://github.com/hkchengrex/Cutie.git
-cd Cutie && pip install -e .
-```
-
-</details>
-
-<details>
-<summary><strong>Shadow detection</strong> (optional — extends masks to cover cast shadows)</summary>
-
-```bash
-pip install efficientnet-pytorch
-```
-
-</details>
-
 ## Launch
 
 Double-click `reconstruction_gui/ReconstructionStudio.bat` to start the app (no console window).
@@ -92,7 +68,7 @@ python reconstruction_gui/reconstruction_zone.py
 
 ## Workflow
 
-The pipeline takes raw captures through five stages — each handled by a tab in the GUI:
+The pipeline takes raw captures through four basic stages — each handled by a tab in the GUI:
 
 | Tab | What it does | Guide |
 |-----|-------------|-------|
