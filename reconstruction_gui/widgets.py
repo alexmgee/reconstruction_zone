@@ -82,6 +82,7 @@ class CollapsibleSection(ctk.CTkFrame):
 
         hdr = ctk.CTkFrame(self, fg_color="transparent")
         hdr.pack(fill="x", padx=6, pady=(4, 0))
+        self.header = hdr
 
         self._expanded = expanded
         self._title = title

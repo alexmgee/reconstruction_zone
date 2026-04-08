@@ -43,7 +43,8 @@ class ExtractionSettings:
     motion_enabled: bool = False
     motion_sharpness: float = 50.0
     motion_flow: float = 10.0
-    sharpest_tier: str = "best"
+    sharpness_method: str = "laplacian"   # "none", "laplacian", "tenengrad"
+    scene_detection: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -70,7 +71,13 @@ class ExtractionSettings:
             motion_enabled=data.get("motion_enabled", False),
             motion_sharpness=data.get("motion_sharpness", 50.0),
             motion_flow=data.get("motion_flow", 10.0),
-            sharpest_tier=data.get("sharpest_tier", "best"),
+            sharpness_method=data.get("sharpness_method",
+                                     # Backward compat: old queue items have sharpest_tier
+                                     "laplacian" if data.get("sharpest_tier") else
+                                     ("none" if data.get("mode") == "fixed" else "laplacian")),
+            scene_detection=data.get("scene_detection",
+                                     data.get("sharpest_tier", "") in ("best", "quality")
+                                     if data.get("sharpest_tier") else True),
         )
 
     def summary(self) -> str:
@@ -80,9 +87,11 @@ class ExtractionSettings:
             s = self.start_sec or 0
             e = f"{self.end_sec}" if self.end_sec else "end"
             parts.append(f"{s}-{e}")
-        if self.mode == "sharpest":
-            parts.append(f"keep {self.blur_percentile}%")
-        elif self.blur_filter:
+        if self.sharpness_method != "none":
+            parts.append(self.sharpness_method)
+            if self.scene_detection:
+                parts.append("scene-aware")
+        if self.blur_filter:
             parts.append(f"blur≤{self.blur_percentile}%")
         if self.sky_filter:
             parts.append("sky")

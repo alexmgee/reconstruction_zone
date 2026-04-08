@@ -132,42 +132,27 @@ class SourceAnalysisSummary:
     warning_lines: List[str] = field(default_factory=list)
 
 
-# ── extraction mode display labels ────────────────────────────────────
+# ── extraction sharpness + scene detection ────────────────────────────
 
-_MODE_INFO = {
-    "fixed":    ("Fixed Interval",   "Extract one frame every N seconds"),
-    "scene":    ("Scene Detection",   "Extract at scene cuts + interval baseline"),
-    "sharpest": ("Sharpest Frame",    "Pick the sharpest frame per time window"),
-}
-_LABEL_TO_MODE = {info[0]: key for key, info in _MODE_INFO.items()}
-_MODE_TO_LABEL = {key: info[0] for key, info in _MODE_INFO.items()}
-
-_TIER_INFO = {
-    "fast": ("Fast", "Score each frame with OpenCV Laplacian\nvariance, pick sharpest per window.\nFastest — no ffmpeg analysis pass."),
-    "balanced": ("Balanced", "Analyze blur with ffmpeg blurdetect\n(more accurate for motion blur).\nNo scene-cut detection."),
-    "best": ("Best", "ffmpeg blurdetect + scene detection.\nSplits time windows at scene boundaries\nso both sides get a sharp representative."),
-}
-_TIER_KEY_TO_LABEL = {k: v[0] for k, v in _TIER_INFO.items()}
-_TIER_LABEL_TO_KEY = {v: k for k, v in _TIER_KEY_TO_LABEL.items()}
-
-def _get_mode_value(app) -> str:
-    """Map the display label back to the internal mode value."""
-    return _LABEL_TO_MODE.get(app.extract_mode_var.get(), "fixed")
+def _get_sharpness_method(app) -> str:
+    """Get the selected sharpness scoring method."""
+    var = getattr(app, "extract_scoring_var", None)
+    return var.get().lower() if var else "laplacian"
 
 
-def _get_tier_value(app) -> str:
-    """Map the tier dropdown label back to the internal tier key."""
-    var = getattr(app, "extract_sharpest_tier_var", None)
-    label = var.get() if var is not None else _TIER_KEY_TO_LABEL["best"]
-    return _TIER_LABEL_TO_KEY.get(label, "best")
+def _get_scene_detection(app) -> bool:
+    """Get whether scene detection is enabled."""
+    var = getattr(app, "extract_scene_var", None)
+    return var.get() if var else True
 
 
 def _snapshot_settings(app) -> "ExtractionSettings":
     """Capture current GUI extraction settings into an ExtractionSettings object."""
     start = app.extract_start_entry.get().strip()
     end = app.extract_end_entry.get().strip()
+    sharpness = _get_sharpness_method(app)
     return ExtractionSettings(
-        mode=_get_mode_value(app),
+        mode="sharpest" if sharpness != "none" else "fixed",
         interval=round(app.extract_interval_var.get(), 1),
         quality=app.extract_quality_var.get(),
         format=app.extract_format_var.get(),
@@ -186,16 +171,35 @@ def _snapshot_settings(app) -> "ExtractionSettings":
         motion_enabled=app.extract_motion_enabled_var.get(),
         motion_sharpness=app.extract_sharpness_var.get(),
         motion_flow=app.extract_flow_var.get(),
-        sharpest_tier=_get_tier_value(app),
+        sharpness_method=sharpness,
+        scene_detection=_get_scene_detection(app),
     )
 
-def _on_mode_change(app, label):
-    """Update mode description when combo selection changes."""
-    mode = _LABEL_TO_MODE.get(label, "fixed")
-    desc = _MODE_INFO.get(mode, ("", ""))[1]
-    if hasattr(app, "extract_mode_desc"):
-        app.extract_mode_desc.configure(text=desc)
-    _update_sharpest_tier_ui(app)
+
+def _update_sharpness_ui(app):
+    """Update UI state based on sharpness/scene selection."""
+    sharpness = _get_sharpness_method(app)
+    is_sharpest = sharpness != "none"
+
+    # Grey out scene detection when sharpness = none
+    scene_cb = getattr(app, "extract_scene_cb", None)
+    if scene_cb:
+        if is_sharpest:
+            scene_cb.configure(state="normal")
+        else:
+            scene_cb.configure(state="disabled")
+            app.extract_scene_var.set(False)
+
+    # Grey out blur filter when sharpness is active
+    blur_sec = getattr(app, "_blur_filter_section", None)
+    if blur_sec:
+        for child in blur_sec.content.winfo_children():
+            try:
+                child.configure(state="disabled" if is_sharpest else "normal")
+            except Exception:
+                pass
+
+    _update_estimate(app)
 
 
 # ── time parser ───────────────────────────────────────────────────────
@@ -349,36 +353,7 @@ def _update_source_mode_ui(app):
         if hasattr(app, attr):
             getattr(app, attr).configure(state=queue_state)
 
-    _update_sharpest_tier_ui(app)
-
-
-def _update_sharpest_tier_ui(app):
-    combo = getattr(app, "extract_tier_combo", None)
-    if combo is None:
-        return
-
-    is_sharpest = _get_mode_value(app) == "sharpest"
-
-    # Enable/disable the tier combo
-    combo.configure(state="readonly" if is_sharpest else "disabled")
-
-    # Update tier description label (always packed, toggle text to show/hide)
-    desc = getattr(app, "extract_sharpest_tier_desc", None)
-    if desc:
-        if is_sharpest:
-            tier = _get_tier_value(app)
-            desc.configure(text=_TIER_INFO[tier][1])
-        else:
-            desc.configure(text="")
-
-    # Grey out blur filter in Sharpest Frame mode (sharpest already selects for sharpness)
-    blur_sec = getattr(app, "_blur_filter_section", None)
-    if blur_sec:
-        for child in blur_sec.content.winfo_children():
-            try:
-                child.configure(state="disabled" if is_sharpest else "normal")
-            except Exception:
-                pass
+    _update_sharpness_ui(app)
 
 
 def _update_estimate(app, *_args):
@@ -387,7 +362,7 @@ def _update_estimate(app, *_args):
         return
     info = getattr(app, "current_video_info", None)
     if info is None:
-        app.extract_estimate_label.configure(text="Analyze the selected source to see estimates")
+        app.extract_estimate_label.configure(text="")
         return
 
     # effective duration
@@ -399,23 +374,19 @@ def _update_estimate(app, *_args):
     end_sec = min(end_sec, total_dur)
     eff_dur = max(0.0, end_sec - start_sec)
 
-    mode = _get_mode_value(app)
+    sharpness = _get_sharpness_method(app)
+    scene = _get_scene_detection(app)
     interval = app.extract_interval_var.get()
-    paired_tier = _get_tier_value(app) if getattr(info, "pair_mode", False) else ""
 
     # frame count estimate
-    if mode == "scene" or (
-        mode == "sharpest"
-        and getattr(info, "pair_mode", False)
-        and paired_tier == "best"
-    ):
-        frames = int(eff_dur / interval)  # rough baseline
+    frames = max(1, int(eff_dur / interval))
+    if sharpness != "none" and scene:
+        # Scene detection may produce more frames than fixed interval
         if getattr(info, "pair_mode", False):
             frame_str = f"~{frames:,} frame pairs (varies by scene cuts)"
         else:
             frame_str = f"~{frames:,} frames (varies by scene cuts)"
     else:
-        frames = max(1, int(eff_dur / interval))
         if getattr(info, "pair_mode", False):
             frame_str = f"~{frames:,} frame pairs (~{frames * 2:,} images)"
         else:
@@ -437,14 +408,12 @@ def _update_estimate(app, *_args):
 
     # blur/sky filter caveat
     caveats = []
-    if mode == "sharpest":
-        if getattr(info, "pair_mode", False):
-            tier_label = getattr(app, "extract_sharpest_tier_var", None)
-            tier_text = tier_label.get() if tier_label else "Best"
-            caveats.append(f"sharpest per window ({tier_text.lower()})")
-        else:
-            caveats.append("sharpest per window")
-    if app.extract_blur_enabled_var.get() and mode != "sharpest":
+    if sharpness != "none":
+        parts_s = [sharpness]
+        if scene:
+            parts_s.append("scene-aware")
+        caveats.append(f"sharpest per window ({', '.join(parts_s)})")
+    if app.extract_blur_enabled_var.get() and sharpness == "none":
         pct = app.extract_blur_percentile_var.get()
         kept = max(1, int(frames * pct / 100))
         caveats.append(f"~{kept:,} after blur filter")
@@ -790,6 +759,11 @@ def _build_extract_section(app, parent):
     # -- Analysis (collapsible subsection inside Frame Extraction) --
     analysis_sec = CollapsibleSection(c, "Analysis", expanded=True, core=True)
     analysis_sec.pack(fill="x", pady=(0, 6), padx=2)
+    # Static subtitle in header
+    ctk.CTkLabel(
+        analysis_sec.header, text="analyze the selected source to see estimates",
+        anchor="w", text_color="gray", font=ctk.CTkFont(size=11)
+    ).pack(side="left", padx=(8, 0))
     ac = analysis_sec.content
 
     analysis_row = ctk.CTkFrame(ac, fg_color="transparent")
@@ -807,49 +781,14 @@ def _build_extract_section(app, parent):
     app.analyze_results.pack(side="left", fill="x", expand=True)
     app.analyze_results.insert("1.0", _analysis_placeholder_text(app))
 
-    # -- live estimate (at top of settings, first thing visible) --
+    # -- live estimate (above sliders) --
     app.current_video_info = None
     app.extract_estimate_label = ctk.CTkLabel(
-        c, text="Analyze the selected source to see estimates", anchor="w", justify="left",
+        c, text="", anchor="w", justify="left",
         text_color="gray", font=ctk.CTkFont(size=11))
     app.extract_estimate_label.pack(fill="x", padx=8, pady=(0, 4))
 
     # -- extraction settings --
-    mode_frame = ctk.CTkFrame(c, fg_color="transparent")
-    mode_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(mode_frame, text="Mode:", width=60, anchor="w").pack(side="left")
-    app.extract_mode_var = ctk.StringVar(value=_MODE_TO_LABEL["fixed"])
-    ctk.CTkComboBox(mode_frame, variable=app.extract_mode_var,
-                    values=list(_MODE_TO_LABEL.values()),
-                    state="readonly", width=160,
-                    command=lambda v: _on_mode_change(app, v),
-                    ).pack(side="left", padx=(6, 0))
-
-    # Tier dropdown on same row, initially disabled
-    ctk.CTkLabel(mode_frame, text="Tier:", width=35, anchor="e").pack(side="left", padx=(12, 0))
-    app.extract_sharpest_tier_var = ctk.StringVar(value="Best")
-    app.extract_tier_combo = ctk.CTkComboBox(
-        mode_frame, variable=app.extract_sharpest_tier_var,
-        values=["Fast", "Balanced", "Best"],
-        state="disabled", width=110,
-        command=lambda _v: _update_sharpest_tier_ui(app),
-    )
-    app.extract_tier_combo.pack(side="left", padx=(4, 0))
-
-    # Tier description inline on mode row, right of combo
-    # Fixed height so the row doesn't shift when text appears/disappears
-    app.extract_sharpest_tier_desc = ctk.CTkLabel(
-        mode_frame, text="", text_color="#9ca3af",
-        font=ctk.CTkFont(size=10), anchor="w", justify="left",
-        height=42)
-    app.extract_sharpest_tier_desc.pack(side="left", padx=(8, 0))
-
-    # Mode description (dynamic — changes with mode selection)
-    app.extract_mode_desc = ctk.CTkLabel(
-        c, text=_MODE_INFO["fixed"][1], text_color="#9ca3af",
-        font=ctk.CTkFont(size=10), anchor="w")
-    app.extract_mode_desc.pack(fill="x", padx=68, pady=(0, 0))
-
     int_frame = ctk.CTkFrame(c, fg_color="transparent")
     int_frame.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(int_frame, text="Every:", width=60, anchor="w").pack(side="left")
@@ -880,46 +819,71 @@ def _build_extract_section(app, parent):
                   command=lambda v: app.extract_quality_label.configure(text=f"{int(v)}")
                   ).pack(side="left", fill="x", expand=True, padx=(6, 4))
 
-    # -- bottom row: Start/End | Format | Auto-geotag (grid, 3 equal columns) --
-    bottom_row = ctk.CTkFrame(c, fg_color="transparent")
-    bottom_row.pack(fill="x", pady=3, padx=6)
-    bottom_row.grid_columnconfigure(0, weight=0)
-    bottom_row.grid_columnconfigure(1, weight=1)
-    bottom_row.grid_columnconfigure(2, weight=0)
+    # -- Rows 3–4: grid with left/right halves --
+    # Left half: Start/End, Format+PNG    Right half: Sharpness radios, Scene Detection + Auto-geotag
+    settings_grid = ctk.CTkFrame(c, fg_color="transparent")
+    settings_grid.pack(fill="x", pady=3, padx=6)
+    settings_grid.grid_columnconfigure(0, weight=2, uniform="half")   # left ~40%
+    settings_grid.grid_columnconfigure(1, weight=3, uniform="half")   # right ~60%
 
-    # Start/End (left)
-    left_grp = ctk.CTkFrame(bottom_row, fg_color="transparent")
-    left_grp.grid(row=0, column=0, sticky="w")
-    _start_lbl = ctk.CTkLabel(left_grp, text="Start:")
+    # Row 0, Col 0: Start/End
+    time_grp = ctk.CTkFrame(settings_grid, fg_color="transparent")
+    time_grp.grid(row=0, column=0, sticky="w", pady=(0, 8))
+    _start_lbl = ctk.CTkLabel(time_grp, text="Start:", font=ctk.CTkFont(weight="bold"))
     _start_lbl.pack(side="left")
     Tooltip(_start_lbl, "Trim the extraction window.\n"
             "Accepts seconds (45.5), MM:SS (1:30),\n"
             "or HH:MM:SS (1:02:30).")
-    app.extract_start_entry = ctk.CTkEntry(left_grp, width=55, placeholder_text="0:00")
+    app.extract_start_entry = ctk.CTkEntry(time_grp, width=55, placeholder_text="0:00")
     app.extract_start_entry.pack(side="left", padx=(4, 8))
-    ctk.CTkLabel(left_grp, text="End:").pack(side="left")
-    app.extract_end_entry = ctk.CTkEntry(left_grp, width=55, placeholder_text="end")
+    ctk.CTkLabel(time_grp, text="End:", font=ctk.CTkFont(weight="bold")).pack(side="left")
+    app.extract_end_entry = ctk.CTkEntry(time_grp, width=55, placeholder_text="end")
     app.extract_end_entry.pack(side="left", padx=(4, 0))
 
-    # Format (center)
-    center_grp = ctk.CTkFrame(bottom_row, fg_color="transparent")
-    center_grp.grid(row=0, column=1)
-    ctk.CTkLabel(center_grp, text="Format:").pack(side="left", padx=(0, 4))
+    # Row 0, Col 1: Sharpness radios
+    sharp_grp = ctk.CTkFrame(settings_grid, fg_color="transparent")
+    sharp_grp.grid(row=0, column=1, sticky="w", pady=(0, 8))
+    ctk.CTkLabel(sharp_grp, text="Sharpness:", font=ctk.CTkFont(weight="bold")).pack(side="left")
+    app.extract_scoring_var = ctk.StringVar(value="laplacian")
+    for val, label in [("tenengrad", "Tenengrad"), ("laplacian", "Laplacian"), ("none", "None")]:
+        ctk.CTkRadioButton(
+            sharp_grp, text=label, variable=app.extract_scoring_var,
+            value=val, width=0, radiobutton_width=16, radiobutton_height=16,
+            command=lambda: _update_sharpness_ui(app),
+        ).pack(side="left", padx=(8, 0))
+
+    # Row 1, Col 0: Format
+    fmt_grp = ctk.CTkFrame(settings_grid, fg_color="transparent")
+    fmt_grp.grid(row=1, column=0, sticky="w")
+    ctk.CTkLabel(fmt_grp, text="Format:").pack(side="left", padx=(0, 4))
     app.extract_format_var = ctk.StringVar(value="jpg")
-    ctk.CTkRadioButton(center_grp, text="JPEG", variable=app.extract_format_var,
+    ctk.CTkRadioButton(fmt_grp, text="JPEG", variable=app.extract_format_var,
                        value="jpg", width=0, radiobutton_width=16, radiobutton_height=16
                        ).pack(side="left", padx=(0, 9))
-    ctk.CTkRadioButton(center_grp, text="PNG", variable=app.extract_format_var,
+    ctk.CTkRadioButton(fmt_grp, text="PNG", variable=app.extract_format_var,
                        value="png", width=0, radiobutton_width=16, radiobutton_height=16
                        ).pack(side="left")
 
-    # Auto-geotag (right)
-    right_grp = ctk.CTkFrame(bottom_row, fg_color="transparent")
-    right_grp.grid(row=0, column=2, sticky="e")
+    # Row 1, Col 1: Scene Detection + Auto-geotag
+    bottom_right = ctk.CTkFrame(settings_grid, fg_color="transparent")
+    bottom_right.grid(row=1, column=1, sticky="ew")
+    app.extract_scene_var = ctk.BooleanVar(value=True)
+    app.extract_scene_cb = ctk.CTkCheckBox(
+        bottom_right, text="Scene Detection",
+        variable=app.extract_scene_var, width=0,
+        font=ctk.CTkFont(weight="bold"),
+        command=lambda: _update_sharpness_ui(app),
+    )
+    app.extract_scene_cb.pack(side="left")
+    Tooltip(app.extract_scene_cb,
+            "Split time windows at scene boundaries so both\n"
+            "sides of a cut get a sharp representative frame.\n\n"
+            "Requires a sharpness method (Laplacian or Tenengrad)\n"
+            "since scene detection runs during the scoring loop.")
     app.extract_geotag_enabled_var = ctk.BooleanVar(value=True)
-    _gt = ctk.CTkCheckBox(right_grp, text="Auto-geotag from SRT",
+    _gt = ctk.CTkCheckBox(bottom_right, text="Auto-geotag from SRT",
                            variable=app.extract_geotag_enabled_var, width=0)
-    _gt.pack(side="left")
+    _gt.pack(side="right")
     Tooltip(_gt,
             "After extraction, automatically write GPS coordinates,\n"
             "altitude, focal length, and capture datetime into each\n"
@@ -1193,18 +1157,18 @@ def _build_extract_section(app, parent):
 
     # -- wire up live estimate updates --
     _est = lambda *_a: _update_estimate(app)
-    app.extract_mode_var.trace_add("write", _est)
+    app.extract_scoring_var.trace_add("write", _est)
+    app.extract_scene_var.trace_add("write", _est)
     app.extract_interval_var.trace_add("write", _est)
     app.extract_quality_var.trace_add("write", _est)
     app.extract_format_var.trace_add("write", _est)
-    app.extract_sharpest_tier_var.trace_add("write", _est)
     app.extract_blur_enabled_var.trace_add("write", _est)
     app.extract_blur_percentile_var.trace_add("write", _est)
     app.extract_sky_enabled_var.trace_add("write", _est)
     # Start/end entries don't have trace — use KeyRelease instead
     app.extract_start_entry.bind("<KeyRelease>", _est)
     app.extract_end_entry.bind("<KeyRelease>", _est)
-    _update_sharpest_tier_ui(app)
+    _update_sharpness_ui(app)
 
 
 # ── SRT geotagging helper ─────────────────────────────────────────────
@@ -1549,7 +1513,8 @@ def _extract_single_worker(app, video_path, base_output):
         output_dir = Path(base_output) / video_name
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        mode_str = _get_mode_value(app)
+        sharpness = _get_sharpness_method(app)
+        scene = _get_scene_detection(app)
         interval = app.extract_interval_var.get()
         quality = app.extract_quality_var.get()
         fmt = app.extract_format_var.get()
@@ -1563,11 +1528,10 @@ def _extract_single_worker(app, video_path, base_output):
         app.log(f"\n{'='*50}")
         app.log(f"Processing: {Path(video_path).name}")
         app.log(f"Output: {output_dir}")
-        if mode_str == "sharpest":
-            tier = _get_tier_value(app)
-            mode_display = f"sharpest (tier: {tier})"
+        if sharpness != "none":
+            mode_display = f"sharpest ({sharpness}" + (", scene-aware" if scene else "") + ")"
         else:
-            mode_display = mode_str
+            mode_display = "fixed"
         app.log(f"Mode: {mode_display}, Interval: {interval:.1f}s")
         app.log(f"Format: {fmt} q{quality}"
                 + (f", Time range: {start or '0:00'}\u2013{end or 'end'}" if start or end else ""))
@@ -1591,16 +1555,16 @@ def _extract_single_worker(app, video_path, base_output):
         app.log(f"\nExtraction...")
         t_extract = time.perf_counter()
 
-        if mode_str == "sharpest":
+        if sharpness != "none":
             used_sharpest = True
-            tier = _get_tier_value(app)
             sharp_cfg = SharpestConfig(
                 interval=interval,
                 quality=quality,
                 output_format=fmt,
                 start_sec=start_sec,
                 end_sec=end_sec,
-                tier=tier,
+                scoring_method=sharpness,
+                scene_detection=scene,
             )
             sharp_ext = SharpestExtractor()
             sharp_result = sharp_ext.extract(
@@ -1628,7 +1592,7 @@ def _extract_single_worker(app, video_path, base_output):
         else:
             config = ExtractionConfig(
                 interval=interval,
-                mode=ExtractionMode(mode_str),
+                mode=ExtractionMode.FIXED,
                 quality=quality,
                 output_format=fmt,
             )
@@ -1893,7 +1857,6 @@ def _extract_queue_worker(app):
             try:
                 # Use per-item settings (or fall back to current GUI for legacy items)
                 s = item.settings or _snapshot_settings(app)
-                mode_str = s.mode
                 interval = s.interval
                 quality = s.quality
                 fmt = s.format
@@ -1922,8 +1885,8 @@ def _extract_queue_worker(app):
                 t_extract = time.perf_counter()
                 used_sharpest = False
 
-                if mode_str == "sharpest":
-                    # Sharpest-frame extraction via blurdetect
+                if s.sharpness_method != "none":
+                    # Sharpest-frame extraction
                     used_sharpest = True
                     sharp_cfg = SharpestConfig(
                         interval=interval,
@@ -1931,7 +1894,8 @@ def _extract_queue_worker(app):
                         output_format=fmt,
                         start_sec=start_sec,
                         end_sec=end_sec,
-                        tier=s.sharpest_tier,
+                        scoring_method=s.sharpness_method,
+                        scene_detection=s.scene_detection,
                     )
                     sharp_ext = SharpestExtractor()
                     sharp_result = sharp_ext.extract(
@@ -1957,10 +1921,10 @@ def _extract_queue_worker(app):
                             error=sharp_result.error,
                         )
                 else:
-                    # Standard extraction modes (fixed/scene/adaptive)
+                    # Fixed interval extraction
                     config = ExtractionConfig(
                         interval=interval,
-                        mode=ExtractionMode(mode_str),
+                        mode=ExtractionMode.FIXED,
                         quality=quality,
                         output_format=fmt,
                     )
@@ -2056,7 +2020,7 @@ def _queue_stop(app):
 def _build_metadata_section(app, parent):
     """Advanced section — power-user tools tucked out of sight for beginners."""
     adv_sec = CollapsibleSection(parent, "Advanced",
-                                 subtitle="SRT geotagging, metadata tools",
+                                 subtitle="frame quality filter, SRT geotagging",
                                  expanded=False)
     adv_sec.pack(fill="x", pady=(0, 6), padx=4)
     adv = adv_sec.content
@@ -2116,6 +2080,441 @@ def _build_metadata_section(app, parent):
             "Geotag frames that were extracted without auto-geotag.\n"
             "Requires extraction_manifest.json in the frames folder\n"
             "(created automatically by prep360 during extraction).")
+
+    # -- Frame Quality Filter (collapsible inside Advanced) --
+    _build_quality_filter_section(app, adv)
+
+
+def _build_quality_filter_section(app, parent):
+    """Frame Quality Filter — standalone sharpness/motion filtering for existing frames."""
+    fqf_sec = CollapsibleSection(parent, "Frame Quality Filter",
+                                  subtitle="score and filter existing frames",
+                                  expanded=False)
+    fqf_sec.pack(fill="x", padx=2, pady=(4, 0))
+    fc = fqf_sec.content
+
+    # Cache for analyze results (scores stored between analyze and filter)
+    app._fqf_scores = []  # List[BlurScore] — cached after Analyze
+    app._fqf_folder = None  # str — folder that was analyzed
+
+    # -- Folder picker --
+    folder_row = ctk.CTkFrame(fc, fg_color="transparent")
+    folder_row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(folder_row, text="Folder:", width=50, anchor="w").pack(side="left")
+    app.fqf_folder_entry = ctk.CTkEntry(folder_row,
+                                         placeholder_text="Folder of extracted frames...")
+    app.fqf_folder_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(folder_row, text="...", width=36,
+                  command=lambda: app._browse_folder_for(app.fqf_folder_entry)
+                  ).pack(side="left")
+
+    # -- Sharpness filter (collapsible, checkbox-enabled) --
+    sharp_sec = CollapsibleSection(fc, "Sharpness",
+                                    subtitle="reject blurry frames by Laplacian variance",
+                                    expanded=True)
+    sharp_sec.pack(fill="x", padx=(10, 2), pady=(6, 0))
+    sc = sharp_sec.content
+
+    app.fqf_sharp_var = ctk.BooleanVar(value=True)
+    def _on_sharp_toggle():
+        sharp_sec.set_active(app.fqf_sharp_var.get())
+        _fqf_sync_motion_sharpness(app)
+    ctk.CTkCheckBox(sc, text="Enable sharpness filter",
+                    variable=app.fqf_sharp_var, width=0,
+                    command=_on_sharp_toggle,
+                    ).pack(pady=(2, 4), anchor="w", padx=6)
+    sharp_sec.set_active(True)
+
+    # Mode toggle: Percentile vs Absolute
+    mode_row = ctk.CTkFrame(sc, fg_color="transparent")
+    mode_row.pack(fill="x", pady=2, padx=6)
+    ctk.CTkLabel(mode_row, text="Mode:", width=45, anchor="w").pack(side="left")
+    app.fqf_sharp_mode_var = ctk.StringVar(value="percentile")
+    app._fqf_sharp_mode_btn = ctk.CTkSegmentedButton(
+        mode_row, values=["Percentile", "Absolute"],
+        command=lambda v: _fqf_on_mode_change(app, v),
+    )
+    app._fqf_sharp_mode_btn.set("Percentile")
+    app._fqf_sharp_mode_btn.pack(side="left", padx=(4, 0))
+
+    # Percentile slider
+    pct_row = ctk.CTkFrame(sc, fg_color="transparent")
+    pct_row.pack(fill="x", pady=2, padx=6)
+    app._fqf_pct_label_name = ctk.CTkLabel(pct_row, text="Keep:", width=45, anchor="w")
+    app._fqf_pct_label_name.pack(side="left")
+    Tooltip(app._fqf_pct_label_name, "Keep the sharpest N% of frames.\n"
+            "80% removes the worst 20%.")
+    app.fqf_percentile_var = ctk.DoubleVar(value=80.0)
+    app._fqf_pct_label = ctk.CTkLabel(pct_row, text="80%", width=0, font=("Consolas", 11))
+    app._fqf_pct_label.pack(side="right")
+    app._fqf_pct_slider = ctk.CTkSlider(
+        pct_row, from_=50, to=99, variable=app.fqf_percentile_var,
+        command=lambda v: _fqf_update_pct_label(app, v),
+    )
+    app._fqf_pct_slider.pack(side="left", fill="x", expand=True, padx=(6, 4))
+
+    # Absolute threshold slider
+    abs_row = ctk.CTkFrame(sc, fg_color="transparent")
+    abs_row.pack(fill="x", pady=2, padx=6)
+    app._fqf_abs_label_name = ctk.CTkLabel(abs_row, text="Min:", width=45, anchor="w",
+                                            text_color="#666")
+    app._fqf_abs_label_name.pack(side="left")
+    Tooltip(app._fqf_abs_label_name, "Reject any frame with Laplacian variance below this.\n"
+            "50 is a safe default. Use Analyze to see your score range.")
+    app.fqf_abs_threshold_var = ctk.DoubleVar(value=50.0)
+    app._fqf_abs_label = ctk.CTkLabel(abs_row, text="50", width=0,
+                                       font=("Consolas", 11), text_color="#666")
+    app._fqf_abs_label.pack(side="right")
+    app._fqf_abs_slider = ctk.CTkSlider(
+        abs_row, from_=10, to=500, variable=app.fqf_abs_threshold_var,
+        command=lambda v: _fqf_update_abs_label(app, v),
+        state="disabled",
+    )
+    app._fqf_abs_slider.pack(side="left", fill="x", expand=True, padx=(6, 4))
+
+    # -- Motion filter (collapsible, checkbox-enabled) --
+    mot_sec = CollapsibleSection(fc, "Motion",
+                                  subtitle="thin redundant frames by optical flow",
+                                  expanded=False)
+    mot_sec.pack(fill="x", padx=(10, 2), pady=(4, 0))
+    mc = mot_sec.content
+
+    app.fqf_motion_var = ctk.BooleanVar(value=False)
+    ctk.CTkCheckBox(mc, text="Enable motion filter",
+                    variable=app.fqf_motion_var, width=0,
+                    command=lambda: mot_sec.set_active(app.fqf_motion_var.get()),
+                    ).pack(pady=(2, 4), anchor="w", padx=6)
+    mot_sec.set_active(False)
+
+    sharp_row = ctk.CTkFrame(mc, fg_color="transparent")
+    sharp_row.pack(fill="x", pady=2, padx=6)
+    _ms_lbl = ctk.CTkLabel(sharp_row, text="Sharpness:", width=65, anchor="w")
+    _ms_lbl.pack(side="left")
+    Tooltip(_ms_lbl, "Minimum Laplacian sharpness score.\n"
+            "Auto-synced from Sharpness filter when both are enabled.")
+    app.fqf_motion_sharpness_var = ctk.DoubleVar(value=50.0)
+    app._fqf_mot_sharp_label = ctk.CTkLabel(sharp_row, text="50 (synced)", width=0,
+                                             font=("Consolas", 11))
+    app._fqf_mot_sharp_label.pack(side="right")
+    app._fqf_mot_sharp_slider = ctk.CTkSlider(
+        sharp_row, from_=10, to=200, variable=app.fqf_motion_sharpness_var,
+        command=lambda v: app._fqf_mot_sharp_label.configure(text=f"{int(float(v))}"),
+        state="disabled",
+    )
+    app._fqf_mot_sharp_slider.pack(side="left", fill="x", expand=True, padx=(6, 4))
+
+    flow_row = ctk.CTkFrame(mc, fg_color="transparent")
+    flow_row.pack(fill="x", pady=2, padx=6)
+    _fl_lbl = ctk.CTkLabel(flow_row, text="Target flow:", width=65, anchor="w")
+    _fl_lbl.pack(side="left")
+    Tooltip(_fl_lbl, "Optical flow magnitude between kept frames.\n"
+            "Higher = more camera movement required between selections.\n"
+            "10 is typical for walking-speed capture.")
+    app.fqf_motion_flow_var = ctk.DoubleVar(value=10.0)
+    app._fqf_mot_flow_label = ctk.CTkLabel(flow_row, text="10", width=0,
+                                            font=("Consolas", 11))
+    app._fqf_mot_flow_label.pack(side="right")
+    ctk.CTkSlider(flow_row, from_=2, to=30, variable=app.fqf_motion_flow_var,
+                  command=lambda v: app._fqf_mot_flow_label.configure(text=f"{int(float(v))}")
+                  ).pack(side="left", fill="x", expand=True, padx=(6, 4))
+
+    # -- Safety toggle --
+    safe_row = ctk.CTkFrame(fc, fg_color="transparent")
+    safe_row.pack(fill="x", pady=(8, 2), padx=6)
+    ctk.CTkLabel(safe_row, text="Rejected frames:").pack(side="left", padx=(0, 6))
+    app.fqf_safety_var = ctk.StringVar(value="Move to _rejected/")
+    _safe_btn = ctk.CTkSegmentedButton(
+        safe_row, values=["Move to _rejected/", "Delete permanently"],
+        variable=app.fqf_safety_var,
+    )
+    _safe_btn.set("Move to _rejected/")
+    _safe_btn.pack(side="left")
+
+    # -- Analysis summary (recessed container) --
+    summary_frame = ctk.CTkFrame(fc, fg_color="#2a2a2a", corner_radius=4)
+    summary_frame.pack(fill="x", padx=6, pady=(8, 2))
+    app._fqf_summary_header = ctk.CTkLabel(
+        summary_frame, text="", anchor="w", justify="left",
+        font=ctk.CTkFont(size=11), text_color="#aaa")
+    app._fqf_summary_header.pack(fill="x", padx=10, pady=(6, 0))
+    app._fqf_summary_detail = ctk.CTkLabel(
+        summary_frame, text="", anchor="w", justify="left",
+        font=ctk.CTkFont(size=11), text_color="#e8a84c")
+    app._fqf_summary_detail.pack(fill="x", padx=10, pady=(0, 6))
+
+    # -- Action buttons --
+    btn_row = ctk.CTkFrame(fc, fg_color="transparent")
+    btn_row.pack(fill="x", pady=(6, 4), padx=6)
+    app._fqf_analyze_btn = ctk.CTkButton(
+        btn_row, text="Analyze", command=lambda: _fqf_run_analyze(app),
+        fg_color="#1976D2", hover_color="#1565C0",
+        font=ctk.CTkFont(size=13, weight="bold"), height=36,
+    )
+    app._fqf_analyze_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+    Tooltip(app._fqf_analyze_btn,
+            "Score all frames for sharpness without changing anything.\n"
+            "Results update live as you adjust the threshold slider.")
+
+    app._fqf_filter_btn = ctk.CTkButton(
+        btn_row, text="Filter", command=lambda: _fqf_run_filter(app),
+        fg_color="#2E7D32", hover_color="#1B5E20",
+        font=ctk.CTkFont(size=13, weight="bold"), height=36,
+        state="disabled",
+    )
+    app._fqf_filter_btn.pack(side="left", fill="x", expand=True)
+    Tooltip(app._fqf_filter_btn,
+            "Run the enabled filters and move/delete rejected frames.\n"
+            "Click Analyze first to see what would be filtered.")
+
+
+def _fqf_sync_motion_sharpness(app):
+    """Sync motion filter's sharpness floor from sharpness filter settings."""
+    sharp_enabled = app.fqf_sharp_var.get()
+    slider = getattr(app, "_fqf_mot_sharp_slider", None)
+    label = getattr(app, "_fqf_mot_sharp_label", None)
+    if not slider or not label:
+        return
+
+    if sharp_enabled:
+        # Sync value from sharpness filter
+        mode = app.fqf_sharp_mode_var.get()
+        if mode == "absolute":
+            val = app.fqf_abs_threshold_var.get()
+        else:
+            # For percentile mode, use the computed cutoff if scores exist
+            import numpy as np
+            scores = app._fqf_scores
+            if scores:
+                vals = [s.score for s in scores]
+                val = float(np.percentile(vals, 100 - app.fqf_percentile_var.get()))
+            else:
+                val = 50.0  # fallback before analysis
+        app.fqf_motion_sharpness_var.set(val)
+        slider.configure(state="disabled")
+        label.configure(text=f"{int(val)} (synced)")
+    else:
+        # Independent — let user control it
+        slider.configure(state="normal")
+        val = app.fqf_motion_sharpness_var.get()
+        label.configure(text=f"{int(val)}")
+
+
+def _fqf_on_mode_change(app, value):
+    """Toggle between Percentile and Absolute sharpness mode."""
+    is_pct = value == "Percentile"
+    # Enable/disable sliders
+    app._fqf_pct_slider.configure(state="normal" if is_pct else "disabled")
+    app._fqf_abs_slider.configure(state="normal" if not is_pct else "disabled")
+    # Dim/brighten labels
+    pct_clr = "#c0c0c0" if is_pct else "#666"
+    abs_clr = "#666" if is_pct else "#c0c0c0"
+    app._fqf_pct_label_name.configure(text_color=pct_clr)
+    app._fqf_pct_label.configure(text_color=pct_clr)
+    app._fqf_abs_label_name.configure(text_color=abs_clr)
+    app._fqf_abs_label.configure(text_color=abs_clr)
+    app.fqf_sharp_mode_var.set("percentile" if is_pct else "absolute")
+    # Update summary if scores are cached
+    _fqf_update_summary(app)
+    _fqf_sync_motion_sharpness(app)
+
+
+def _fqf_update_pct_label(app, v):
+    app._fqf_pct_label.configure(text=f"{int(float(v))}%")
+    _fqf_update_summary(app)
+    _fqf_sync_motion_sharpness(app)
+
+
+def _fqf_update_abs_label(app, v):
+    app._fqf_abs_label.configure(text=f"{int(float(v))}")
+    _fqf_update_summary(app)
+    _fqf_sync_motion_sharpness(app)
+
+
+def _fqf_update_summary(app):
+    """Update the inline summary from cached scores and current slider values."""
+    scores = app._fqf_scores
+    if not scores:
+        return
+    import numpy as np
+    vals = [s.score for s in scores]
+    n = len(vals)
+    mn, mx, med = min(vals), max(vals), float(np.median(vals))
+    header = f"{n} frames \u00b7 sharpness {mn:.0f}\u2013{mx:.0f} \u00b7 median {med:.0f}"
+
+    mode = app.fqf_sharp_mode_var.get()
+    if mode == "percentile":
+        pct = app.fqf_percentile_var.get()
+        cutoff = float(np.percentile(vals, 100 - pct))
+        rejected = sum(1 for v in vals if v < cutoff)
+        detail = f"At {pct:.0f}% keep: {rejected} would be rejected ({rejected/n*100:.1f}%)"
+    else:
+        thresh = app.fqf_abs_threshold_var.get()
+        rejected = sum(1 for v in vals if v < thresh)
+        detail = f"At threshold {thresh:.0f}: {rejected} would be rejected ({rejected/n*100:.1f}%)"
+
+    app._fqf_summary_header.configure(text=header)
+    app._fqf_summary_detail.configure(text=detail)
+
+
+def _fqf_run_analyze(app):
+    """Score all frames in the selected folder (background thread)."""
+    folder = app.fqf_folder_entry.get().strip()
+    if not folder:
+        app.log("Frame Quality Filter: select a folder first")
+        return
+    if not Path(folder).is_dir():
+        app.log(f"Frame Quality Filter: not a directory: {folder}")
+        return
+
+    app._fqf_analyze_btn.configure(state="disabled")
+    app._fqf_filter_btn.configure(state="disabled")
+    app._fqf_summary_header.configure(text="Scoring frames...")
+    app._fqf_summary_detail.configure(text="")
+
+    def worker():
+        try:
+            from prep360.core.blur_filter import BlurFilter, BlurFilterConfig
+            bf = BlurFilter(BlurFilterConfig(workers=4))
+            scores = bf.analyze_batch(folder, log=app.log)
+            app._fqf_scores = scores
+            app._fqf_folder = folder
+            app.after(0, lambda: _fqf_analyze_done(app, scores))
+        except Exception as e:
+            app.log(f"Frame Quality Filter error: {e}")
+            app.after(0, lambda: app._fqf_analyze_btn.configure(state="normal"))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _fqf_analyze_done(app, scores):
+    """Called on main thread after analyze completes."""
+    app._fqf_analyze_btn.configure(state="normal")
+    if scores:
+        app._fqf_filter_btn.configure(state="normal")
+        _fqf_update_summary(app)
+        app.log(f"Frame Quality Filter: scored {len(scores)} frames")
+    else:
+        app._fqf_summary_header.configure(text="No images found in folder")
+        app._fqf_summary_detail.configure(text="")
+
+
+def _fqf_run_filter(app):
+    """Run the enabled filters on the analyzed folder (background thread)."""
+    scores = app._fqf_scores
+    folder = app._fqf_folder
+    if not scores or not folder:
+        app.log("Frame Quality Filter: run Analyze first")
+        return
+
+    app._fqf_filter_btn.configure(state="disabled")
+    app._fqf_analyze_btn.configure(state="disabled")
+
+    def worker():
+        try:
+            import numpy as np
+            import shutil
+            folder_path = Path(folder)
+            safety = app.fqf_safety_var.get()
+            use_move = "move" in safety.lower() if isinstance(safety, str) else True
+
+            rejected_dir = folder_path / "_rejected"
+            total_rejected = 0
+            surviving_paths = set()
+
+            # -- Sharpness filter --
+            if app.fqf_sharp_var.get() and scores:
+                vals = [s.score for s in scores]
+                mode = app.fqf_sharp_mode_var.get()
+                if mode == "percentile":
+                    pct = app.fqf_percentile_var.get()
+                    cutoff = float(np.percentile(vals, 100 - pct))
+                    app.log(f"  Sharpness filter: percentile {pct:.0f}%, cutoff={cutoff:.1f}")
+                else:
+                    cutoff = app.fqf_abs_threshold_var.get()
+                    app.log(f"  Sharpness filter: absolute threshold={cutoff:.1f}")
+
+                kept = []
+                rejected = []
+                for s in scores:
+                    if s.score >= cutoff:
+                        kept.append(s)
+                    else:
+                        rejected.append(s)
+
+                if rejected:
+                    if use_move:
+                        rejected_dir.mkdir(parents=True, exist_ok=True)
+                    for s in rejected:
+                        p = folder_path / s.image_name
+                        if p.exists():
+                            if use_move:
+                                shutil.move(str(p), str(rejected_dir / s.image_name))
+                            else:
+                                p.unlink()
+                            total_rejected += 1
+
+                app.log(f"  Sharpness: kept {len(kept)}, rejected {len(rejected)}")
+                surviving_paths = {(folder_path / s.image_name) for s in kept}
+            else:
+                # All frames survive sharpness
+                surviving_paths = {
+                    folder_path / s.image_name for s in scores
+                    if (folder_path / s.image_name).exists()
+                }
+
+            # -- Motion filter --
+            if app.fqf_motion_var.get() and surviving_paths:
+                from prep360.core.motion_selector import MotionSelector
+                selector = MotionSelector(
+                    min_sharpness=app.fqf_motion_sharpness_var.get(),
+                    target_flow=app.fqf_motion_flow_var.get(),
+                )
+                paths_sorted = sorted(str(p) for p in surviving_paths if p.exists())
+                app.log(f"  Motion filter: analyzing {len(paths_sorted)} frames...")
+                sel_result = selector.select_from_paths(paths_sorted, log=app.log)
+                selected_set = {f.path for f in sel_result.selected_frames}
+
+                motion_rejected = 0
+                for p in paths_sorted:
+                    if p not in selected_set:
+                        pp = Path(p)
+                        if pp.exists():
+                            if use_move:
+                                rejected_dir.mkdir(parents=True, exist_ok=True)
+                                shutil.move(str(pp), str(rejected_dir / pp.name))
+                            else:
+                                pp.unlink()
+                            motion_rejected += 1
+                            total_rejected += 1
+
+                app.log(f"  Motion: kept {sel_result.selected_count}, "
+                        f"rejected {motion_rejected}")
+
+            # Summary
+            action = "moved to _rejected/" if use_move else "deleted"
+            app.log(f"Frame Quality Filter complete: {total_rejected} frames {action}")
+
+            # Clear cache since folder contents changed
+            app._fqf_scores = []
+            app._fqf_folder = None
+            app.after(0, lambda: _fqf_filter_done(app, total_rejected))
+
+        except Exception as e:
+            import traceback
+            app.log(f"Frame Quality Filter error: {e}")
+            app.log(traceback.format_exc())
+            app.after(0, lambda: _fqf_filter_done(app, 0))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _fqf_filter_done(app, total_rejected):
+    """Called on main thread after filter completes."""
+    app._fqf_analyze_btn.configure(state="normal")
+    app._fqf_filter_btn.configure(state="disabled")  # Need to re-analyze after filtering
+    done_msg = f"Done \u2014 {total_rejected} frames filtered" if total_rejected > 0 else "Done \u2014 no frames were filtered"
+    app._fqf_summary_header.configure(text=done_msg)
+    app._fqf_summary_detail.configure(text="")
 
 
 def _run_geotag_standalone(app):
@@ -2620,31 +3019,24 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
     t_start = time.perf_counter()
 
     settings = _snapshot_settings(app)
-    mode = settings.mode
-    sharpest_tier = _get_tier_value(app)
-    if mode not in {"fixed", "sharpest"}:
-        app.log(
-            "Error: Split lens paired extraction supports only "
-            "Fixed Interval and Sharpest Frame modes.\n"
-            "Scene Detection produces variable-rate output that "
-            "cannot guarantee synchronized front/back pairs."
-        )
-        return
+    sharpness = settings.sharpness_method
+    scene = settings.scene_detection
+    mode = "sharpest" if sharpness != "none" else "fixed"
 
     clip_root = Path(output_dir)
-    settings_summary = (
-        f"sharpest/{_TIER_KEY_TO_LABEL[sharpest_tier].lower()}, "
-        f"{settings.interval:.1f}s windows, {settings.format}, q{settings.quality}, "
-        + (
-            "quick shared pair scoring, then pair extraction"
-            if sharpest_tier == "fast" else
-            "blurdetect pair analysis, then pair extraction"
-            if sharpest_tier == "balanced" else
-            "blurdetect + scene-aware pair analysis, then pair extraction"
+    if sharpness != "none":
+        method_parts = [sharpness]
+        if scene:
+            method_parts.append("scene-aware")
+        settings_summary = (
+            f"sharpest/{'/'.join(method_parts)}, "
+            f"{settings.interval:.1f}s windows, {settings.format}, q{settings.quality}, "
+            f"{sharpness} pair scoring"
+            + (" + scene detection" if scene else "")
+            + ", then pair extraction"
         )
-        if mode == "sharpest" else
-        f"fixed, {settings.interval:.1f}s, {settings.format}, q{settings.quality}"
-    )
+    else:
+        settings_summary = f"fixed, {settings.interval:.1f}s, {settings.format}, q{settings.quality}"
     app.log("Mode: Use Split Lens Videos")
     app.log(f"Front video: {Path(front_video).name}")
     app.log(f"Back video:  {Path(back_video).name}")
@@ -2676,7 +3068,8 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         str(clip_root),
         PairedSplitConfig(
             mode=mode,
-            sharpest_tier=sharpest_tier,
+            scoring_method=sharpness,
+            scene_detection=scene,
             interval_sec=settings.interval,
             quality=settings.quality,
             output_format=settings.format,

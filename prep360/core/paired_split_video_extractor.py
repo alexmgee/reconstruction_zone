@@ -5,15 +5,13 @@ Pair-aware frame extraction from front/back split lens videos.
 from __future__ import annotations
 
 import json
-import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
 import cv2
 
-from .sharpest_extractor import SharpestConfig, SharpestExtractor
+from .sharpest_extractor import SharpestExtractor
 
 
 @dataclass
@@ -21,7 +19,8 @@ class PairedSplitConfig:
     """Configuration for shared front/back frame extraction."""
 
     mode: str = "sharpest"  # "fixed" or "sharpest"
-    sharpest_tier: str = "best"  # "fast", "balanced", or "best"
+    scoring_method: str = "laplacian"  # "laplacian" or "tenengrad"
+    scene_detection: bool = True
     interval_sec: float = 2.0
     quality: int = 95
     output_format: str = "jpg"
@@ -29,7 +28,6 @@ class PairedSplitConfig:
     end_sec: Optional[float] = None
     scene_threshold: float = 0.3
     scale_width: int = 1920
-    block_size: int = 32
 
 
 @dataclass
@@ -105,7 +103,8 @@ class PairedSplitVideoExtractor:
         return list(range(start_frame, end_frame, window_size))
 
     @staticmethod
-    def _laplacian_sharpness(frame, analysis_width: int = 960) -> float:
+    def _laplacian_sharpness(frame, analysis_width: int = 1920) -> float:
+        """Laplacian variance on a BGR frame, with optional downscale."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         height, width = gray.shape[:2]
         if width > analysis_width > 0:
@@ -118,136 +117,20 @@ class PairedSplitVideoExtractor:
         return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
     @staticmethod
-    def _sharpest_config(config: PairedSplitConfig) -> SharpestConfig:
-        return SharpestConfig(
-            interval=config.interval_sec,
-            scene_threshold=config.scene_threshold,
-            scale_width=config.scale_width,
-            block_size=config.block_size,
-            quality=config.quality,
-            output_format=config.output_format,
-            start_sec=config.start_sec,
-            end_sec=config.end_sec,
-        )
-
-    @staticmethod
-    def _parse_blur_metadata(metadata_path: Path) -> list[tuple[int, float, float]]:
-        """Parse ffmpeg blurdetect metadata into (frame_num, blur, scene_score)."""
-
-        pat_frame = re.compile(r"frame:(\d+)")
-        pat_blur = re.compile(r"lavfi\.blur=([0-9.]+)")
-        pat_scene = re.compile(r"lavfi\.scene_score=([0-9.]+)")
-
-        frame_data: list[tuple[int, float, float]] = []
-        current_frame = -1
-        current_blur = -1.0
-        current_scene = 0.0
-
-        lines = metadata_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-        for line in lines:
-            line = line.strip()
-            m = pat_frame.search(line)
-            if m:
-                if current_frame >= 0 and current_blur >= 0:
-                    frame_data.append((current_frame, current_blur, current_scene))
-                current_frame = int(m.group(1))
-                current_blur = -1.0
-                current_scene = 0.0
-                continue
-
-            m = pat_blur.search(line)
-            if m and current_frame >= 0:
-                try:
-                    current_blur = float(m.group(1))
-                except ValueError:
-                    pass
-                continue
-
-            m = pat_scene.search(line)
-            if m and current_frame >= 0:
-                try:
-                    current_scene = float(m.group(1))
-                except ValueError:
-                    pass
-
-        if current_frame >= 0 and current_blur >= 0:
-            frame_data.append((current_frame, current_blur, current_scene))
-
-        return frame_data
-
-    def _run_blurdetect_analysis(
-        self,
-        video_path: str,
-        out_root: Path,
-        config: PairedSplitConfig,
-        label: str,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        cancel_check: Optional[Callable[[], bool]] = None,
-        progress_offset: int = 0,
-        progress_span: int = 40,
-        duration_sec: float = 0.0,
-    ) -> list[tuple[int, float, float]]:
-        """Run blurdetect + scene scoring and return per-frame metadata."""
-
-        metadata_path = Path(tempfile.mktemp(suffix=f"_{label}_blurdetect.txt", dir=str(out_root)))
-        sharp_cfg = self._sharpest_config(config)
-
-        def _scaled_progress(cur, tot, msg):
-            if not progress_callback:
-                return
-            if tot:
-                baseline_total = 85 if tot == 100 else tot
-                pct = progress_offset + int((cur / baseline_total) * progress_span)
-                progress_callback(
-                    pct,
-                    100,
-                    msg.replace("Analyzing:", f"Analyzing {label}:"),
-                )
-            else:
-                progress_callback(progress_offset, 100, f"Analyzing {label}: {msg}")
-
-        try:
-            ok, err = self._sharpest._run_blurdetect(
-                video_path,
-                metadata_path,
-                sharp_cfg,
-                progress_callback=_scaled_progress if progress_callback else None,
-                duration_sec=duration_sec,
-                cancel_check=cancel_check,
+    def _tenengrad_sharpness(frame, analysis_width: int = 1920) -> float:
+        """Tenengrad focus measure on a BGR frame, with optional downscale."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        height, width = gray.shape[:2]
+        if width > analysis_width > 0:
+            resized_height = max(1, int(round(height * (analysis_width / width))))
+            gray = cv2.resize(
+                gray,
+                (analysis_width, resized_height),
+                interpolation=cv2.INTER_AREA,
             )
-            if not ok:
-                raise RuntimeError(f"{label} blurdetect failed: {err}")
-            frame_data = self._parse_blur_metadata(metadata_path)
-            if not frame_data:
-                raise RuntimeError(f"{label} blurdetect produced no frame metadata")
-            return frame_data
-        finally:
-            metadata_path.unlink(missing_ok=True)
-
-    @staticmethod
-    def _split_pair_chunk_at_scenes(
-        chunk: list[dict[str, float]],
-        threshold: float,
-    ) -> list[list[dict[str, float]]]:
-        if not chunk:
-            return []
-        sub_chunks: list[list[dict[str, float]]] = []
-        current: list[dict[str, float]] = []
-        for entry in chunk:
-            if entry["scene_score"] >= threshold and current:
-                sub_chunks.append(current)
-                current = []
-            current.append(entry)
-        if current:
-            sub_chunks.append(current)
-        return sub_chunks
-
-    @staticmethod
-    def _pair_blur_sort_key(entry: dict[str, float]) -> tuple[float, float, float]:
-        max_blur = max(entry["front_blur"], entry["back_blur"])
-        avg_blur = (entry["front_blur"] + entry["back_blur"]) * 0.5
-        imbalance = abs(entry["front_blur"] - entry["back_blur"])
-        return (max_blur, avg_blur, imbalance)
+        gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        return float((gx * gx + gy * gy).mean())
 
     @staticmethod
     def _pair_sharpness_sort_key(entry: dict[str, float]) -> tuple[float, float, float]:
@@ -256,13 +139,29 @@ class PairedSplitVideoExtractor:
         imbalance = abs(entry["front_score"] - entry["back_score"])
         return (min_sharp, avg_sharp, -imbalance)
 
+    @staticmethod
+    def _split_pair_chunk_at_scenes(
+        chunk: list[dict],
+    ) -> list[list[dict]]:
+        """Split a chunk at frames where scene_change is True."""
+        if not chunk:
+            return []
+        sub_chunks: list[list[dict]] = []
+        current: list[dict] = []
+        for entry in chunk:
+            if entry.get("scene_change") and current:
+                sub_chunks.append(current)
+                current = []
+            current.append(entry)
+        if current:
+            sub_chunks.append(current)
+        return sub_chunks
+
     def _select_from_paired_entries(
         self,
         paired_entries: list[dict[str, float]],
         window_size: int,
-        scene_threshold: float,
         scene_aware: bool,
-        use_blur_scores: bool,
         log: Optional[Callable[[str], None]] = None,
     ) -> tuple[list[int], list[float], list[float]]:
         def _log(msg):
@@ -282,21 +181,15 @@ class PairedSplitVideoExtractor:
                 return
             total_chunks += 1
             sub_chunks = (
-                self._split_pair_chunk_at_scenes(chunk_entries, scene_threshold)
+                self._split_pair_chunk_at_scenes(chunk_entries)
                 if scene_aware else
                 [chunk_entries]
             )
             for sub_chunk in sub_chunks:
-                if use_blur_scores:
-                    winner = min(sub_chunk, key=self._pair_blur_sort_key)
-                    selected_indices.append(int(winner["absolute_frame"]))
-                    front_scores.append(float(winner["front_blur"]))
-                    back_scores.append(float(winner["back_blur"]))
-                else:
-                    winner = max(sub_chunk, key=self._pair_sharpness_sort_key)
-                    selected_indices.append(int(winner["absolute_frame"]))
-                    front_scores.append(float(winner["front_score"]))
-                    back_scores.append(float(winner["back_score"]))
+                winner = max(sub_chunk, key=self._pair_sharpness_sort_key)
+                selected_indices.append(int(winner["absolute_frame"]))
+                front_scores.append(float(winner["front_score"]))
+                back_scores.append(float(winner["back_score"]))
 
         for entry in paired_entries:
             chunk_index = int(entry["relative_frame"]) // window_size
@@ -311,96 +204,6 @@ class PairedSplitVideoExtractor:
         _flush_chunk(current_chunk)
         _log(f"  Selection: {len(selected_indices)} winners from {total_chunks} chunks")
         return selected_indices, front_scores, back_scores
-
-    def _select_fast_frame_indices(
-        self,
-        front_video: str,
-        back_video: str,
-        start_frame: int,
-        end_frame: int,
-        window_size: int,
-        shared_fps: float,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        cancel_check: Optional[Callable[[], bool]] = None,
-        log: Optional[Callable[[str], None]] = None,
-    ) -> tuple[list[int], list[float], list[float]]:
-        def _log(msg):
-            if log:
-                log(msg)
-
-        front_cap = back_cap = None
-        try:
-            front_cap, _, _ = self._open_video(front_video)
-            back_cap, _, _ = self._open_video(back_video)
-            front_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-            back_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-            total_frames = max(1, end_frame - start_frame)
-            total_duration = total_frames / shared_fps if shared_fps > 0 else 0.0
-            paired_entries: list[dict[str, float]] = []
-
-            for offset, frame_idx in enumerate(range(start_frame, end_frame), start=1):
-                if cancel_check and cancel_check():
-                    raise RuntimeError("Cancelled")
-
-                ok_front, front_frame = front_cap.read()
-                ok_back, back_frame = back_cap.read()
-                if not ok_front or not ok_back:
-                    break
-
-                front_score = self._laplacian_sharpness(front_frame)
-                back_score = self._laplacian_sharpness(back_frame)
-                paired_entries.append(
-                    {
-                        "relative_frame": frame_idx - start_frame,
-                        "absolute_frame": frame_idx,
-                        "front_score": front_score,
-                        "back_score": back_score,
-                    }
-                )
-
-                if progress_callback and (
-                    offset == 1
-                    or offset == total_frames
-                    or offset % 30 == 0
-                ):
-                    raw_pct = min(offset / total_frames, 1.0)
-                    elapsed_sec = offset / shared_fps if shared_fps > 0 else 0.0
-                    msg = (
-                        "Analyzing pair timeline: "
-                        f"{self._format_clock(elapsed_sec)} / {self._format_clock(total_duration)} "
-                        f"({int(raw_pct * 100)}%) [Fast]"
-                    )
-                    progress_callback(int(raw_pct * 80), 100, msg)
-
-            if paired_entries:
-                front_vals = [e["front_score"] for e in paired_entries]
-                back_vals = [e["back_score"] for e in paired_entries]
-                imbalances = [abs(e["front_score"] - e["back_score"]) for e in paired_entries]
-                _log(f"  Fast scoring: {len(paired_entries)} frame pairs")
-                _log(f"  Front sharpness: min={min(front_vals):.1f} max={max(front_vals):.1f} mean={sum(front_vals)/len(front_vals):.1f}")
-                _log(f"  Back sharpness:  min={min(back_vals):.1f} max={max(back_vals):.1f} mean={sum(back_vals)/len(back_vals):.1f}")
-                _log(f"  Imbalance: min={min(imbalances):.1f} max={max(imbalances):.1f} mean={sum(imbalances)/len(imbalances):.1f}")
-
-            if not paired_entries:
-                raise RuntimeError("Fast pair analysis found no overlapping frames")
-
-            if progress_callback:
-                progress_callback(82, 100, "Selecting pair winners...")
-
-            return self._select_from_paired_entries(
-                paired_entries,
-                window_size,
-                scene_threshold=0.0,
-                scene_aware=False,
-                use_blur_scores=False,
-                log=_log,
-            )
-        finally:
-            if front_cap is not None:
-                front_cap.release()
-            if back_cap is not None:
-                back_cap.release()
 
     def _select_sharpest_frame_indices(
         self,
@@ -418,93 +221,122 @@ class PairedSplitVideoExtractor:
         duration_sec: float = 0.0,
         _log: Optional[Callable[[str], None]] = None,
     ) -> tuple[list[int], list[float], list[float]]:
-        """Analyze both videos with blurdetect and pick the best shared frame indices."""
+        """Score both videos with Tenengrad and pick the best shared frame indices.
+
+        Optionally detects scene changes via histogram correlation (Best tier).
+        """
 
         if _log is None:
             _log = lambda _msg: None
 
-        tier = (config.sharpest_tier or "best").lower()
-        if tier not in {"fast", "balanced", "best"}:
-            raise RuntimeError(f"Unsupported sharpest tier: {config.sharpest_tier}")
+        scene_aware = config.scene_detection
+        score_fn = self._tenengrad_sharpness if config.scoring_method == "tenengrad" else self._laplacian_sharpness
 
-        if tier == "fast":
-            return self._select_fast_frame_indices(
-                front_video,
-                back_video,
-                start_frame,
-                end_frame,
+        front_cap = back_cap = None
+        try:
+            front_cap, _, _ = self._open_video(front_video)
+            back_cap, _, _ = self._open_video(back_video)
+            front_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            back_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+            total_to_score = max(1, end_frame - start_frame)
+            total_duration = total_to_score / shared_fps if shared_fps > 0 else 0.0
+            paired_entries: list[dict] = []
+            prev_front_small = None
+            prev_back_small = None
+
+            method_label = config.scoring_method.title()
+
+            for offset, frame_idx in enumerate(range(start_frame, end_frame), start=1):
+                if cancel_check and cancel_check():
+                    raise RuntimeError("Cancelled")
+
+                ok_front, front_frame = front_cap.read()
+                ok_back, back_frame = back_cap.read()
+                if not ok_front or not ok_back:
+                    break
+
+                front_score = score_fn(front_frame, config.scale_width)
+                back_score = score_fn(back_frame, config.scale_width)
+
+                # Scene detection via histogram correlation on downscaled frames
+                is_scene = False
+                if scene_aware:
+                    # Downscale for histogram (reuse analysis width)
+                    h, w = front_frame.shape[:2]
+                    if config.scale_width and w > config.scale_width:
+                        scale = config.scale_width / w
+                        new_h = int(h * scale)
+                        front_small = cv2.resize(front_frame, (config.scale_width, new_h))
+                        back_small = cv2.resize(back_frame, (config.scale_width, new_h))
+                    else:
+                        front_small = front_frame
+                        back_small = back_frame
+
+                    if prev_front_small is not None:
+                        front_scene = SharpestExtractor._detect_scene_change(
+                            prev_front_small, front_small, config.scene_threshold)
+                        back_scene = SharpestExtractor._detect_scene_change(
+                            prev_back_small, back_small, config.scene_threshold)
+                        is_scene = front_scene or back_scene
+
+                    prev_front_small = front_small
+                    prev_back_small = back_small
+
+                paired_entries.append(
+                    {
+                        "relative_frame": frame_idx - start_frame,
+                        "absolute_frame": frame_idx,
+                        "front_score": front_score,
+                        "back_score": back_score,
+                        "scene_change": is_scene,
+                    }
+                )
+
+                if progress_callback and (
+                    offset == 1
+                    or offset == total_to_score
+                    or offset % 30 == 0
+                ):
+                    raw_pct = min(offset / total_to_score, 1.0)
+                    elapsed_sec = offset / shared_fps if shared_fps > 0 else 0.0
+                    msg = (
+                        "Analyzing pair timeline: "
+                        f"{self._format_clock(elapsed_sec)} / {self._format_clock(total_duration)} "
+                        f"({int(raw_pct * 100)}%) [{method_label}]"
+                    )
+                    progress_callback(int(raw_pct * 80), 100, msg)
+
+            if paired_entries:
+                front_vals = [e["front_score"] for e in paired_entries]
+                back_vals = [e["back_score"] for e in paired_entries]
+                imbalances = [abs(e["front_score"] - e["back_score"]) for e in paired_entries]
+                _log(f"  {config.scoring_method.title()} scoring: {len(paired_entries)} frame pairs")
+                _log(f"  Front sharpness: min={min(front_vals):.1f} max={max(front_vals):.1f} mean={sum(front_vals)/len(front_vals):.1f}")
+                _log(f"  Back sharpness:  min={min(back_vals):.1f} max={max(back_vals):.1f} mean={sum(back_vals)/len(back_vals):.1f}")
+                _log(f"  Imbalance: min={min(imbalances):.1f} max={max(imbalances):.1f} mean={sum(imbalances)/len(imbalances):.1f}")
+                if scene_aware:
+                    scene_count = sum(1 for e in paired_entries if e["scene_change"])
+                    _log(f"  Scene changes detected: {scene_count}")
+
+            if not paired_entries:
+                raise RuntimeError("Pair analysis found no overlapping frames")
+
+            if progress_callback:
+                label = "Selecting scene-aware pair winners..." if scene_aware else "Selecting pair winners..."
+                progress_callback(82, 100, label)
+
+            return self._select_from_paired_entries(
+                paired_entries,
                 window_size,
-                shared_fps,
-                progress_callback=progress_callback,
-                cancel_check=cancel_check,
+                scene_aware=scene_aware,
                 log=_log,
             )
-
-        front_data = self._run_blurdetect_analysis(
-            front_video,
-            out_root,
-            config,
-            "front",
-            progress_callback=progress_callback,
-            cancel_check=cancel_check,
-            progress_offset=0,
-            progress_span=40,
-            duration_sec=duration_sec,
-        )
-        back_data = self._run_blurdetect_analysis(
-            back_video,
-            out_root,
-            config,
-            "back",
-            progress_callback=progress_callback,
-            cancel_check=cancel_check,
-            progress_offset=40,
-            progress_span=40,
-            duration_sec=duration_sec,
-        )
-
-        back_map = {frame_num: (blur, scene) for frame_num, blur, scene in back_data}
-        paired_entries: list[dict[str, float]] = []
-        for frame_num, front_blur, front_scene in front_data:
-            if frame_num not in back_map:
-                continue
-            back_blur, back_scene = back_map[frame_num]
-            absolute_frame = start_frame + frame_num
-            if absolute_frame >= end_frame:
-                continue
-            paired_entries.append(
-                {
-                    "relative_frame": frame_num,
-                    "absolute_frame": absolute_frame,
-                    "front_blur": front_blur,
-                    "back_blur": back_blur,
-                    "front_scene": front_scene,
-                    "back_scene": back_scene,
-                    "scene_score": max(front_scene, back_scene),
-                }
-            )
-
-        if paired_entries:
-            _log(f"  Paired blurdetect: {len(paired_entries)} matched frames")
-            if tier == "best":
-                scene_count = sum(1 for e in paired_entries if e.get("scene_score", 0) >= config.scene_threshold)
-                _log(f"  Scene changes: {scene_count}")
-
-        if not paired_entries:
-            raise RuntimeError("No overlapping front/back blur metadata was found")
-
-        if progress_callback:
-            label = "Selecting scene-aware pair winners..." if tier == "best" else "Selecting pair winners..."
-            progress_callback(82, 100, label)
-
-        return self._select_from_paired_entries(
-            paired_entries,
-            window_size,
-            scene_threshold=config.scene_threshold,
-            scene_aware=(tier == "best"),
-            use_blur_scores=True,
-            log=_log,
-        )
+        finally:
+            if front_cap is not None:
+                front_cap.release()
+            if back_cap is not None:
+                back_cap.release()
 
     def _extract_selected_pairs(
         self,
@@ -599,13 +431,9 @@ class PairedSplitVideoExtractor:
                 output_dir=output_dir,
                 error=f"Unsupported paired extraction mode: {config.mode}",
             )
-        sharpest_tier = (config.sharpest_tier or "best").lower()
-        if sharpest_tier not in {"fast", "balanced", "best"}:
-            return PairedSplitResult(
-                success=False,
-                output_dir=output_dir,
-                error=f"Unsupported sharpest tier: {config.sharpest_tier}",
-            )
+
+        scoring_method = config.scoring_method
+        scene_detection = config.scene_detection
 
         out_root = Path(output_dir)
         front_out = out_root / "front" / "frames"
@@ -712,24 +540,26 @@ class PairedSplitVideoExtractor:
                 cancel_check=cancel_check,
             )
 
+            # Build manifest
+            selection_method = (
+                f"{scoring_method}_scene_aware_pair"
+                if mode == "sharpest" and scene_detection else
+                f"{scoring_method}_pair"
+                if mode == "sharpest" else
+                "fixed_interval_pair"
+            )
+
             manifest = {
                 "schema_version": 1,
                 "dataset_type": "paired_split_frames",
                 "front_video": str(Path(front_video).resolve()),
                 "back_video": str(Path(back_video).resolve()),
                 "mode": mode,
-                "sharpest_tier": sharpest_tier if mode == "sharpest" else None,
+                "scoring_method": scoring_method if mode == "sharpest" else None,
+                "scene_detection": scene_detection if mode == "sharpest" else None,
                 "interval_sec": config.interval_sec,
                 "fps": shared_fps,
-                "selection_method": (
-                    "two_pass_laplacian_pair"
-                    if mode == "sharpest" and sharpest_tier == "fast" else
-                    "two_pass_blurdetect_pair"
-                    if mode == "sharpest" and sharpest_tier == "balanced" else
-                    "two_pass_blurdetect_scene_aware_pair"
-                    if mode == "sharpest" else
-                    "fixed_interval_pair"
-                ),
+                "selection_method": selection_method,
                 "pairs": [],
             }
             front_metric_values = (
@@ -758,13 +588,6 @@ class PairedSplitVideoExtractor:
                 ),
                 start=1,
             ):
-                score_kind = (
-                    "laplacian_sharpness"
-                    if mode == "sharpest" and sharpest_tier == "fast" else
-                    "blurdetect_blur"
-                    if mode == "sharpest" else
-                    None
-                )
                 manifest["pairs"].append(
                     {
                         "pair_index": index,
@@ -774,31 +597,12 @@ class PairedSplitVideoExtractor:
                         "time_sec": round(time_sec, 3),
                         "source_front_frame": src_front,
                         "source_back_frame": src_back,
-                        "score_kind": score_kind,
+                        "score_kind": f"{scoring_method}_sharpness" if mode == "sharpest" else None,
                         "front_score": front_metric,
                         "back_score": back_metric,
                         "pair_score": (
                             min(front_metric, back_metric)
-                            if mode == "sharpest" and sharpest_tier == "fast"
-                            and front_metric is not None and back_metric is not None else
-                            max(front_metric, back_metric)
                             if mode == "sharpest"
-                            and front_metric is not None and back_metric is not None else
-                            None
-                        ),
-                        "front_blur": (
-                            front_metric
-                            if mode == "sharpest" and sharpest_tier in {"balanced", "best"} else
-                            None
-                        ),
-                        "back_blur": (
-                            back_metric
-                            if mode == "sharpest" and sharpest_tier in {"balanced", "best"} else
-                            None
-                        ),
-                        "pair_blur": (
-                            max(front_metric, back_metric)
-                            if mode == "sharpest" and sharpest_tier in {"balanced", "best"}
                             and front_metric is not None and back_metric is not None else
                             None
                         ),
