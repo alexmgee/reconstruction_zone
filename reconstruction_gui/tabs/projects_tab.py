@@ -49,15 +49,11 @@ def build_projects_tab(app, parent):
     # Created here but only shown when Projects tab is active.
     app._proj_detail_panel = ctk.CTkFrame(app._main_frame)
 
-    # Empty-state label (centered placeholder)
-    app._proj_empty_label = ctk.CTkLabel(
-        app._proj_detail_panel, text="Select a project or click + New",
-        font=ctk.CTkFont(size=13), text_color="#9ca3af",
-    )
-    app._proj_empty_label.place(relx=0.5, rely=0.5, anchor="center")
-
     # Scrollable detail area -- created once, content cleared/rebuilt on selection
     app._proj_detail_scroll = ctk.CTkScrollableFrame(app._proj_detail_panel)
+
+    # Default state: show the scanner UI
+    _show_scan_panel(app)
 
     # Initial list population (deferred so UI is built first)
     parent.after(100, lambda: _refresh_project_list(app))
@@ -80,10 +76,6 @@ def _build_list_panel(app, parent):
         header, text="+ New", width=60,
         command=lambda: _on_new_project(app),
     ).pack(side="right")
-    ctk.CTkButton(
-        header, text="Scan", width=60,
-        command=lambda: _on_scan(app),
-    ).pack(side="right", padx=(0, 4))
 
     # -- Search bar --
     app._proj_search_var = tk.StringVar()
@@ -205,8 +197,7 @@ def _show_project_detail(app, project_id: str):
     app._selected_project_id = project_id
     _refresh_project_list(app)
 
-    # Hide placeholder, clear old content, show scroll frame
-    app._proj_empty_label.place_forget()
+    # Clear old content, show scroll frame
     scroll = app._proj_detail_scroll
     for w in scroll.winfo_children():
         w.destroy()
@@ -767,11 +758,10 @@ def _build_tags_section(app, parent, proj):
 
 
 def _reset_detail_panel(app):
-    """Return detail panel to empty state."""
-    app._proj_detail_scroll.pack_forget()
-    for w in app._proj_detail_scroll.winfo_children():
-        w.destroy()
-    app._proj_empty_label.place(relx=0.5, rely=0.5, anchor="center")
+    """Return detail panel to default state (scan UI)."""
+    app._selected_project_id = None
+    _refresh_project_list(app)
+    _show_scan_panel(app)
 
 
 # ── Export logic ──
@@ -930,9 +920,9 @@ def _browse_export_dir(entry):
 #  Drive scanner (inline in details pane)
 # ======================================================================
 
-def _on_scan(app):
-    """Show scan UI inline in the details pane."""
-    app._proj_empty_label.place_forget()
+def _show_scan_panel(app):
+    """Show the scan UI in the details pane. This is the default state
+    when no project is selected."""
     scroll = app._proj_detail_scroll
     for w in scroll.winfo_children():
         w.destroy()
@@ -942,14 +932,18 @@ def _on_scan(app):
     ctk.CTkLabel(
         scroll, text="Scan for Projects",
         font=ctk.CTkFont(size=16, weight="bold"), anchor="w",
-    ).pack(fill="x", padx=4, pady=(4, 8))
+    ).pack(fill="x", padx=4, pady=(4, 2))
+    ctk.CTkLabel(
+        scroll,
+        text="Point at a directory to find Metashape, RealityScan, and COLMAP projects.",
+        font=("Consolas", 10), text_color="#9ca3af", anchor="w",
+    ).pack(fill="x", padx=4, pady=(0, 8))
 
-    # Path entry
+    # Path entry + browse
     path_row = ctk.CTkFrame(scroll, fg_color="transparent")
     path_row.pack(fill="x", padx=4, pady=(0, 4))
-    ctk.CTkLabel(path_row, text="Root:", width=40, anchor="w").pack(side="left")
-    scan_entry = ctk.CTkEntry(path_row)
-    scan_entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
+    scan_entry = ctk.CTkEntry(path_row, placeholder_text="Directory to scan...")
+    scan_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
     scan_entry.insert(0, "D:\\")
 
     def _browse():
@@ -960,17 +954,23 @@ def _on_scan(app):
 
     ctk.CTkButton(path_row, text="...", width=36, command=_browse).pack(side="right")
 
+    # Scan button — right-aligned, prominent
+    btn_row = ctk.CTkFrame(scroll, fg_color="transparent")
+    btn_row.pack(fill="x", padx=4, pady=(4, 8))
+
+    scan_btn = ctk.CTkButton(
+        btn_row, text="Scan", width=100, height=34,
+        font=ctk.CTkFont(size=13, weight="bold"),
+    )
+    scan_btn.pack(side="right")
+
     # Status
     status_label = ctk.CTkLabel(scroll, text="", text_color="#9ca3af")
-    status_label.pack(fill="x", padx=4, pady=(2, 4))
+    status_label.pack(fill="x", padx=4, pady=(0, 4))
 
     # Results container
     results_frame = ctk.CTkFrame(scroll, fg_color="transparent")
     results_frame.pack(fill="both", expand=True, padx=4)
-
-    # Scan button + back button
-    btn_row = ctk.CTkFrame(scroll, fg_color="transparent")
-    btn_row.pack(fill="x", padx=4, pady=(4, 4))
 
     def _run_scan():
         from project_scanner import scan_directory
@@ -994,27 +994,21 @@ def _on_scan(app):
             scroll.after(0, lambda: _display_results(results))
 
         def _display_results(results):
-            status_label.configure(text=f"Found {len(results)} project clusters")
+            results.sort(key=lambda r: (len(r.tool_files) == 0, r.suggested_title().lower()))
+
+            MAX_DISPLAY = 50
+            showing = results[:MAX_DISPLAY]
+            total = len(results)
+
+            if total > MAX_DISPLAY:
+                status_label.configure(
+                    text=f"Found {total} projects (showing first {MAX_DISPLAY} — narrow your root path for fewer results)")
+            else:
+                status_label.configure(text=f"Found {total} projects")
             scan_btn.configure(state="normal")
 
-            for res in results:
-                row = ctk.CTkFrame(results_frame)
-                row.pack(fill="x", pady=(0, 4))
-
-                title = res.suggested_title()
-                has_psx = "PSX" if res.psx_path else "no PSX"
-                img_info = f"{len(res.image_dirs)} img dirs"
-                mask_info = f"{len(res.mask_dirs)} mask dirs"
-
-                ctk.CTkLabel(
-                    row, text=f"{title}  ({has_psx}, {img_info}, {mask_info})",
-                    font=("Consolas", 11), anchor="w",
-                ).pack(side="left", fill="x", expand=True, padx=4, pady=4)
-
-                ctk.CTkButton(
-                    row, text="Import", width=70,
-                    command=lambda r=res: _import_scan_result(app, r),
-                ).pack(side="right", padx=4, pady=4)
+            for res in showing:
+                _build_scan_result_row(app, results_frame, res)
 
             if not results:
                 ctk.CTkLabel(
@@ -1024,13 +1018,96 @@ def _on_scan(app):
 
         threading.Thread(target=_thread, daemon=True).start()
 
-    scan_btn = ctk.CTkButton(btn_row, text="Scan", width=80, command=_run_scan)
-    scan_btn.pack(side="left", padx=(0, 4))
+    scan_btn.configure(command=_run_scan)
+
+
+def _build_scan_result_row(app, parent, res):
+    """Build an expandable scan result row with summary header and detail breakdown."""
+    container = ctk.CTkFrame(parent)
+    container.pack(fill="x", pady=(0, 4))
+
+    # ── Header row: title summary + Import button ──
+    header = ctk.CTkFrame(container, fg_color="transparent")
+    header.pack(fill="x")
+
+    title = res.suggested_title()
+    tools = res.tool_summary()
+    img_count = len(res.image_dirs)
+    mask_count = len(res.mask_dirs)
+    vid_count = len(res.video_files)
+
+    summary_parts = [tools]
+    if img_count:
+        summary_parts.append(f"{img_count} img dir{'s' if img_count != 1 else ''}")
+    if mask_count:
+        summary_parts.append(f"{mask_count} mask dir{'s' if mask_count != 1 else ''}")
+    if vid_count:
+        summary_parts.append(f"{vid_count} video{'s' if vid_count != 1 else ''}")
+
+    title_lbl = ctk.CTkLabel(
+        header, text=f"▶ {title}",
+        font=ctk.CTkFont(size=12, weight="bold"), anchor="w", cursor="hand2",
+    )
+    title_lbl.pack(side="left", padx=4, pady=(4, 0))
+
+    summary_lbl = ctk.CTkLabel(
+        header, text=f"({', '.join(summary_parts)})",
+        font=("Consolas", 10), text_color="#9ca3af", anchor="w",
+    )
+    summary_lbl.pack(side="left", padx=(0, 8), pady=(4, 0))
+
+    # Show root path below the title so clusters are distinguishable
+    path_lbl = ctk.CTkLabel(
+        container, text=res.root_dir,
+        font=("Consolas", 9), text_color="#6b7280", anchor="w", cursor="hand2",
+    )
+    path_lbl.pack(fill="x", padx=(24, 4), pady=(0, 4))
 
     ctk.CTkButton(
-        btn_row, text="Back", width=60, fg_color="#6b7280",
-        command=lambda: _back_to_detail(app),
-    ).pack(side="left")
+        header, text="Import", width=70,
+        command=lambda r=res: _import_scan_result(app, r),
+    ).pack(side="right", padx=4, pady=4)
+
+    # ── Detail panel (hidden by default) ──
+    detail = ctk.CTkFrame(container, fg_color="transparent")
+    detail_visible = [False]
+
+    def _toggle(event=None):
+        if detail_visible[0]:
+            detail.pack_forget()
+            title_lbl.configure(text=f"▶ {title}")
+            detail_visible[0] = False
+        else:
+            detail.pack(fill="x", padx=(16, 4), pady=(0, 4))
+            title_lbl.configure(text=f"▼ {title}")
+            detail_visible[0] = True
+
+    for w in (title_lbl, summary_lbl, path_lbl):
+        w.bind("<Button-1>", _toggle)
+
+    # Build detail content (created once, shown/hidden by toggle)
+    def _detail_line(text, color="#9ca3af"):
+        ctk.CTkLabel(
+            detail, text=text, font=("Consolas", 10),
+            text_color=color, anchor="w",
+        ).pack(fill="x", pady=0)
+
+    for tool_name, tool_path in res.tool_files.items():
+        exists = Path(tool_path).exists()
+        color = "#22c55e" if exists else "#ef4444"
+        indicator = "+" if exists else "X"
+        _detail_line(f"{indicator} {tool_name}: {tool_path}", color)
+
+    for img_dir in res.image_dirs:
+        count = res.image_counts.get(img_dir, 0)
+        count_str = f" ({count} files)" if count else ""
+        _detail_line(f"  images: {img_dir}{count_str}")
+
+    for msk_dir in res.mask_dirs:
+        _detail_line(f"  masks:  {msk_dir}")
+
+    for vid in res.video_files:
+        _detail_line(f"  video:  {Path(vid).name}")
 
 
 def _import_scan_result(app, scan_result):
@@ -1040,9 +1117,9 @@ def _import_scan_result(app, scan_result):
     title = scan_result.suggested_title()
     proj = app._project_store.create_project(title)
 
-    if scan_result.psx_path:
+    for tool_name, tool_path in scan_result.tool_files.items():
         proj.sources.append(ProjectSource(
-            label="Metashape", path=scan_result.psx_path, media_type="other",
+            label=tool_name, path=tool_path, media_type="other",
         ))
 
     for img_dir in scan_result.image_dirs:
@@ -1068,9 +1145,3 @@ def _import_scan_result(app, scan_result):
     _show_project_detail(app, proj.id)
 
 
-def _back_to_detail(app):
-    """Return from scan view to project detail or empty state."""
-    if app._selected_project_id:
-        _show_project_detail(app, app._selected_project_id)
-    else:
-        _reset_detail_panel(app)

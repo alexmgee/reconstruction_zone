@@ -219,9 +219,16 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Main 2-column grid: left tabview + right shared preview
         self._main_frame = ctk.CTkFrame(self, fg_color="transparent")
         self._main_frame.pack(fill="both", expand=True, padx=8, pady=(8, 4))
-        self._main_frame.grid_columnconfigure(0, weight=35, uniform="split")
-        self._main_frame.grid_columnconfigure(1, weight=65, uniform="split")
+        # Left column: fixed width with a minimum floor.
+        # Right column: absorbs all width changes.
+        # Derive minimum from screen width so it scales across monitor sizes.
+        screen_w = self.winfo_screenwidth()  # logical pixels (DPI-adjusted)
+        self._LEFT_COL_MIN = max(400, min(600, int(screen_w * 0.28)))
+        self._main_frame.grid_columnconfigure(0, weight=0, minsize=self._LEFT_COL_MIN)
+        self._main_frame.grid_columnconfigure(1, weight=1)
         self._main_frame.grid_rowconfigure(0, weight=1)
+        self._col_layout_initialized = False
+        self._main_frame.bind("<Configure>", self._on_main_frame_configure)
 
         # Left: tabview (settings tabs only)
         self.tabs = ctk.CTkTabview(self._main_frame, command=self._on_tab_change)
@@ -247,6 +254,27 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Projects is the default tab — swap preview for detail panel
         self.after(50, self._on_tab_change)
 
+    # ── responsive column layout ──
+
+    def _on_main_frame_configure(self, event=None):
+        """Responsive two-column layout.
+
+        On first render, captures 35% of the frame width as the left
+        column's fixed size (floored at _LEFT_COL_MIN).  The right
+        column absorbs all subsequent width changes.
+        """
+        if self._col_layout_initialized:
+            return  # nothing to do after init
+
+        frame_w = event.width if event else self._main_frame.winfo_width()
+        if frame_w < 400:
+            return  # not rendered yet
+
+        left_w = max(int(frame_w * 0.35), self._LEFT_COL_MIN)
+        self._main_frame.grid_columnconfigure(0, weight=0, minsize=left_w)
+        self._main_frame.grid_columnconfigure(1, weight=1)
+        self._col_layout_initialized = True
+
     # ── slider helper ──
 
     def _slider(self, parent, label, from_, to, default, steps,
@@ -264,7 +292,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         # Scrollable settings (preview panel is shared, outside tabs)
         scroll = ctk.CTkScrollableFrame(tab)
-        scroll.pack(fill="both", expand=True, padx=5, pady=5)
+        scroll.pack(fill="both", expand=True)
 
         # ==============================================================
         #  DETECTION
@@ -948,7 +976,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         else:
             if hasattr(self, '_preview_show_btn'):
                 self._preview_show_btn.destroy()
-            self._main_frame.grid_columnconfigure(1, weight=65, uniform="split")
+            self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
             self._preview_panel.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
             self._preview_visible = True
         self._prefs["preview_visible"] = self._preview_visible
@@ -980,12 +1008,12 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self._proj_detail_panel.grid(
                 row=0, column=1, sticky="nsew", padx=0, pady=0,
             )
-            self._main_frame.grid_columnconfigure(1, weight=65, uniform="split")
+            self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
         else:
             if hasattr(self, '_proj_detail_panel'):
                 self._proj_detail_panel.grid_forget()
             if self._preview_visible:
-                self._main_frame.grid_columnconfigure(1, weight=65, uniform="split")
+                self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
                 self._preview_panel.grid(
                     row=0, column=1, sticky="nsew", padx=0, pady=0,
                 )
