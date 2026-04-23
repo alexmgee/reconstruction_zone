@@ -84,6 +84,11 @@ class DualFisheyeCalibration:
     The front and back lenses are independent optical systems pointing
     in opposite directions. back_rotation_deg=180 means the back lens
     is rotated 180° in yaw relative to the front.
+
+    Rig geometry (added 2026-04-21, from empirical calibration):
+        baseline_m:  Distance between optical centers in meters.
+        baseline_axis: Unit vector from front to back optical center
+                       in the front camera's coordinate frame.
     """
     front: FisheyeCalibration
     back: FisheyeCalibration
@@ -91,6 +96,8 @@ class DualFisheyeCalibration:
     back_rotation_deg: float = 180.0
     camera_model: str = "DJI Osmo 360"
     calibration_date: str = ""
+    baseline_m: float = 0.0
+    baseline_axis: Tuple[float, float, float] = (0.0, 0.0, 1.0)
 
     def save(self, path: str):
         """Save dual calibration to single JSON file."""
@@ -99,6 +106,8 @@ class DualFisheyeCalibration:
             "calibration_date": self.calibration_date or datetime.date.today().isoformat(),
             "front_rotation_deg": self.front_rotation_deg,
             "back_rotation_deg": self.back_rotation_deg,
+            "baseline_m": self.baseline_m,
+            "baseline_axis": list(self.baseline_axis),
             "front": {
                 "camera_matrix": self.front.camera_matrix.tolist(),
                 "dist_coeffs": self.front.dist_coeffs.flatten().tolist(),
@@ -143,6 +152,8 @@ class DualFisheyeCalibration:
             back_rotation_deg=data.get("back_rotation_deg", 180.0),
             camera_model=data.get("camera_model", "Unknown"),
             calibration_date=data.get("calibration_date", ""),
+            baseline_m=data.get("baseline_m", 0.0),
+            baseline_axis=tuple(data.get("baseline_axis", (0.0, 0.0, 1.0))),
         )
 
     def summary(self) -> str:
@@ -150,6 +161,7 @@ class DualFisheyeCalibration:
             f"Camera: {self.camera_model}",
             f"Date: {self.calibration_date}",
             f"Rotations: front={self.front_rotation_deg}° back={self.back_rotation_deg}°",
+            f"Baseline: {self.baseline_m * 1000:.1f} mm along {self.baseline_axis}",
             "",
             "--- Front Lens ---",
             self.front.summary(),

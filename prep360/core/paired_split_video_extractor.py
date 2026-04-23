@@ -494,7 +494,7 @@ class PairedSplitVideoExtractor:
                     progress_callback=progress_callback,
                     cancel_check=cancel_check,
                     duration_sec=effective_duration,
-                    log=_log,
+                    _log=_log,
                 )
 
             if not selected_frame_indices:

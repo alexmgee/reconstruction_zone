@@ -17,7 +17,13 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
-from widgets import CollapsibleSection, Tooltip
+from widgets import (
+    CollapsibleSection, Tooltip,
+    COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
+    COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
+    COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
+    LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+)
 
 # ── prep360 core (optional) ────────────────────────────────────────────
 
@@ -82,24 +88,26 @@ def _build_gap_analysis_section(app, parent):
     # Source path picker
     src_frame = ctk.CTkFrame(c, fg_color="transparent")
     src_frame.pack(fill="x", pady=3, padx=6)
-    app.gaps_source_label = ctk.CTkLabel(src_frame, text="COLMAP:", width=65, anchor="w")
+    app.gaps_source_label = ctk.CTkLabel(src_frame, text="COLMAP:", width=LABEL_FIELD_WIDTH, anchor="e")
     app.gaps_source_label.pack(side="left")
     app.gaps_source_entry = ctk.CTkEntry(src_frame,
                                           placeholder_text="Select folder or file...")
     app.gaps_source_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
     Tooltip(app.gaps_source_entry, "Path to your camera position data.\nBrowse to select the appropriate file or folder.")
-    ctk.CTkButton(src_frame, text="...", width=36,
+    ctk.CTkButton(src_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: _browse_source(app)).pack(side="left")
 
     # Source images (optional)
     img_frame = ctk.CTkFrame(c, fg_color="transparent")
     img_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(img_frame, text="Images:", width=65, anchor="w").pack(side="left")
+    ctk.CTkLabel(img_frame, text="Images:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.gaps_images_entry = ctk.CTkEntry(img_frame,
                                           placeholder_text="Source images (optional)...")
     app.gaps_images_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
     Tooltip(app.gaps_images_entry, "Optional: path to source images for visual gap reports.\nUsed to show which images are near detected gaps.")
-    ctk.CTkButton(img_frame, text="...", width=36,
+    ctk.CTkButton(img_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: app._browse_folder_for(app.gaps_images_entry)
                   ).pack(side="left")
 
@@ -110,7 +118,7 @@ def _build_gap_analysis_section(app, parent):
 
     eps_frame = ctk.CTkFrame(pc, fg_color="transparent")
     eps_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(eps_frame, text="Cluster eps:", width=90, anchor="w").pack(side="left")
+    ctk.CTkLabel(eps_frame, text="Cluster eps:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.gaps_eps_var = ctk.DoubleVar(value=5.0)
     app.gaps_eps_label = ctk.CTkLabel(eps_frame, text="5.0", width=35,
                                       font=("Consolas", 11))
@@ -122,7 +130,7 @@ def _build_gap_analysis_section(app, parent):
 
     sparse_frame = ctk.CTkFrame(pc, fg_color="transparent")
     sparse_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(sparse_frame, text="Sparse thresh:", width=90, anchor="w").pack(side="left")
+    ctk.CTkLabel(sparse_frame, text="Sparse thresh:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.gaps_sparse_var = ctk.DoubleVar(value=2.0)
     app.gaps_sparse_label = ctk.CTkLabel(sparse_frame, text="2.0x", width=35,
                                          font=("Consolas", 11))
@@ -135,8 +143,8 @@ def _build_gap_analysis_section(app, parent):
     # Analyze button
     app.gaps_analyze_btn = ctk.CTkButton(
         c, text="Analyze Gaps", command=lambda: _run_gap_analysis(app),
-        fg_color="#1565C0", hover_color="#0D47A1",
-        font=ctk.CTkFont(size=13, weight="bold"), height=38,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12), height=38,
     )
     app.gaps_analyze_btn.pack(fill="x", pady=(6, 4), padx=6)
     Tooltip(app.gaps_analyze_btn, "Run gap analysis on loaded camera positions.\nIdentifies spatial gaps in your reconstruction coverage.")
@@ -294,7 +302,7 @@ def _build_bridge_section(app, parent):
     # Buttons
     app.gaps_bridge_btn = ctk.CTkButton(
         c, text="Extract Bridges", command=lambda: _run_bridge(app),
-        fg_color="#2E7D32", hover_color="#1B5E20",
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
         font=ctk.CTkFont(size=13, weight="bold"), height=38,
     )
     app.gaps_bridge_btn.pack(fill="x", pady=(6, 4), padx=6)
@@ -302,7 +310,8 @@ def _build_bridge_section(app, parent):
 
     app.gaps_stop_btn = ctk.CTkButton(
         c, text="Stop", command=app.stop_operation,
-        fg_color="#C62828", hover_color="#8B0000", height=32,
+        fg_color=COLOR_ACTION_DANGER, hover_color=COLOR_ACTION_DANGER_H,
+        font=ctk.CTkFont(size=12), height=32,
     )
     # hidden initially
 
@@ -327,6 +336,9 @@ def _refresh_bridge_info(app):
 def _run_bridge(app):
     if not HAS_PREP360:
         app.log("Error: prep360 core not available")
+        return
+    if app.is_running:
+        app.log("A process is already running.")
         return
     if app._last_gap_report is None:
         app.log("Error: Run gap analysis first")

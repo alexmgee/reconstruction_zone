@@ -49,15 +49,19 @@ class ScanResult:
     def psx_path(self) -> Optional[str]:
         return self.tool_files.get("Metashape")
 
+    # Directory names that are never useful as project titles
+    _USELESS_DIR_NAMES = {"sparse", "0", "1", "2", "3", "colmap", "output", "out"}
+
     def suggested_title(self) -> str:
         """Derive a project title from the project root or tool file.
 
         Prefers the root directory name (the common ancestor of the cluster).
         Falls back to a tool project file stem (.psx, .rsproj) if it differs
-        from the root dir name — COLMAP sparse dirs (named '0') are never
-        used as titles.
+        from the root dir name. Walks up past useless directory names like
+        'sparse', '0', 'colmap' to find a meaningful ancestor.
         """
-        root_name = Path(self.root_dir).name if self.root_dir else ""
+        root_p = Path(self.root_dir) if self.root_dir else None
+        root_name = root_p.name if root_p else ""
 
         # Check if any tool file has a meaningful name different from the dir
         for tool, path in self.tool_files.items():
@@ -66,6 +70,14 @@ class ScanResult:
             stem = Path(path).stem
             if stem and stem != root_name:
                 return stem
+
+        # Walk up past useless directory names
+        if root_p:
+            p = root_p
+            while p.name.lower() in self._USELESS_DIR_NAMES and p.parent != p:
+                p = p.parent
+            if p.name:
+                return p.name
 
         return root_name or "Untitled"
 

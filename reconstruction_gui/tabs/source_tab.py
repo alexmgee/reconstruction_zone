@@ -20,7 +20,18 @@ from typing import List, Optional
 
 import customtkinter as ctk
 
-from widgets import Section, CollapsibleSection, Tooltip
+from tabs.alignment_tab import send_extract_output_to_alignment
+from widgets import (
+    Section, CollapsibleSection, Tooltip,
+    COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
+    COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
+    COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
+    COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
+    COLOR_TEXT_MUTED, COLOR_TEXT_DIM, COLOR_TEXT_DISABLED,
+    FONT_TEXT_SUBTITLE, FONT_TEXT_MONO_VALUE, FONT_TEXT_STATUS,
+    FONT_TEXT_BTN_PRIMARY, FONT_TEXT_BTN_SECONDARY,
+    LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+)
 
 # ── prep360 core (optional) ────────────────────────────────────────────
 
@@ -459,22 +470,32 @@ def _build_video_selection_section(app, parent):
     # Input video row
     vid_frame = ctk.CTkFrame(c, fg_color="transparent")
     vid_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(vid_frame, text="Input:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(vid_frame, text="Input:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.analyze_video_entry = ctk.CTkEntry(vid_frame, placeholder_text="Video file...")
     app.analyze_video_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(vid_frame, text="...", width=36,
+    ctk.CTkButton(vid_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: app._browse_video_for(app.analyze_video_entry)
                   ).pack(side="left")
 
     # Output folder row
     out_frame = ctk.CTkFrame(c, fg_color="transparent")
     out_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(out_frame, text="Output:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(out_frame, text="Output:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.extract_output_entry = ctk.CTkEntry(out_frame, placeholder_text="Frames output folder...")
     app.extract_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(out_frame, text="...", width=36,
+    ctk.CTkButton(out_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: app._browse_folder_for(app.extract_output_entry)
-                  ).pack(side="left")
+                  ).pack(side="left", padx=(0, 4))
+    ctk.CTkButton(
+        out_frame,
+        text="To Align",
+        width=110,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12),
+        command=lambda: send_extract_output_to_alignment(app),
+    ).pack(side="left")
 
     split_sec = CollapsibleSection(
         c,
@@ -502,7 +523,7 @@ def _build_video_selection_section(app, parent):
 
     split_front_frame = ctk.CTkFrame(sc, fg_color="transparent")
     split_front_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(split_front_frame, text="Front:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(split_front_frame, text="Front:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.split_front_video_entry = ctk.CTkEntry(
         split_front_frame,
         placeholder_text="Graded front lens video (.mp4 / .mov)...",
@@ -512,14 +533,15 @@ def _build_video_selection_section(app, parent):
     split_front_btn = ctk.CTkButton(
         split_front_frame,
         text="...",
-        width=36,
+        width=BROWSE_BUTTON_WIDTH,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
         command=lambda: _browse_split_video(app, app.split_front_video_entry, "Select Front Lens Video"),
     )
     split_front_btn.pack(side="left")
 
     split_back_frame = ctk.CTkFrame(sc, fg_color="transparent")
     split_back_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(split_back_frame, text="Back:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(split_back_frame, text="Back:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.split_back_video_entry = ctk.CTkEntry(
         split_back_frame,
         placeholder_text="Graded back lens video (.mp4 / .mov)...",
@@ -529,14 +551,15 @@ def _build_video_selection_section(app, parent):
     split_back_btn = ctk.CTkButton(
         split_back_frame,
         text="...",
-        width=36,
+        width=BROWSE_BUTTON_WIDTH,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
         command=lambda: _browse_split_video(app, app.split_back_video_entry, "Select Back Lens Video"),
     )
     split_back_btn.pack(side="left")
 
     split_out_frame = ctk.CTkFrame(sc, fg_color="transparent")
     split_out_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(split_out_frame, text="Clip Folder:", width=80, anchor="w").pack(side="left")
+    ctk.CTkLabel(split_out_frame, text="Output:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.split_output_entry = ctk.CTkEntry(
         split_out_frame,
         placeholder_text="Per-clip working folder (auto-filled from the filename stem)...",
@@ -545,7 +568,8 @@ def _build_video_selection_section(app, parent):
     split_out_btn = ctk.CTkButton(
         split_out_frame,
         text="...",
-        width=36,
+        width=BROWSE_BUTTON_WIDTH,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
         command=lambda: app._browse_folder_for(app.split_output_entry),
     )
     split_out_btn.pack(side="left")
@@ -762,7 +786,7 @@ def _build_extract_section(app, parent):
     # Static subtitle in header
     ctk.CTkLabel(
         analysis_sec.header, text="analyze the selected source to see estimates",
-        anchor="w", text_color="gray", font=ctk.CTkFont(size=11)
+        anchor="w", text_color=COLOR_TEXT_DIM, font=FONT_TEXT_STATUS
     ).pack(side="left", padx=(8, 0))
     ac = analysis_sec.content
 
@@ -771,8 +795,8 @@ def _build_extract_section(app, parent):
 
     app.analyze_run_btn = ctk.CTkButton(
         analysis_row, text="Analyze", command=lambda: _run_analyze(app),
-        fg_color="#1976D2", hover_color="#1565C0",
-        font=ctk.CTkFont(size=12, weight="bold"), width=90,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12), width=90,
     )
     app.analyze_run_btn.pack(side="left", padx=(0, 6), anchor="n")
 
@@ -785,20 +809,20 @@ def _build_extract_section(app, parent):
     app.current_video_info = None
     app.extract_estimate_label = ctk.CTkLabel(
         c, text="", anchor="w", justify="left",
-        text_color="gray", font=ctk.CTkFont(size=11))
+        text_color=COLOR_TEXT_DIM, font=FONT_TEXT_STATUS)
     app.extract_estimate_label.pack(fill="x", padx=8, pady=(0, 4))
 
     # -- extraction settings --
     int_frame = ctk.CTkFrame(c, fg_color="transparent")
     int_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(int_frame, text="Every:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(int_frame, text="Every:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.extract_interval_var = ctk.DoubleVar(value=2.0)
     def _fmt_interval(v):
         v = float(v)
         fps = 1.0 / v if v > 0 else 0
         app.extract_interval_label.configure(text=f"{v:.1f}s ({fps:.1f} fps)")
     app.extract_interval_label = ctk.CTkLabel(int_frame, text="2.0s (0.5 fps)", width=0,
-                                              font=("Consolas", 11))
+                                              font=FONT_TEXT_MONO_VALUE)
     app.extract_interval_label.pack(side="right")
     _int_slider = ctk.CTkSlider(int_frame, from_=0.1, to=10,
                                 variable=app.extract_interval_var,
@@ -810,10 +834,10 @@ def _build_extract_section(app, parent):
 
     qual_frame = ctk.CTkFrame(c, fg_color="transparent")
     qual_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(qual_frame, text="Quality:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(qual_frame, text="Quality:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.extract_quality_var = ctk.IntVar(value=95)
     app.extract_quality_label = ctk.CTkLabel(qual_frame, text="95", width=40,
-                                             font=("Consolas", 11))
+                                             font=FONT_TEXT_MONO_VALUE)
     app.extract_quality_label.pack(side="right")
     ctk.CTkSlider(qual_frame, from_=70, to=100, variable=app.extract_quality_var,
                   command=lambda v: app.extract_quality_label.configure(text=f"{int(v)}")
@@ -871,7 +895,6 @@ def _build_extract_section(app, parent):
     app.extract_scene_cb = ctk.CTkCheckBox(
         bottom_right, text="Scene Detection",
         variable=app.extract_scene_var, width=0,
-        font=ctk.CTkFont(weight="bold"),
         command=lambda: _update_sharpness_ui(app),
     )
     app.extract_scene_cb.pack(side="left")
@@ -920,10 +943,11 @@ def _build_extract_section(app, parent):
 
     lut_file_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
     lut_file_frame.pack(fill="x", pady=3)
-    ctk.CTkLabel(lut_file_frame, text="LUT:", width=50, anchor="w").pack(side="left")
+    ctk.CTkLabel(lut_file_frame, text="LUT:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.extract_lut_file_entry = ctk.CTkEntry(lut_file_frame, placeholder_text=".cube file...")
     app.extract_lut_file_entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
-    ctk.CTkButton(lut_file_frame, text="...", width=34,
+    ctk.CTkButton(lut_file_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: app._browse_file_for(
                       app.extract_lut_file_entry, "Select LUT File",
                       [("CUBE Files", "*.cube"), ("All Files", "*.*")]
@@ -931,10 +955,10 @@ def _build_extract_section(app, parent):
 
     lut_str_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
     lut_str_frame.pack(fill="x", pady=3)
-    ctk.CTkLabel(lut_str_frame, text="Strength:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(lut_str_frame, text="Strength:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.extract_lut_strength_var = ctk.DoubleVar(value=1.0)
     app.extract_lut_strength_label = ctk.CTkLabel(lut_str_frame, text="100%", width=45,
-                                                  font=("Consolas", 11))
+                                                  font=FONT_TEXT_MONO_VALUE)
     app.extract_lut_strength_label.pack(side="right")
     ctk.CTkSlider(lut_str_frame, from_=0, to=1, variable=app.extract_lut_strength_var,
                   command=lambda v: app.extract_lut_strength_label.configure(
@@ -943,12 +967,12 @@ def _build_extract_section(app, parent):
 
     shadow_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
     shadow_frame.pack(fill="x", pady=3)
-    _shd_lbl = ctk.CTkLabel(shadow_frame, text="Shadows:", width=60, anchor="w")
+    _shd_lbl = ctk.CTkLabel(shadow_frame, text="Shadows:", width=LABEL_FIELD_WIDTH, anchor="e")
     _shd_lbl.pack(side="left")
     Tooltip(_shd_lbl, "Lift or crush shadow detail. 50 = neutral.")
     app.extract_shadow_var = ctk.IntVar(value=50)
     app.extract_shadow_label = ctk.CTkLabel(shadow_frame, text="50", width=35,
-                                            font=("Consolas", 11))
+                                            font=FONT_TEXT_MONO_VALUE)
     app.extract_shadow_label.pack(side="right")
     ctk.CTkSlider(shadow_frame, from_=0, to=100, variable=app.extract_shadow_var,
                   command=lambda v: app.extract_shadow_label.configure(text=f"{int(v)}")
@@ -956,12 +980,12 @@ def _build_extract_section(app, parent):
 
     hl_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
     hl_frame.pack(fill="x", pady=3)
-    _hl_lbl = ctk.CTkLabel(hl_frame, text="Highlights:", width=60, anchor="w")
+    _hl_lbl = ctk.CTkLabel(hl_frame, text="Highlights:", width=LABEL_FIELD_WIDTH, anchor="e")
     _hl_lbl.pack(side="left")
     Tooltip(_hl_lbl, "Lift or crush highlight detail. 50 = neutral.")
     app.extract_highlight_var = ctk.IntVar(value=50)
     app.extract_highlight_label = ctk.CTkLabel(hl_frame, text="50", width=35,
-                                               font=("Consolas", 11))
+                                               font=FONT_TEXT_MONO_VALUE)
     app.extract_highlight_label.pack(side="right")
     ctk.CTkSlider(hl_frame, from_=0, to=100, variable=app.extract_highlight_var,
                   command=lambda v: app.extract_highlight_label.configure(text=f"{int(v)}")
@@ -982,10 +1006,10 @@ def _build_extract_section(app, parent):
 
     sky_br = ctk.CTkFrame(sky_sec.content, fg_color="transparent")
     sky_br.pack(fill="x", pady=3)
-    ctk.CTkLabel(sky_br, text="Brightness:", width=70, anchor="w").pack(side="left")
+    ctk.CTkLabel(sky_br, text="Brightness:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.extract_sky_brightness_var = ctk.DoubleVar(value=0.85)
     app.extract_sky_brightness_label = ctk.CTkLabel(sky_br, text="0.85", width=40,
-                                                    font=("Consolas", 11))
+                                                    font=FONT_TEXT_MONO_VALUE)
     app.extract_sky_brightness_label.pack(side="right")
     ctk.CTkSlider(sky_br, from_=0.5, to=1.0, variable=app.extract_sky_brightness_var,
                   command=lambda v: app.extract_sky_brightness_label.configure(
@@ -994,10 +1018,10 @@ def _build_extract_section(app, parent):
 
     sky_kp = ctk.CTkFrame(sky_sec.content, fg_color="transparent")
     sky_kp.pack(fill="x", pady=3)
-    ctk.CTkLabel(sky_kp, text="Keypoints:", width=70, anchor="w").pack(side="left")
+    ctk.CTkLabel(sky_kp, text="Keypoints:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.extract_sky_keypoints_var = ctk.IntVar(value=50)
     app.extract_sky_keypoints_label = ctk.CTkLabel(sky_kp, text="50", width=40,
-                                                   font=("Consolas", 11))
+                                                   font=FONT_TEXT_MONO_VALUE)
     app.extract_sky_keypoints_label.pack(side="right")
     ctk.CTkSlider(sky_kp, from_=10, to=200, variable=app.extract_sky_keypoints_var,
                   command=lambda v: app.extract_sky_keypoints_label.configure(text=f"{int(v)}")
@@ -1019,14 +1043,14 @@ def _build_extract_section(app, parent):
 
     blur_pct = ctk.CTkFrame(blur_sec.content, fg_color="transparent")
     blur_pct.pack(fill="x", pady=3)
-    _keep_lbl = ctk.CTkLabel(blur_pct, text="Keep:", width=70, anchor="w")
+    _keep_lbl = ctk.CTkLabel(blur_pct, text="Keep:", width=LABEL_FIELD_WIDTH, anchor="e")
     _keep_lbl.pack(side="left")
     Tooltip(_keep_lbl, "Percent of sharpest frames to keep.\n"
             "80% removes the worst 20%.\n"
             "Skipped when using Sharpest Frame mode.")
     app.extract_blur_percentile_var = ctk.IntVar(value=80)
     app.extract_blur_pct_label = ctk.CTkLabel(blur_pct, text="80%", width=40,
-                                              font=("Consolas", 11))
+                                              font=FONT_TEXT_MONO_VALUE)
     app.extract_blur_pct_label.pack(side="right")
     ctk.CTkSlider(blur_pct, from_=50, to=100, variable=app.extract_blur_percentile_var,
                   command=lambda v: app.extract_blur_pct_label.configure(text=f"{int(v)}%")
@@ -1052,10 +1076,10 @@ def _build_extract_section(app, parent):
 
     sharp_frame = ctk.CTkFrame(mc, fg_color="transparent")
     sharp_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(sharp_frame, text="Sharpness:", width=70, anchor="w").pack(side="left")
+    ctk.CTkLabel(sharp_frame, text="Sharpness:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.extract_sharpness_var = ctk.DoubleVar(value=50.0)
     app.extract_sharpness_label = ctk.CTkLabel(sharp_frame, text="50", width=35,
-                                               font=("Consolas", 11))
+                                               font=FONT_TEXT_MONO_VALUE)
     app.extract_sharpness_label.pack(side="right")
     ctk.CTkSlider(sharp_frame, from_=10, to=200,
                   variable=app.extract_sharpness_var,
@@ -1069,7 +1093,7 @@ def _build_extract_section(app, parent):
 
     flow_frame = ctk.CTkFrame(mc, fg_color="transparent")
     flow_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(flow_frame, text="Target Flow:", width=70, anchor="w").pack(side="left")
+    ctk.CTkLabel(flow_frame, text="Target Flow:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.extract_flow_var = ctk.DoubleVar(value=10.0)
     app.extract_flow_label = ctk.CTkLabel(flow_frame, text="10", width=35,
                                           font=("Consolas", 11))
@@ -1090,27 +1114,29 @@ def _build_extract_section(app, parent):
 
     app.extract_run_btn = ctk.CTkButton(
         action_row, text="Extract", command=lambda: _run_extract_single(app),
-        fg_color="#2E7D32", hover_color="#1B5E20",
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
         font=ctk.CTkFont(size=13, weight="bold"), height=38,
     )
     app.extract_run_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
     app.extract_queue_add_btn = ctk.CTkButton(
         action_row, text="Add to Queue", command=lambda: _add_current_to_queue(app),
-        fg_color="#1565C0", hover_color="#0D47A1", height=38, width=110,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12), height=38, width=110,
     )
     app.extract_queue_add_btn.pack(side="left", padx=(0, 4))
 
     app.queue_run_btn = ctk.CTkButton(
         action_row, text="Process Queue", command=lambda: _run_extract_queue(app),
-        fg_color="#2E7D32", hover_color="#1B5E20",
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
         font=ctk.CTkFont(size=13, weight="bold"), height=38, width=120,
     )
     app.queue_run_btn.pack(side="left", padx=(0, 4))
 
     app.extract_stop_btn = ctk.CTkButton(
         action_row, text="Stop", command=lambda: _queue_stop(app),
-        fg_color="#C62828", hover_color="#8B0000", height=38, width=70,
+        fg_color=COLOR_ACTION_DANGER, hover_color=COLOR_ACTION_DANGER_H,
+        font=ctk.CTkFont(size=12), height=38, width=70,
     )
     app.extract_stop_btn.pack(side="left")
     app.extract_stop_btn.pack_forget()
@@ -1129,18 +1155,26 @@ def _build_extract_section(app, parent):
     qctrl.pack(fill="x", pady=(2, 4))
     app.queue_add_videos_btn = ctk.CTkButton(
         qctrl, text="Add Videos", width=80,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12),
         command=lambda: _queue_add_videos(app))
     app.queue_add_videos_btn.pack(side="left", padx=(0, 4))
     app.queue_add_folder_btn = ctk.CTkButton(
         qctrl, text="Add Folder", width=80,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12),
         command=lambda: _queue_add_folder(app))
     app.queue_add_folder_btn.pack(side="left", padx=(0, 4))
     app.queue_remove_btn = ctk.CTkButton(
-        qctrl, text="Remove", width=60, fg_color="#666",
+        qctrl, text="Remove", width=60,
+        fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+        font=ctk.CTkFont(size=12),
         command=lambda: _queue_remove_selected(app))
     app.queue_remove_btn.pack(side="left", padx=(0, 4))
     app.queue_clear_done_btn = ctk.CTkButton(
-        qctrl, text="Clear Done", width=72, fg_color="#666",
+        qctrl, text="Clear Done", width=72,
+        fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+        font=ctk.CTkFont(size=12),
         command=lambda: _queue_clear_done(app))
     app.queue_clear_done_btn.pack(side="left")
 
@@ -1243,6 +1277,9 @@ def _run_extract_single(app):
     if not HAS_PREP360:
         app.log("Error: prep360 core not available")
         return
+    if app.is_running:
+        app.log("A process is already running.")
+        return
 
     split_mode = _split_source_enabled(app)
     if split_mode:
@@ -1275,6 +1312,7 @@ def _run_extract_single(app):
             return
 
     app.cancel_flag.clear()
+    app.is_running = True
     app.extract_run_btn.configure(state="disabled")
     app.extract_stop_btn.pack(side="left")
     if hasattr(app, "extract_progress_bar"):
@@ -1651,6 +1689,7 @@ def _extract_single_worker(app, video_path, base_output):
 
 
 def _extract_single_done(app):
+    app.is_running = False
     app.extract_run_btn.configure(state="normal")
     app.extract_stop_btn.pack_forget()
     if hasattr(app, "extract_progress_bar"):
@@ -1812,6 +1851,9 @@ def _run_extract_queue(app):
     if not HAS_PREP360:
         app.log("Error: prep360 core not available")
         return
+    if app.is_running:
+        app.log("A process is already running.")
+        return
     if _split_source_enabled(app):
         app.log("Batch queue is not available for split lens video pairs. Use Extract instead.")
         return
@@ -1824,6 +1866,7 @@ def _run_extract_queue(app):
         return
 
     app.extract_queue_processing = True
+    app.is_running = True
     app.cancel_flag.clear()
     app.extract_run_btn.configure(state="disabled")
     app.queue_run_btn.configure(state="disabled")
@@ -1997,6 +2040,7 @@ def _extract_queue_worker(app):
 
 
 def _queue_done(app):
+    app.is_running = False
     app.extract_run_btn.configure(state="normal")
     if hasattr(app, "queue_run_btn"):
         app.queue_run_btn.configure(state="normal")
@@ -2035,11 +2079,12 @@ def _build_metadata_section(app, parent):
     # -- SRT file override (used by auto-geotag when set) --
     srt_frame = ctk.CTkFrame(c, fg_color="transparent")
     srt_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(srt_frame, text="SRT:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(srt_frame, text="SRT:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.metadata_srt_entry = ctk.CTkEntry(srt_frame,
                                           placeholder_text="Auto-detect from video name...")
     app.metadata_srt_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(srt_frame, text="...", width=36,
+    ctk.CTkButton(srt_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: app._browse_file_for(
                       app.metadata_srt_entry, "Select SRT File",
                       [("SRT Files", "*.srt *.SRT"), ("All Files", "*.*")]
@@ -2060,10 +2105,11 @@ def _build_metadata_section(app, parent):
     # Frames folder
     fr_frame = ctk.CTkFrame(c, fg_color="transparent")
     fr_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(fr_frame, text="Frames:", width=60, anchor="w").pack(side="left")
+    ctk.CTkLabel(fr_frame, text="Frames:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.geotag_frames_entry = ctk.CTkEntry(fr_frame, placeholder_text="Folder with extracted frames...")
     app.geotag_frames_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(fr_frame, text="...", width=36,
+    ctk.CTkButton(fr_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: app._browse_folder_for(app.geotag_frames_entry)
                   ).pack(side="left")
 
@@ -2072,8 +2118,8 @@ def _build_metadata_section(app, parent):
     btn_row.pack(fill="x", pady=(8, 4), padx=6)
     app.geotag_run_btn = ctk.CTkButton(
         btn_row, text="Geotag", command=lambda: _run_geotag_standalone(app),
-        fg_color="#1976D2", hover_color="#1565C0",
-        font=ctk.CTkFont(size=13, weight="bold"), height=38,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12), height=38,
     )
     app.geotag_run_btn.pack(side="left", fill="x", expand=True)
     Tooltip(app.geotag_run_btn,
@@ -2100,11 +2146,12 @@ def _build_quality_filter_section(app, parent):
     # -- Folder picker --
     folder_row = ctk.CTkFrame(fc, fg_color="transparent")
     folder_row.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(folder_row, text="Folder:", width=50, anchor="w").pack(side="left")
+    ctk.CTkLabel(folder_row, text="Folder:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fqf_folder_entry = ctk.CTkEntry(folder_row,
                                          placeholder_text="Folder of extracted frames...")
     app.fqf_folder_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(folder_row, text="...", width=36,
+    ctk.CTkButton(folder_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: app._browse_folder_for(app.fqf_folder_entry)
                   ).pack(side="left")
 
@@ -2128,7 +2175,7 @@ def _build_quality_filter_section(app, parent):
     # Mode toggle: Percentile vs Absolute
     mode_row = ctk.CTkFrame(sc, fg_color="transparent")
     mode_row.pack(fill="x", pady=2, padx=6)
-    ctk.CTkLabel(mode_row, text="Mode:", width=45, anchor="w").pack(side="left")
+    ctk.CTkLabel(mode_row, text="Mode:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fqf_sharp_mode_var = ctk.StringVar(value="percentile")
     app._fqf_sharp_mode_btn = ctk.CTkSegmentedButton(
         mode_row, values=["Percentile", "Absolute"],
@@ -2140,12 +2187,12 @@ def _build_quality_filter_section(app, parent):
     # Percentile slider
     pct_row = ctk.CTkFrame(sc, fg_color="transparent")
     pct_row.pack(fill="x", pady=2, padx=6)
-    app._fqf_pct_label_name = ctk.CTkLabel(pct_row, text="Keep:", width=45, anchor="w")
+    app._fqf_pct_label_name = ctk.CTkLabel(pct_row, text="Keep:", width=LABEL_FIELD_WIDTH, anchor="e")
     app._fqf_pct_label_name.pack(side="left")
     Tooltip(app._fqf_pct_label_name, "Keep the sharpest N% of frames.\n"
             "80% removes the worst 20%.")
     app.fqf_percentile_var = ctk.DoubleVar(value=80.0)
-    app._fqf_pct_label = ctk.CTkLabel(pct_row, text="80%", width=0, font=("Consolas", 11))
+    app._fqf_pct_label = ctk.CTkLabel(pct_row, text="80%", width=0, font=FONT_TEXT_MONO_VALUE)
     app._fqf_pct_label.pack(side="right")
     app._fqf_pct_slider = ctk.CTkSlider(
         pct_row, from_=50, to=99, variable=app.fqf_percentile_var,
@@ -2156,14 +2203,14 @@ def _build_quality_filter_section(app, parent):
     # Absolute threshold slider
     abs_row = ctk.CTkFrame(sc, fg_color="transparent")
     abs_row.pack(fill="x", pady=2, padx=6)
-    app._fqf_abs_label_name = ctk.CTkLabel(abs_row, text="Min:", width=45, anchor="w",
-                                            text_color="#666")
+    app._fqf_abs_label_name = ctk.CTkLabel(abs_row, text="Min:", width=LABEL_FIELD_WIDTH, anchor="e",
+                                            text_color=COLOR_TEXT_DISABLED)
     app._fqf_abs_label_name.pack(side="left")
     Tooltip(app._fqf_abs_label_name, "Reject any frame with Laplacian variance below this.\n"
             "50 is a safe default. Use Analyze to see your score range.")
     app.fqf_abs_threshold_var = ctk.DoubleVar(value=50.0)
     app._fqf_abs_label = ctk.CTkLabel(abs_row, text="50", width=0,
-                                       font=("Consolas", 11), text_color="#666")
+                                       font=FONT_TEXT_MONO_VALUE, text_color=COLOR_TEXT_DISABLED)
     app._fqf_abs_label.pack(side="right")
     app._fqf_abs_slider = ctk.CTkSlider(
         abs_row, from_=10, to=500, variable=app.fqf_abs_threshold_var,
@@ -2188,13 +2235,13 @@ def _build_quality_filter_section(app, parent):
 
     sharp_row = ctk.CTkFrame(mc, fg_color="transparent")
     sharp_row.pack(fill="x", pady=2, padx=6)
-    _ms_lbl = ctk.CTkLabel(sharp_row, text="Sharpness:", width=65, anchor="w")
+    _ms_lbl = ctk.CTkLabel(sharp_row, text="Sharpness:", width=LABEL_FIELD_WIDTH, anchor="e")
     _ms_lbl.pack(side="left")
     Tooltip(_ms_lbl, "Minimum Laplacian sharpness score.\n"
             "Auto-synced from Sharpness filter when both are enabled.")
     app.fqf_motion_sharpness_var = ctk.DoubleVar(value=50.0)
     app._fqf_mot_sharp_label = ctk.CTkLabel(sharp_row, text="50 (synced)", width=0,
-                                             font=("Consolas", 11))
+                                             font=FONT_TEXT_MONO_VALUE)
     app._fqf_mot_sharp_label.pack(side="right")
     app._fqf_mot_sharp_slider = ctk.CTkSlider(
         sharp_row, from_=10, to=200, variable=app.fqf_motion_sharpness_var,
@@ -2205,14 +2252,14 @@ def _build_quality_filter_section(app, parent):
 
     flow_row = ctk.CTkFrame(mc, fg_color="transparent")
     flow_row.pack(fill="x", pady=2, padx=6)
-    _fl_lbl = ctk.CTkLabel(flow_row, text="Target flow:", width=65, anchor="w")
+    _fl_lbl = ctk.CTkLabel(flow_row, text="Target flow:", width=LABEL_FIELD_WIDTH, anchor="e")
     _fl_lbl.pack(side="left")
     Tooltip(_fl_lbl, "Optical flow magnitude between kept frames.\n"
             "Higher = more camera movement required between selections.\n"
             "10 is typical for walking-speed capture.")
     app.fqf_motion_flow_var = ctk.DoubleVar(value=10.0)
     app._fqf_mot_flow_label = ctk.CTkLabel(flow_row, text="10", width=0,
-                                            font=("Consolas", 11))
+                                            font=FONT_TEXT_MONO_VALUE)
     app._fqf_mot_flow_label.pack(side="right")
     ctk.CTkSlider(flow_row, from_=2, to=30, variable=app.fqf_motion_flow_var,
                   command=lambda v: app._fqf_mot_flow_label.configure(text=f"{int(float(v))}")
@@ -2247,8 +2294,8 @@ def _build_quality_filter_section(app, parent):
     btn_row.pack(fill="x", pady=(6, 4), padx=6)
     app._fqf_analyze_btn = ctk.CTkButton(
         btn_row, text="Analyze", command=lambda: _fqf_run_analyze(app),
-        fg_color="#1976D2", hover_color="#1565C0",
-        font=ctk.CTkFont(size=13, weight="bold"), height=36,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12), height=36,
     )
     app._fqf_analyze_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
     Tooltip(app._fqf_analyze_btn,
@@ -2257,7 +2304,7 @@ def _build_quality_filter_section(app, parent):
 
     app._fqf_filter_btn = ctk.CTkButton(
         btn_row, text="Filter", command=lambda: _fqf_run_filter(app),
-        fg_color="#2E7D32", hover_color="#1B5E20",
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
         font=ctk.CTkFont(size=13, weight="bold"), height=36,
         state="disabled",
     )
@@ -2608,8 +2655,8 @@ def _build_fisheye_section(app, parent):
 
     app.fisheye_split_btn = ctk.CTkButton(
         sc, text="Split Lenses", command=lambda: _run_split_lenses(app),
-        fg_color="#1565C0", hover_color="#0D47A1",
-        font=ctk.CTkFont(size=13, weight="bold"), height=36,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12), height=36,
     )
     app.fisheye_split_btn.pack(fill="x", padx=6, pady=(2, 4))
     Tooltip(app.fisheye_split_btn,
@@ -2627,51 +2674,55 @@ def _build_fisheye_section(app, parent):
 
     osv_frame = ctk.CTkFrame(rc, fg_color="transparent")
     osv_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(osv_frame, text="Video:", width=55, anchor="w").pack(side="left")
+    ctk.CTkLabel(osv_frame, text="Video:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_osv_entry = ctk.CTkEntry(
         osv_frame,
         placeholder_text=".osv / .360 / .insv file (optional)...",
     )
     app.fisheye_osv_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(osv_frame, text="...", width=36,
+    ctk.CTkButton(osv_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: _browse_osv(app)).pack(side="left")
 
     reframe_frames_frame = ctk.CTkFrame(rc, fg_color="transparent")
     reframe_frames_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(reframe_frames_frame, text="Frames:", width=55, anchor="w").pack(side="left")
+    ctk.CTkLabel(reframe_frames_frame, text="Frames:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_reframe_frames_entry = ctk.CTkEntry(
         reframe_frames_frame,
         placeholder_text="Existing ERP frames folder (optional)...",
     )
     app.fisheye_reframe_frames_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
     ctk.CTkButton(
-        reframe_frames_frame, text="...", width=36,
+        reframe_frames_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
         command=lambda: app._browse_folder_for(app.fisheye_reframe_frames_entry)
     ).pack(side="left")
 
     reframe_masks_frame = ctk.CTkFrame(rc, fg_color="transparent")
     reframe_masks_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(reframe_masks_frame, text="Masks:", width=55, anchor="w").pack(side="left")
+    ctk.CTkLabel(reframe_masks_frame, text="Masks:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_reframe_masks_entry = ctk.CTkEntry(
         reframe_masks_frame,
         placeholder_text="Masks for ERP or fisheye frames (optional)...",
     )
     app.fisheye_reframe_masks_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
     ctk.CTkButton(
-        reframe_masks_frame, text="...", width=36,
+        reframe_masks_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
         command=lambda: app._browse_folder_for(app.fisheye_reframe_masks_entry)
     ).pack(side="left")
 
     reframe_out_frame = ctk.CTkFrame(rc, fg_color="transparent")
     reframe_out_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(reframe_out_frame, text="Output:", width=55, anchor="w").pack(side="left")
+    ctk.CTkLabel(reframe_out_frame, text="Output:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_reframe_output_entry = ctk.CTkEntry(
         reframe_out_frame,
         placeholder_text="Perspective output directory...",
     )
     app.fisheye_reframe_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
     ctk.CTkButton(
-        reframe_out_frame, text="...", width=36,
+        reframe_out_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
         command=lambda: app._browse_folder_for(app.fisheye_reframe_output_entry)
     ).pack(side="left")
 
@@ -2689,7 +2740,7 @@ def _build_fisheye_section(app, parent):
     # Calibration file row
     calib_row = ctk.CTkFrame(ac, fg_color="transparent")
     calib_row.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(calib_row, text="File:", width=55, anchor="w").pack(side="left")
+    ctk.CTkLabel(calib_row, text="File:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app._fisheye_custom_entry = ctk.CTkEntry(
         calib_row, placeholder_text="calibration.json...")
     app._fisheye_custom_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
@@ -2699,11 +2750,13 @@ def _build_fisheye_section(app, parent):
             "JSON format: {front: {K, D, image_size, rms_error},\n"
             "              back: {K, D, image_size, rms_error}}\n"
             "K = 3x3 camera matrix, D = 4 distortion coefficients.")
-    ctk.CTkButton(calib_row, text="...", width=36,
+    ctk.CTkButton(calib_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: _load_calibration(app)).pack(side="left")
     reset_btn = ctk.CTkButton(
         calib_row, text="Reset", width=50,
-        fg_color="#6b7280", hover_color="#4b5563",
+        fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+        font=ctk.CTkFont(size=12),
         command=lambda: _reset_calibration(app))
     reset_btn.pack(side="left", padx=(4, 0))
     Tooltip(reset_btn, "Revert to the built-in equidistant fisheye model.")
@@ -2718,7 +2771,7 @@ def _build_fisheye_section(app, parent):
     # Preset
     preset_frame = ctk.CTkFrame(rc, fg_color="transparent")
     preset_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(preset_frame, text="Preset:", width=55, anchor="w").pack(side="left")
+    ctk.CTkLabel(preset_frame, text="Preset:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     preset_labels = list(_PRESET_KEY_TO_LABEL.values()) if HAS_PREP360 else ["Full 90\u00b0 \u2014 26 views"]
     app.fisheye_preset_var = ctk.StringVar(value=preset_labels[0])
     preset_combo = ctk.CTkComboBox(preset_frame, variable=app.fisheye_preset_var,
@@ -2739,7 +2792,7 @@ def _build_fisheye_section(app, parent):
     # Crop + Quality + Interval on compact rows
     cq_frame = ctk.CTkFrame(rc, fg_color="transparent")
     cq_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(cq_frame, text="Crop:", width=55, anchor="w").pack(side="left")
+    ctk.CTkLabel(cq_frame, text="Crop:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_crop_var = ctk.StringVar(value="1600")
     crop_combo = ctk.CTkComboBox(cq_frame, variable=app.fisheye_crop_var,
                     values=["1280", "1600", "1920"],
@@ -2753,7 +2806,7 @@ def _build_fisheye_section(app, parent):
     ctk.CTkLabel(cq_frame, text="Quality:").pack(side="left", padx=(12, 2))
     app.fisheye_quality_var = ctk.IntVar(value=95)
     app.fisheye_quality_label = ctk.CTkLabel(cq_frame, text="95", width=30,
-                                             font=("Consolas", 11))
+                                             font=FONT_TEXT_MONO_VALUE)
     qual_slider = ctk.CTkSlider(cq_frame, from_=70, to=100, variable=app.fisheye_quality_var,
                   width=80, command=lambda v: app.fisheye_quality_label.configure(text=f"{int(v)}"))
     qual_slider.pack(side="left", padx=2)
@@ -2764,10 +2817,10 @@ def _build_fisheye_section(app, parent):
 
     int_frame = ctk.CTkFrame(rc, fg_color="transparent")
     int_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(int_frame, text="Interval:", width=55, anchor="w").pack(side="left")
+    ctk.CTkLabel(int_frame, text="Interval:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_interval_var = ctk.DoubleVar(value=2.0)
     app.fisheye_interval_label = ctk.CTkLabel(int_frame, text="2.0s", width=40,
-                                              font=("Consolas", 11))
+                                              font=FONT_TEXT_MONO_VALUE)
     def _on_interval_change(v):
         app.fisheye_interval_label.configure(text=f"{float(v):.1f}s")
         _update_fisheye_estimate(app)
@@ -2803,7 +2856,7 @@ def _build_fisheye_section(app, parent):
 
     app.fisheye_reframe_btn = ctk.CTkButton(
         rc, text="Extract & Reframe", command=lambda: _run_reframe(app),
-        fg_color="#2E7D32", hover_color="#1B5E20",
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
         font=ctk.CTkFont(size=13, weight="bold"), height=36,
     )
     app.fisheye_reframe_btn.pack(fill="x", padx=6, pady=(6, 2))
@@ -2815,7 +2868,8 @@ def _build_fisheye_section(app, parent):
 
     app.fisheye_stop_btn = ctk.CTkButton(
         c, text="Stop", command=app.stop_operation,
-        fg_color="#C62828", hover_color="#8B0000", height=32,
+        fg_color=COLOR_ACTION_DANGER, hover_color=COLOR_ACTION_DANGER_H,
+        font=ctk.CTkFont(size=12), height=32,
     )
     # hidden initially — shown via _start_operation
 
@@ -2982,24 +3036,82 @@ def _run_split_lenses(app):
     ).start()
 
 
+def _find_insv_pair(insv_path: str):
+    """Find the front/back pair for an Insta360 .insv file.
+
+    Insta360 stores each lens as a separate file:
+      VID_DATE_TIME_00_NNN.insv  = front lens
+      VID_DATE_TIME_10_NNN.insv  = back lens
+
+    Returns (front_path, back_path) or raises ValueError.
+    """
+    import re
+    p = Path(insv_path)
+    name = p.name
+    # Match the lens identifier: _00_ (front) or _10_ (back)
+    m = re.search(r'_([01]0)_(\d+)\.insv$', name, re.IGNORECASE)
+    if not m:
+        raise ValueError(
+            f"Cannot determine lens from filename: {name}\n"
+            f"Expected pattern: VID_DATE_TIME_00_NNN.insv or _10_"
+        )
+    lens_id = m.group(1)
+    if lens_id == "00":
+        front_path = p
+        back_path = p.parent / name.replace(f"_{lens_id}_", "_10_")
+    else:
+        back_path = p
+        front_path = p.parent / name.replace(f"_{lens_id}_", "_00_")
+
+    if not front_path.exists():
+        raise FileNotFoundError(f"Front lens file not found: {front_path.name}")
+    if not back_path.exists():
+        raise FileNotFoundError(f"Back lens file not found: {back_path.name}")
+
+    return str(front_path), str(back_path)
+
+
 def _split_lenses_worker(app, osv_path, output_dir):
     try:
         app.log(f"\nSplitting lenses: {Path(osv_path).name}")
-        handler = OSVHandler()
-        front_path, back_path = handler.demux_streams(
-            osv_path, output_dir, streams="both",
-        )
+        is_insv = Path(osv_path).suffix.lower() == ".insv"
+
+        # Try demuxing (works for DJI .osv/.360 and newer Insta360 .insv
+        # with dual HEVC streams in one container)
+        try:
+            handler = OSVHandler()
+            front_path, back_path = handler.demux_streams(
+                osv_path, output_dir, streams="both",
+            )
+            app.log(f"Front lens: {front_path}")
+            app.log(f"Back lens:  {back_path}")
+            app.log("Split complete (lossless stream copy)")
+            summary = "\n".join([
+                "Split complete",
+                f"  Front lens:    {front_path}",
+                f"  Back lens:     {back_path}",
+                "  Next:          Color-grade these in Resolve if needed,",
+                "                 then enable Use Split Lens Videos and select the graded front/back exports.",
+            ])
+            app.log(summary)
+            return
+        except ValueError:
+            # For older Insta360 .insv with separate files per lens,
+            # demux fails ("Expected 2 HEVC streams") — fall back to pair-finding
+            if not is_insv:
+                raise
+
+        # Older Insta360 format: each lens is already a separate file
+        front_path, back_path = _find_insv_pair(osv_path)
         app.log(f"Front lens: {front_path}")
         app.log(f"Back lens:  {back_path}")
-        app.log("Split complete (lossless stream copy)")
         summary = "\n".join([
-            "Split complete",
+            "Insta360 pair found (files are already separate)",
             f"  Front lens:    {front_path}",
             f"  Back lens:     {back_path}",
             "  Next:          Color-grade these in Resolve if needed,",
             "                 then enable Use Split Lens Videos and select the graded front/back exports.",
         ])
-
         app.log(summary)
 
     except Exception as e:

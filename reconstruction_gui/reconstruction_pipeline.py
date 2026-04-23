@@ -237,6 +237,9 @@ class MaskConfig:
     # Cubemap seam fix
     cubemap_overlap: float = 0.0  # Overlap degrees for cubemap faces (0=off, 10=recommended)
 
+    # Static mask overlays (user-authored persistent masks applied to every frame)
+    static_mask_paths: List[str] = field(default_factory=list)
+
     # VOS temporal propagation (replaces sliding-window averaging)
     vos_propagation: bool = False  # Use VOS for temporal consistency instead of averaging
     vos_config: Optional[Dict] = None  # Serialized VOSConfig dict
@@ -316,6 +319,7 @@ class MaskConfig:
             'matting': self.matting,
             'matting_config': self.matting_config,
             'cubemap_overlap': self.cubemap_overlap,
+            'static_mask_paths': self.static_mask_paths,
             'vos_propagation': self.vos_propagation,
             'vos_config': self.vos_config,
             'vos_keyframe_interval': self.vos_keyframe_interval,
@@ -407,6 +411,28 @@ class BaseSegmenter(ABC):
         self.device = config.device
         self.model = None
         self._fisheye_circle_cache: Optional[Tuple[Tuple[int, int, float], np.ndarray]] = None
+
+        # Pre-composite static mask overlays (loaded once, applied to every frame)
+        self._static_composite = None
+        if self.config.static_mask_paths:
+            for path in self.config.static_mask_paths:
+                raw = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+                if raw is None:
+                    logger.warning(f"Could not load static mask: {path}")
+                    continue
+                binary = (raw > 127).astype(np.uint8)
+                if self._static_composite is None:
+                    self._static_composite = binary
+                else:
+                    if binary.shape != self._static_composite.shape:
+                        binary = cv2.resize(binary,
+                            (self._static_composite.shape[1], self._static_composite.shape[0]),
+                            interpolation=cv2.INTER_NEAREST)
+                    self._static_composite = np.maximum(self._static_composite, binary)
+            if self._static_composite is not None:
+                n = len(self.config.static_mask_paths)
+                pct = float(np.sum(self._static_composite > 0) / self._static_composite.size * 100)
+                logger.info(f"Static mask: {n} layer(s) loaded, {pct:.1f}% coverage")
 
     def _get_fisheye_circle_mask(
         self, width: int, height: int, margin_percent: float
@@ -541,7 +567,14 @@ class BaseSegmenter(ABC):
             if self.config.nadir_mask_percent > 0 and geometry == ImageGeometry.EQUIRECTANGULAR:
                 nadir_rows = int(mask.shape[0] * self.config.nadir_mask_percent / 100.0)
                 if nadir_rows > 0:
+                    before = int(np.sum(mask[-nadir_rows:] > 0))
                     mask[-nadir_rows:] = 1
+                    total = mask.shape[1] * nadir_rows
+                    logger.info(f"  Nadir mask: bottom {self.config.nadir_mask_percent:.0f}% "
+                                f"= {nadir_rows} rows of {mask.shape[0]} "
+                                f"({before}/{total} px were already masked)")
+            elif geometry == ImageGeometry.EQUIRECTANGULAR:
+                logger.info(f"  Nadir mask: OFF (nadir_mask_percent={self.config.nadir_mask_percent})")
 
             # Auto-mask fisheye corners + periphery
             if self.config.fisheye_circle_mask and geometry == ImageGeometry.FISHEYE:
@@ -550,6 +583,18 @@ class BaseSegmenter(ABC):
                     self.config.fisheye_margin_percent,
                 )
                 mask = np.maximum(mask, circle)
+
+            # Apply user-authored static mask overlays
+            if self._static_composite is not None:
+                static = self._static_composite
+                if static.shape != mask.shape:
+                    static = cv2.resize(static, (mask.shape[1], mask.shape[0]),
+                                        interpolation=cv2.INTER_NEAREST)
+                before = int(np.sum(mask > 0))
+                mask = np.maximum(mask, static)
+                added = int(np.sum(mask > 0)) - before
+                if added > 0:
+                    logger.info(f"  Static mask: added {added} px")
 
         # Clean up small artifacts
         mask = self._morphological_cleanup(mask)
@@ -615,20 +660,28 @@ class BaseSegmenter(ABC):
             return MaskQuality.REJECT
 
     def _expand_pole_masks(self, mask: np.ndarray) -> np.ndarray:
-        """Expand masks in pole regions of equirectangular images."""
+        """Expand masks in pole regions of equirectangular images.
+
+        Kernel size scales with image width so expansion is proportional
+        to the actual polar distortion.  At the equator ``pole_mask_expand``
+        has no effect; near the poles a small multiplier produces a
+        meaningfully larger dilation because the image is wider.
+        """
         h, w = mask.shape[:2]
         pole_region = int(h * 0.1)  # Top/bottom 10%
-        
+
+        # Scale kernel with image width: ~0.5% of width per unit of expand
+        # e.g. expand=1.2 on 7680px → kernel=46px; on 1024px → kernel=6px
+        base = max(3, int(w * 0.005 * self.config.pole_mask_expand))
+        kernel_size = base | 1  # ensure odd
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+
         # Expand top pole region
         if np.any(mask[:pole_region]):
-            kernel_size = int(5 * self.config.pole_mask_expand)
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
             mask[:pole_region] = cv2.dilate(mask[:pole_region], kernel, iterations=1)
-        
+
         # Expand bottom pole region
         if np.any(mask[-pole_region:]):
-            kernel_size = int(5 * self.config.pole_mask_expand)
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
             mask[-pole_region:] = cv2.dilate(mask[-pole_region:], kernel, iterations=1)
 
         return mask

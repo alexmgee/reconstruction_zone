@@ -242,7 +242,7 @@ class ValidationReport:
 # COLMAP Parser
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _parse_cameras_txt(path: Path) -> Dict[int, COLMAPCamera]:
+def parse_cameras_txt(path: Path) -> Dict[int, COLMAPCamera]:
     """Parse COLMAP cameras.txt file."""
     cameras = {}
     with open(path, 'r') as f:
@@ -263,7 +263,7 @@ def _parse_cameras_txt(path: Path) -> Dict[int, COLMAPCamera]:
     return cameras
 
 
-def _parse_images_txt(path: Path) -> Dict[int, COLMAPImage]:
+def parse_images_txt(path: Path) -> Dict[int, COLMAPImage]:
     """Parse COLMAP images.txt file.
 
     Two lines per image:
@@ -312,7 +312,7 @@ def _parse_images_txt(path: Path) -> Dict[int, COLMAPImage]:
     return images
 
 
-def _parse_points3d_txt(path: Path) -> Dict[int, COLMAPPoint3D]:
+def parse_points3d_txt(path: Path) -> Dict[int, COLMAPPoint3D]:
     """Parse COLMAP points3D.txt file.
 
     Each line: POINT3D_ID X Y Z R G B ERROR TRACK[] as (IMAGE_ID POINT2D_IDX)
@@ -392,9 +392,9 @@ class GeometricValidator:
             if not p.exists():
                 raise FileNotFoundError(f"Missing COLMAP file: {p}")
 
-        self.cameras = _parse_cameras_txt(cameras_path)
-        self.images = _parse_images_txt(images_path)
-        self.points3d = _parse_points3d_txt(points_path)
+        self.cameras = parse_cameras_txt(cameras_path)
+        self.images = parse_images_txt(images_path)
+        self.points3d = parse_points3d_txt(points_path)
 
         # Build name lookup
         self._name_to_id = {img.name: img.image_id for img in self.images.values()}

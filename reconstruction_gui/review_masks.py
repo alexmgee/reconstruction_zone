@@ -54,6 +54,7 @@ class MaskReviewer:
         self.drawing_lasso = False
         # Window position persistence (prevents shift on save/next)
         self._last_window_pos = None
+        self._custom_controls = None  # Optional override for help overlay controls
 
     def _display_to_image(self, dx, dy):
         """Convert display coordinates to image coordinates (unclamped).
@@ -394,7 +395,7 @@ class MaskReviewer:
                 display = cv2.addWeighted(display, 0.7, mask_overlay, 0.3, 0)
 
                 contours, _ = cv2.findContours(self.current_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                cv2.drawContours(display, contours, -1, (0, 255, 0), 2)
+                cv2.drawContours(display, contours, -1, (128, 255, 128), 1)
 
                 # Highlight contour near cursor (yellow) for edge-aware editing
                 if contours and not self.drawing:
@@ -436,7 +437,7 @@ class MaskReviewer:
 
         # Help overlay
         if self.show_help:
-            self._draw_help_overlay(display)
+            self._draw_help_overlay(display, self._custom_controls)
 
         # Draw brush cursor at actual mouse position
         cursor_color = (0, 255, 0) if self.mode == 1 else (0, 0, 255)
@@ -458,8 +459,12 @@ class MaskReviewer:
                       f"Zoom: {zoom_pct}% | Mask: {coverage:.1f}%")
             bar_color, text_color = (30, 90, 30), (100, 255, 100)
         else:
-            status = (f"Brush: {self.brush_size} | Tol: {self.flood_tolerance} | Zoom: {zoom_pct}% | "
-                      f"Fill: {fill_mode} | View: {view_name} | Mask: {coverage:.1f}% | 'h' = help")
+            if self._custom_controls is not None:
+                status = (f"STATIC MASK  |  Brush: {self.brush_size} | Tol: {self.flood_tolerance} | "
+                          f"Zoom: {zoom_pct}% | Mask: {coverage:.1f}% | 'h' = help")
+            else:
+                status = (f"Brush: {self.brush_size} | Tol: {self.flood_tolerance} | Zoom: {zoom_pct}% | "
+                          f"Fill: {fill_mode} | View: {view_name} | Mask: {coverage:.1f}% | 'h' = help")
             bar_color, text_color = (40, 40, 40), (255, 255, 255)
         bar = np.full((30, display.shape[1], 3), 0, dtype=np.uint8)
         bar[:] = bar_color
@@ -468,49 +473,50 @@ class MaskReviewer:
 
         return display
     
-    def _draw_help_overlay(self, display):
+    def _draw_help_overlay(self, display, controls=None):
         """Draw a semi-transparent help panel."""
         h, w = display.shape[:2]
-        
+
         # Help panel dimensions
         panel_w, panel_h = 340, 400
         panel_x, panel_y = 10, 10
-        
+
         # Semi-transparent background
         overlay = display.copy()
         cv2.rectangle(overlay, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (30, 30, 30), -1)
         cv2.addWeighted(overlay, 0.85, display, 0.15, 0, display)
-        
+
         # Border
         cv2.rectangle(display, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (100, 100, 100), 2)
-        
+
         # Title
-        cv2.putText(display, "CONTROLS", (panel_x + 110, panel_y + 25), 
+        cv2.putText(display, "CONTROLS", (panel_x + 110, panel_y + 25),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        
+
         # Help text
-        controls = [
-            ("Left Click", "Brush ADD to mask"),
-            ("Right Click", "Brush REMOVE from mask"),
-            ("Ctrl + Drag", "LASSO select (Otsu threshold)"),
-            ("Shift + Click", "Flood fill add/remove"),
-            ("Middle Drag", "Pan view"),
-            ("Scroll Wheel", "Zoom in/out"),
-            ("", ""),
-            ("s", "Save and go to next"),
-            ("n", "Skip (don't save)"),
-            ("q", "Quit review"),
-            ("r", "Reset to original"),
-            ("u", "Undo last change"),
-            ("+/-", "Adjust brush size"),
-            ("[/]", "Adjust flood tolerance"),
-            ("0", "Reset zoom to 100%"),
-            ("v", "Cycle view (overlay/original/mask)"),
-            ("m", "Toggle overlay/original"),
-            ("a", "A/B flicker comparison"),
-            ("b", "Toggle fill mode (color/brightness)"),
-            ("h", "Toggle this help"),
-        ]
+        if controls is None:
+            controls = [
+                ("Left Click", "Brush ADD to mask"),
+                ("Right Click", "Brush REMOVE from mask"),
+                ("Ctrl + Drag", "LASSO select (Otsu threshold)"),
+                ("Shift + Click", "Flood fill add/remove"),
+                ("Middle Drag", "Pan view"),
+                ("Scroll Wheel", "Zoom in/out"),
+                ("", ""),
+                ("s", "Save and go to next"),
+                ("n", "Skip (don't save)"),
+                ("q", "Quit review"),
+                ("r", "Reset to original"),
+                ("u", "Undo last change"),
+                ("+/-", "Adjust brush size"),
+                ("[/]", "Adjust flood tolerance"),
+                ("0", "Reset zoom to 100%"),
+                ("v", "Cycle view (overlay/original/mask)"),
+                ("m", "Toggle overlay/original"),
+                ("a", "A/B flicker comparison"),
+                ("b", "Toggle fill mode (color/brightness)"),
+                ("h", "Toggle this help"),
+            ]
         
         y_offset = panel_y + 50
         for key, desc in controls:
@@ -796,6 +802,191 @@ class MaskReviewer:
 
         self._save_window_pos(window_name)
         cv2.destroyWindow(window_name)
+
+    def paint_static_mask(self, reference_image_path: Path,
+                          existing_mask: np.ndarray = None,
+                          image_list: list = None,
+                          window_name: str = "Static Mask Editor"):
+        """Open the editor for painting a static mask overlay.
+
+        Starts with a blank mask (or existing_mask for editing) over
+        a reference frame. Supports navigating through dataset images
+        to inspect the mask on different frames without saving.
+
+        Args:
+            reference_image_path: Path to a representative frame.
+            existing_mask: Optional 0/1 uint8 mask to edit. None = blank.
+            image_list: Optional list of Path objects for frame navigation.
+            window_name: OpenCV window title.
+
+        Returns:
+            np.ndarray (0/1 uint8, original resolution) on save, None on cancel.
+        """
+        import tempfile, os
+
+        # Read reference image to get dimensions
+        ref = cv2.imread(str(reference_image_path))
+        if ref is None:
+            logger.error(f"Failed to load reference image: {reference_image_path}")
+            return None
+        h, w = ref.shape[:2]
+
+        # Write a temporary mask file for _load_and_scale()
+        # Mask convention on disk: black (0) = foreground/remove, white (255) = keep
+        tmp_dir = tempfile.mkdtemp()
+        tmp_mask_path = Path(tmp_dir) / "static_tmp.png"
+        if existing_mask is not None:
+            cv2.imwrite(str(tmp_mask_path), (1 - existing_mask) * 255)
+        else:
+            cv2.imwrite(str(tmp_mask_path), np.full((h, w), 255, dtype=np.uint8))
+
+        dims = self._load_and_scale(reference_image_path, tmp_mask_path)
+        if dims is None:
+            return None
+        orig_h, orig_w = dims
+
+        # Frame navigation state
+        nav_images = image_list or []
+        nav_idx = 0
+        if nav_images:
+            # Find the starting image in the list
+            ref_str = str(reference_image_path)
+            for i, p in enumerate(nav_images):
+                if str(p) == ref_str:
+                    nav_idx = i
+                    break
+        nav_name = reference_image_path.name
+
+        # Set custom controls for static mask mode
+        nav_hint = "Left/Right" if nav_images else ""
+        nav_desc = "Prev/next frame" if nav_images else ""
+        self._custom_controls = [
+            ("Left Click", "Brush ADD to mask"),
+            ("Right Click", "Brush REMOVE from mask"),
+            ("Ctrl + Drag", "LASSO select (Otsu threshold)"),
+            ("Shift + Click", "Flood fill add/remove"),
+            ("Middle Drag", "Pan view"),
+            ("Scroll Wheel", "Zoom in/out"),
+            ("", ""),
+            ("s", "Save static mask"),
+            ("q", "Cancel (close without saving)"),
+            ("r", "Reset to blank"),
+            ("u", "Undo last change"),
+            ("+/-", "Adjust brush size"),
+            ("[/]", "Adjust flood tolerance"),
+            ("v", "Cycle view (overlay/original/mask)"),
+            ("a", "A/B flicker mask on/off"),
+            ("b", "Toggle fill mode (color/brightness)"),
+        ]
+        if nav_images:
+            self._custom_controls.append((",/.", "Prev/next frame"))
+        self._custom_controls.append(("h", "Toggle this help"))
+
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, self.current_image.shape[1],
+                         self.current_image.shape[0] + 30)
+        if self._last_window_pos:
+            cv2.moveWindow(window_name, *self._last_window_pos)
+        cv2.setMouseCallback(window_name, self._mouse_callback)
+
+        logger.info(f"Static mask editor opened on: {nav_name}")
+
+        result_mask = None
+        while True:
+            display = self._create_display()
+            cv2.imshow(window_name, display)
+
+            raw_key = cv2.waitKey(1)
+            if raw_key == -1:
+                continue
+
+            # Check arrow keys BEFORE masking (& 0xFF destroys them on Windows)
+            # Windows: left=2424832, right=2555904
+            # Linux GTK: left=65361, right=65363
+            # Linux Qt: left=81, right=83
+            if raw_key in (2424832, 65361) or (raw_key & 0xFF) == ord(','):
+                if nav_images and nav_idx > 0:
+                    nav_idx -= 1
+                    self._swap_static_background(nav_images[nav_idx])
+                    nav_name = nav_images[nav_idx].name
+                    logger.info(f"Frame: {nav_name} ({nav_idx + 1}/{len(nav_images)})")
+                continue
+            elif raw_key in (2555904, 65363) or (raw_key & 0xFF) == ord('.'):
+                if nav_images and nav_idx < len(nav_images) - 1:
+                    nav_idx += 1
+                    self._swap_static_background(nav_images[nav_idx])
+                    nav_name = nav_images[nav_idx].name
+                    logger.info(f"Frame: {nav_name} ({nav_idx + 1}/{len(nav_images)})")
+                continue
+
+            key = raw_key & 0xFF
+            if 65 <= key <= 90:
+                key += 32
+
+            if key == ord('s'):
+                if self.scale < 1.0:
+                    result_mask = cv2.resize(self.current_mask, (orig_w, orig_h),
+                                             interpolation=cv2.INTER_NEAREST)
+                else:
+                    result_mask = self.current_mask.copy()
+                logger.info("Static mask saved")
+                break
+            elif key == ord('q'):
+                logger.info("Static mask editor cancelled")
+                break
+            elif key == ord('r'):
+                if existing_mask is not None:
+                    self.current_mask = self.original_mask.copy()
+                else:
+                    self.current_mask = np.zeros_like(self.current_mask)
+                self.history = [self.current_mask.copy()]
+            elif key == ord('u') and len(self.history) > 1:
+                self.history.pop()
+                self.current_mask = self.history[-1].copy()
+            elif key == ord('+') or key == ord('='):
+                self.brush_size = min(100, self.brush_size + 5)
+            elif key == ord('-'):
+                self.brush_size = max(1, self.brush_size - 5)
+            elif key == ord(']'):
+                self.flood_tolerance = min(100, self.flood_tolerance + 5)
+            elif key == ord('['):
+                self.flood_tolerance = max(5, self.flood_tolerance - 5)
+            elif key == ord('v'):
+                self.view_mode = (self.view_mode + 1) % 3
+            elif key == ord('a'):
+                # A/B flicker: auto-alternate overlay vs original
+                self.ab_flicker = not self.ab_flicker
+                self.ab_frame_counter = 0
+            elif key == ord('h'):
+                self.show_help = not self.show_help
+            elif key == ord('b'):
+                self.brightness_mode = not self.brightness_mode
+
+        self._save_window_pos(window_name)
+        cv2.destroyWindow(window_name)
+        self._custom_controls = None
+        self.ab_flicker = False  # Reset for normal mode
+
+        # Clean up temp file
+        try:
+            tmp_mask_path.unlink(missing_ok=True)
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+
+        return result_mask
+
+    def _swap_static_background(self, new_image_path: Path):
+        """Swap the background image while keeping the current mask intact."""
+        new_img = cv2.imread(str(new_image_path))
+        if new_img is None:
+            logger.warning(f"Could not load: {new_image_path}")
+            return
+        # Resize new image to match current working resolution
+        target_h, target_w = self.current_image.shape[:2]
+        if new_img.shape[:2] != (target_h, target_w):
+            new_img = cv2.resize(new_img, (target_w, target_h))
+        self.current_image = new_img
 
 
 def main():

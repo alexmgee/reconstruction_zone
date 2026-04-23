@@ -37,53 +37,112 @@ from .fisheye_calibration import FisheyeCalibration, DualFisheyeCalibration
 
 
 # --- Default calibration for DJI Osmo 360 ---
-# Approximate intrinsics when no ChArUco calibration is available.
-# Based on 3840x3840 sensor, ~190° FOV equidistant fisheye.
-# These are reasonable starting values — a proper calibration will be better.
+#
+# REVISION HISTORY:
+#
+#   v1 (original, pre-2026-04-21):
+#     Approximate intrinsics derived from assumed geometry:
+#       f = 1920 / radians(95) ≈ 1158 px (equidistant model, assumed 190° FOV)
+#       cx = cy = 1920 (dead center)
+#       D = [0, 0, 0, 0] (no distortion)
+#       Both lenses identical. No baseline. No rig geometry.
+#
+#   v2 (2026-04-21, empirical calibration):
+#     Per-lens intrinsics from Metashape 2.3 alignment of 248 frame pairs
+#     with two independent equisolid fisheye sensors and scale bars verified
+#     to 0.0% error (18" ruler + 30" reference points).
+#
+#     Rig geometry from the same session:
+#       Rotation: 180° around Y (confirmed by COLMAP 81-pair run at 179.996°
+#         mean, 0.11° stdev; Metashape 248-pair run at 179.96° mean;
+#         factory telemetry at 180.036° azimuth separation)
+#       Baseline: 26 mm along +Z in front camera frame (from Metashape
+#         optimizer discovery run — converged to 26.2 mm with 0.965 px
+#         reprojection error; scale bar verification showed 1" = 0.5% error
+#         and 30" = 0.0% error with this value)
+#
+#     Sources:
+#       - Rig calibration report: C:\Users\alexm\Desktop\Other\osmo360\osmo360_rig_calibration_report.md
+#       - OSV telemetry investigation: D:\Projects\camera-geometry-lab\osv_investigation.md
+#       - Factory calibration (proto message 2-6): front fx=1040.2, back fx=1052.0
+#         (Brown-Conrady model, different parameterization — do not use directly)
+#       - COLMAP run: D:\Capture\deskTest\rig_calibration\ (81 pairs, OPENCV_FISHEYE)
+#       - Metashape project: D:\Capture\measurementScan\building_twosensor.psx
+#
+#     Note on projection model:
+#       Metashape identifies the Osmo 360 as equisolid (r = 2f sin(θ/2)),
+#       not equidistant (r = fθ). The cv2.fisheye module uses equidistant.
+#       The focal length values below are from Metashape's equisolid model.
+#       When used with cv2.fisheye (equidistant), they serve as starting
+#       priors — the reframer's remap tables will be close but not exact.
+#       For COLMAP's OPENCV_FISHEYE (equidistant), start k1-k4 at zero
+#       and let BA refine.
 
 def default_osmo360_calibration() -> DualFisheyeCalibration:
-    """Approximate calibration for DJI Osmo 360 (3840x3840 per lens).
+    """Empirical calibration for DJI Osmo 360 (3840x3840 per lens).
 
-    Uses equidistant fisheye model with estimated focal length.
-    For production quality, run ChArUco calibration.
+    Per-lens intrinsics from Metashape 2.3 alignment (248 pairs, equisolid
+    fisheye, two independent sensors, scale bars verified to 0.0%).
+    Rig geometry from the same session + COLMAP cross-validation.
+
+    The rms_error=-1.0 indicates these are priors, not from a ChArUco
+    calibration of this specific unit. Per-unit factory intrinsics can be
+    extracted from the OSV telemetry (proto message 2-6) for higher accuracy.
     """
-    # For equidistant: r = f * theta
-    # At image edge (r=1920px), theta ~= 95° (half of ~190° FOV)
-    # f = r / theta = 1920 / radians(95) ≈ 1158
-    f_est = 1920.0 / np.radians(95.0)
-    cx, cy = 1920.0, 1920.0
+    # ── v1 values (commented out for reference) ──────────────────────
+    # f_est = 1920.0 / np.radians(95.0)  # ≈ 1158 (equidistant, assumed 190° FOV)
+    # cx, cy = 1920.0, 1920.0             # dead center (no offset)
+    # D = np.zeros((4, 1))                # zero distortion
+    # Both lenses assumed identical.
 
-    K = np.array([
-        [f_est, 0, cx],
-        [0, f_est, cy],
+    # ── v2 values (empirical, 2026-04-21) ────────────────────────────
+    # Front lens: Metashape equisolid, f=1047.9, cx offset=-2.4, cy offset=-0.1
+    K_front = np.array([
+        [1047.898, 0, 1920.0 - 2.403],
+        [0, 1047.898, 1920.0 - 0.124],
         [0, 0, 1],
     ], dtype=np.float64)
 
-    # Small distortion — real lens will deviate, but this is serviceable
-    D = np.zeros((4, 1), dtype=np.float64)
+    # Back lens: Metashape equisolid, f=1044.9, cx offset=-8.3, cy offset=-2.1
+    K_back = np.array([
+        [1044.882, 0, 1920.0 - 8.334],
+        [0, 1044.882, 1920.0 - 2.097],
+        [0, 0, 1],
+    ], dtype=np.float64)
 
-    single = FisheyeCalibration(
-        camera_matrix=K,
-        dist_coeffs=D,
+    # Distortion: cv2.fisheye uses equidistant with 4 coefficients (k1-k4).
+    # These values are from Metashape's equisolid model — they serve as
+    # reasonable priors for the equidistant reframer but are not an exact
+    # match. For precise work, use ChArUco calibration or let COLMAP BA refine.
+    D_front = np.array([[0.0559], [0.0114], [-0.0095], [0.0005]], dtype=np.float64)
+    D_back = np.array([[0.0572], [0.0076], [-0.0072], [0.0001]], dtype=np.float64)
+
+    front = FisheyeCalibration(
+        camera_matrix=K_front,
+        dist_coeffs=D_front,
         image_size=(3840, 3840),
-        rms_error=-1.0,  # indicates approximate
+        rms_error=-1.0,
+        num_images_used=0,
+        fov_degrees=190.0,
+    )
+
+    back = FisheyeCalibration(
+        camera_matrix=K_back,
+        dist_coeffs=D_back,
+        image_size=(3840, 3840),
+        rms_error=-1.0,
         num_images_used=0,
         fov_degrees=190.0,
     )
 
     return DualFisheyeCalibration(
-        front=single,
-        back=FisheyeCalibration(
-            camera_matrix=K.copy(),
-            dist_coeffs=D.copy(),
-            image_size=(3840, 3840),
-            rms_error=-1.0,
-            num_images_used=0,
-            fov_degrees=190.0,
-        ),
+        front=front,
+        back=back,
         front_rotation_deg=0.0,
         back_rotation_deg=180.0,
-        camera_model="DJI Osmo 360 (approximate)",
+        camera_model="DJI Osmo 360 (empirical 2026-04-21)",
+        baseline_m=0.026,
+        baseline_axis=(0.0, 0.0, 1.0),
     )
 
 

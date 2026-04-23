@@ -1,9 +1,9 @@
 """
-OSV Container Handler
+Dual Fisheye Container Handler
 
-Parse and extract from DJI Osmo 360 OSV files (dual fisheye streams).
+Parse and extract from dual-fisheye 360 containers (DJI .osv, Insta360 .insv).
 
-OSV format (confirmed via ffprobe on real files):
+DJI OSV format (confirmed via ffprobe on real files):
     Stream 0: HEVC 3840x3840 50fps 10-bit  — fisheye lens 0 (back)
     Stream 1: HEVC 3840x3840 50fps 10-bit  — fisheye lens 1 (front)
     Stream 2: AAC stereo 48kHz             — audio
@@ -12,11 +12,16 @@ OSV format (confirmed via ffprobe on real files):
     Stream 5: dbgi data                    — gyro/debug data (lens 0)
     Stream 6: dbgi data                    — gyro/debug data (lens 1)
     Stream 7: MJPEG 688x344               — thumbnail (attached_pic)
+    Container: MOV/MP4, encoder tag "Osmo 360".
 
-Container: MOV/MP4, encoder tag "Osmo 360".
-The back lens (stream 0) faces away from the operator. The front lens
-(stream 1) faces toward the operator. DuckbillStudio's convention:
-FRONT=stream 1, BACK=stream 0.
+Insta360 INSV format (newer dual-stream variant):
+    Stream 0: HEVC 3840x3840              — fisheye lens 0 (back)
+    Stream 1: HEVC 3840x3840              — fisheye lens 1 (front)
+    Stream 2: AAC                          — audio
+    Container: MOV/MP4, handler "INS.HVC". No encoder tag.
+
+Both formats: stream 0 = back (away from operator),
+stream 1 = front (toward operator).
 """
 
 import json
@@ -274,17 +279,17 @@ class OSVHandler:
         fmt = raw.get("format", {})
         raw_streams = raw.get("streams", [])
 
-        # Validate it's an OSV
+        # Validate it's a dual-fisheye container (DJI .osv or Insta360 .insv)
         encoder = fmt.get("tags", {}).get("encoder", "")
-        if "osmo" not in encoder.lower() and "360" not in encoder.lower():
-            # Also check format — OSV files are MOV/MP4
+        suffix = path.suffix.lower()
+        known_suffix = suffix in (".osv", ".insv")
+        known_encoder = "osmo" in encoder.lower() or "360" in encoder.lower()
+        if not known_suffix and not known_encoder:
             format_name = fmt.get("format_name", "")
-            suffix = path.suffix.lower()
-            if suffix != ".osv":
-                raise ValueError(
-                    f"Not a recognized OSV file: encoder='{encoder}', "
-                    f"format='{format_name}', suffix='{suffix}'"
-                )
+            raise ValueError(
+                f"Not a recognized dual-fisheye file: encoder='{encoder}', "
+                f"format='{format_name}', suffix='{suffix}'"
+            )
 
         # Parse all streams
         parsed_streams = []
