@@ -46,6 +46,9 @@ archive/
 # Superpowers plugin state
 .superpowers/
 
+# Ad-hoc diagnostic scripts (not part of the test suite)
+reconstruction_gui/test_*.py
+
 # Temp files
 .tmp/
 

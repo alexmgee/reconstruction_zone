@@ -1,0 +1,22 @@
+# Reconstruction Zone — Core Dependencies
+#
+# Install PyTorch with CUDA first (not listed here — requires --index-url):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+#
+# Then install these:
+#   pip install -r requirements.txt
+
+numpy
+opencv-python
+Pillow
+tqdm
+pyyaml
+customtkinter>=5.0
+py360convert
+scipy
+
+# Models — detection and segmentation
+rfdetr
+supervision
+transformers>=4.50,<5.0
+huggingface_hub

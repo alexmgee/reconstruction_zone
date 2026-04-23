@@ -15,8 +15,15 @@ import time
 import cv2
 import numpy as np
 
-# Try to import ultralytics
+# Try to import ultralytics (AGPL-3.0 — excluded from Gumroad builds)
 try:
+    from prep360.distribution import is_gumroad as _is_gumroad
+except ImportError:
+    def _is_gumroad(): return False
+
+try:
+    if _is_gumroad():
+        raise ImportError("YOLO excluded from Gumroad build")
     from ultralytics import YOLO
     HAS_YOLO = True
 except ImportError:

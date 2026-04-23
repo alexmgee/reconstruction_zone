@@ -8,6 +8,7 @@ distribution flag regardless of build outcome.
 Usage:
     python build/build_gumroad.py
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -45,6 +46,7 @@ def main():
             return 1
 
         print(f"Running PyInstaller with {spec_file.name}...")
+        env = {**os.environ, "RECONSTRUCTION_ZONE_DIST": "gumroad"}
         result = subprocess.run(
             [
                 sys.executable, "-m", "PyInstaller",
@@ -52,6 +54,7 @@ def main():
                 "--noconfirm",
             ],
             cwd=str(ROOT),
+            env=env,
         )
 
         if result.returncode == 0:

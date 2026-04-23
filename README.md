@@ -68,7 +68,7 @@ python reconstruction_gui/reconstruction_zone.py
 
 ## Workflow
 
-The pipeline takes raw captures through four basic stages — each handled by a tab in the GUI:
+The pipeline takes raw captures through six stages — each handled by a tab in the GUI:
 
 | Tab | What it does | Guide |
 |-----|-------------|-------|
@@ -76,6 +76,7 @@ The pipeline takes raw captures through four basic stages — each handled by a 
 | **Extract** | Pull frames from 360° video, fisheye, or standard video. Equirect-to-perspective reframing with configurable view rings. | [Extract Guide](reconstruction_gui/docs/EXTRACT_TAB.md) |
 | **Mask** | Auto-detect and mask objects using text prompts or class selection. Supports 360°-aware cubemap decomposition. | [Mask Guide](reconstruction_gui/docs/MASK_TAB.md) |
 | **Review** | Thumbnail grid with accept/reject/skip workflow. Open any mask in the interactive editor for brush, flood fill, and lasso touch-ups. | [Review Guide](reconstruction_gui/docs/REVIEW_TAB.md) |
+| **Align** | Run sparse COLMAP or SphereSfM reconstruction. Feature extraction, matching, and mapping with live point cloud viewer. | [Align Guide](reconstruction_gui/docs/ALIGN_TAB.md) |
 | **Coverage** | Analyze spatial coverage gaps in your dataset and extract bridge frames to fill them. | [Coverage Guide](reconstruction_gui/docs/COVERAGE_TAB.md) |
 
 <details>

@@ -1,0 +1,9 @@
+# YOLO/ultralytics — AGPL-3.0 licensed
+#
+# Only install this for the open-source (GitHub) version.
+# The Gumroad/commercial build excludes YOLO entirely due to AGPL.
+#
+# YOLO26 provides fast class-based detection (~15ms/img) for COCO objects.
+# RF-DETR covers the same use cases in the commercial build.
+
+ultralytics

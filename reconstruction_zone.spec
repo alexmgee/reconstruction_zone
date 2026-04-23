@@ -2,8 +2,7 @@
 #
 # PyInstaller spec for Reconstruction Zone (Masking Studio)
 #
-# INITIAL DRAFT — needs testing and iteration. Known open items:
-#   - Icon not yet created (placeholder comment below)
+# Known open items:
 #   - CUDA DLL bundling may need manual binaries= entries depending on
 #     PyTorch install layout (conda vs pip, cu124 vs cu126)
 #   - UPX may corrupt CUDA/cuDNN DLLs — disable upx_exclude list if
@@ -17,9 +16,13 @@
 #   python -m PyInstaller reconstruction_zone.spec --noconfirm
 #   (or use scripts/build_gumroad.py for Gumroad distribution builds)
 
+import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
+
+# Detect Gumroad build — set by scripts/build_gumroad.py before invoking PyInstaller
+_is_gumroad = os.environ.get('RECONSTRUCTION_ZONE_DIST', '') == 'gumroad'
 
 # CustomTkinter ships theme JSON + assets that must be included
 ctk_datas = collect_data_files('customtkinter')
@@ -34,7 +37,7 @@ a = Analysis(
     ['reconstruction_gui/reconstruction_zone.py'],
     pathex=[],
     binaries=[],
-    datas=ctk_datas + prep360_datas + gui_docs,
+    datas=ctk_datas + prep360_datas + gui_docs + [('reconstruction-zone.ico', '.')],
     hiddenimports=[
         # --- PyTorch + CUDA ---
         # collect_submodules pulls in all torch.* / torchvision.* subpackages
@@ -60,7 +63,7 @@ a = Analysis(
 
         # --- Optional but commonly present ---
         'py360convert',
-        'ultralytics',
+        *(['ultralytics'] if not _is_gumroad else []),
 
         # --- App packages (ensure PyInstaller finds them) ---
         'prep360',
@@ -103,9 +106,21 @@ a = Analysis(
         'reconstruction_gui.vos_propagation',
         'reconstruction_gui.colmap_validation',
         'reconstruction_gui.sam3_pipeline',
+        'reconstruction_gui._version',
+        'reconstruction_gui.project_store',
+        'reconstruction_gui.project_scanner',
+        'reconstruction_gui.project_exporters',
+        'reconstruction_gui.model_downloader',
+        'reconstruction_gui.colmap_runner',
+        'reconstruction_gui.alignment_profiles',
+        'reconstruction_gui.rig_presets',
+        'reconstruction_gui.static_masks',
+        'reconstruction_gui.pointcloud_viewer',
         'reconstruction_gui.tabs',
         'reconstruction_gui.tabs.source_tab',
         'reconstruction_gui.tabs.gaps_tab',
+        'reconstruction_gui.tabs.projects_tab',
+        'reconstruction_gui.tabs.alignment_tab',
     ],
     hookspath=[],
     hooksconfig={},
@@ -155,7 +170,7 @@ exe = EXE(
     upx=True,
     console=False,  # Windowed app — no console window
     disable_windowed_traceback=False,
-    # icon='assets/icon.ico',  # TODO: create and add app icon
+    icon='reconstruction-zone.ico',
 )
 
 coll = COLLECT(

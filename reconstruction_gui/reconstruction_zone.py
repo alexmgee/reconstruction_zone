@@ -82,8 +82,19 @@ MASK_TARGETS = [
 # Shared widgets & infrastructure (extracted to separate modules)
 # ──────────────────────────────────────────────────────────────────────
 
-from widgets import Section as _Section, CollapsibleSection as _CollapsibleSection, slider_row, Tooltip
+from _version import __version__
+from widgets import (
+    Section as _Section, CollapsibleSection as _CollapsibleSection, slider_row, Tooltip,
+    COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
+    COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
+    COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
+    COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
+    COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
+    FONT_TEXT_SUBTITLE, FONT_TEXT_MONO_VALUE, FONT_TEXT_CONSOLE, FONT_TEXT_STATUS,
+    LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+)
 from app_infra import AppInfrastructure
+from tabs.alignment_tab import build_alignment_tab
 from tabs.source_tab import build_source_tab
 from tabs.gaps_tab import build_gaps_tab
 from tabs.projects_tab import build_projects_tab
@@ -97,10 +108,22 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
     """Unified photogrammetry prep: prepare → mask → review → gaps."""
 
     _PREFS_FILE = _this_dir / ".studio_prefs.json"
+    _SPHERESFM_PREBUILT_CANDIDATES = (
+        _project_root / ".tmp" / "SphereSfM-2025-8-18" / "SphereSfM-2024-12-14" / "colmap.exe",
+    )
+    _SPHERESFM_LEGACY_CUSTOM_DEFAULT = Path(r"D:\Tools\SphereSfM\bin\colmap.exe")
+    _ALIGNMENT_BINARY_PREF_KEYS = {
+        "colmap": "alignment_colmap_binary",
+        "spheresfm": "alignment_spheresfm_binary",
+    }
+    _ALIGNMENT_BINARY_ENV_KEYS = {
+        "colmap": "COLMAP_BINARY",
+        "spheresfm": "SPHERESFM_BINARY",
+    }
 
     def __init__(self):
         super().__init__()
-        self.title("Reconstruction Zone")
+        self.title(f"Reconstruction Zone v{__version__}")
         self.geometry("2200x1200")
         self.minsize(1200, 800)
         ctk.set_appearance_mode("dark")
@@ -117,6 +140,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.cancel_flag = threading.Event()
         self._prefs = self._load_prefs()
         self._preview_mode = "process"  # "process" or "review"
+        self._alignment_binary_paths: Dict[str, str] = {}
+        self._alignment_binary_status: Dict[str, Dict[str, object]] = {}
 
         # Review state (lazy)
         self._review_loaded = False
@@ -157,6 +182,238 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             logger.warning("ffmpeg not found on PATH — video extraction will not work")
         if not shutil.which("exiftool"):
             logger.warning("exiftool not found on PATH — SRT geotagging will not work")
+        self._refresh_alignment_binary_cache()
+
+    def _normalize_alignment_engine_name(self, engine_name: str) -> str:
+        normalized = (engine_name or "").strip().lower()
+        if normalized in {"colmap", "stock", "stock-colmap"}:
+            return "colmap"
+        if normalized in {"sphere", "spheresfm", "sphere-sfm"}:
+            return "spheresfm"
+        raise ValueError(f"Unknown alignment engine: {engine_name}")
+
+    def _alignment_binary_pref_key(self, engine_name: str) -> str:
+        normalized = self._normalize_alignment_engine_name(engine_name)
+        return self._ALIGNMENT_BINARY_PREF_KEYS[normalized]
+
+    def _iter_spheresfm_prebuilt_candidates(self):
+        seen = set()
+        for candidate in self._SPHERESFM_PREBUILT_CANDIDATES:
+            path = Path(candidate).expanduser()
+            key = str(path).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            yield path
+
+    def _maybe_promote_prebuilt_spheresfm_pref(self) -> bool:
+        pref_key = self._alignment_binary_pref_key("spheresfm")
+        configured_value = str(self._prefs.get(pref_key, "") or "").strip()
+        if not configured_value:
+            return False
+
+        try:
+            configured_path = Path(configured_value).expanduser().resolve()
+        except Exception:
+            configured_path = Path(configured_value).expanduser()
+
+        legacy_path = self._SPHERESFM_LEGACY_CUSTOM_DEFAULT
+        try:
+            legacy_path = legacy_path.resolve()
+        except Exception:
+            pass
+
+        if str(configured_path).lower() != str(legacy_path).lower():
+            return False
+
+        for candidate in self._iter_spheresfm_prebuilt_candidates():
+            if candidate.is_file():
+                preferred = str(candidate.resolve())
+                self._prefs[pref_key] = preferred
+                logger.info(
+                    "Promoting official prebuilt SphereSfM binary over legacy custom default: %s",
+                    preferred,
+                )
+                return True
+        return False
+
+    def _iter_alignment_binary_candidates(self, engine_name: str):
+        normalized = self._normalize_alignment_engine_name(engine_name)
+        pref_key = self._alignment_binary_pref_key(normalized)
+        env_key = self._ALIGNMENT_BINARY_ENV_KEYS[normalized]
+        seen = set()
+
+        def add_candidate(raw_path: Optional[str], source: str):
+            candidate = (raw_path or "").strip()
+            if not candidate:
+                return
+            path = Path(candidate).expanduser()
+            key = str(path).lower()
+            if key in seen:
+                return
+            seen.add(key)
+            yield path, source
+
+        yield from add_candidate(self._prefs.get(pref_key, ""), "prefs")
+        yield from add_candidate(os.environ.get(env_key, ""), "env")
+
+        if normalized == "colmap":
+            yield from add_candidate(shutil.which("colmap"), "path")
+            home_colmap_root = Path.home() / "COLMAP"
+            if home_colmap_root.is_dir():
+                for path in sorted(home_colmap_root.glob("*/bin/colmap.exe"), reverse=True):
+                    yield from add_candidate(str(path), "home-colmap")
+                yield from add_candidate(str(home_colmap_root / "bin" / "colmap.exe"), "home-colmap")
+        else:
+            for path in self._iter_spheresfm_prebuilt_candidates():
+                yield from add_candidate(str(path), "official-prebuilt-v1.2")
+            yield from add_candidate(r"D:\Tools\SphereSfM\bin\colmap.exe", "legacy-custom-spheresfm")
+            yield from add_candidate(str(Path.home() / "SphereSfM" / "bin" / "colmap.exe"), "home-spheresfm")
+
+    def _validate_alignment_binary_candidate(self, engine_name: str, binary_path: Path) -> Dict[str, object]:
+        from reconstruction_gui.colmap_runner import ColmapRunner
+
+        normalized = self._normalize_alignment_engine_name(engine_name)
+        probe_camera_model = "SPHERE" if normalized == "spheresfm" else "PINHOLE"
+        probe_root = _project_root / ".tmp" / "alignment_binary_probe" / normalized
+        runner = ColmapRunner(
+            binary_path=str(binary_path),
+            camera_model=probe_camera_model,
+            workspace_root=str(probe_root),
+            engine_name=normalized,
+        )
+        validation = runner.validate_binary()
+        return {
+            "success": validation.success,
+            "path": str(binary_path),
+            "resolved_binary": validation.resolved_binary,
+            "binary_flavor": validation.binary_flavor,
+            "supports_sphere_workflow": validation.supports_sphere_workflow,
+            "detected_commands": list(validation.detected_commands),
+            "error": validation.error,
+        }
+
+    def _refresh_alignment_binary_cache(self):
+        updated_prefs = self._maybe_promote_prebuilt_spheresfm_pref()
+
+        for engine_name in ("colmap", "spheresfm"):
+            pref_key = self._alignment_binary_pref_key(engine_name)
+            configured_value = str(self._prefs.get(pref_key, "") or "").strip()
+            errors: List[str] = []
+            selected: Optional[Dict[str, object]] = None
+
+            for candidate, source in self._iter_alignment_binary_candidates(engine_name):
+                try:
+                    info = self._validate_alignment_binary_candidate(engine_name, candidate)
+                except Exception as exc:
+                    errors.append(f"{candidate}: {exc}")
+                    continue
+
+                if not info["success"]:
+                    errors.append(f"{candidate}: {info['error']}")
+                    continue
+
+                if engine_name == "spheresfm" and not info["supports_sphere_workflow"]:
+                    errors.append(
+                        f"{candidate}: binary validated but does not expose sphere workflow commands"
+                    )
+                    continue
+
+                if (
+                    engine_name == "colmap"
+                    and info["binary_flavor"] == "spheresfm-like"
+                    and source not in {"prefs", "env"}
+                ):
+                    errors.append(
+                        f"{candidate}: skipping sphere-focused binary for stock COLMAP auto-discovery"
+                    )
+                    continue
+
+                selected = {
+                    **info,
+                    "engine_name": engine_name,
+                    "source": source,
+                    "status": "ready",
+                }
+                break
+
+            if selected is None:
+                message = "; ".join(errors) if errors else "No candidate binary found"
+                self._alignment_binary_paths[engine_name] = ""
+                self._alignment_binary_status[engine_name] = {
+                    "engine_name": engine_name,
+                    "path": configured_value,
+                    "resolved_binary": "",
+                    "binary_flavor": "",
+                    "supports_sphere_workflow": False,
+                    "detected_commands": [],
+                    "status": "missing",
+                    "source": "",
+                    "error": message,
+                }
+                if configured_value:
+                    logger.warning(
+                        "%s binary configured but unavailable: %s",
+                        engine_name,
+                        message,
+                    )
+                else:
+                    logger.info(
+                        "%s binary not discovered yet — alignment support will stay unavailable until one is configured",
+                        engine_name,
+                    )
+                continue
+
+            resolved_binary = str(selected["resolved_binary"])
+            self._alignment_binary_paths[engine_name] = resolved_binary
+            self._alignment_binary_status[engine_name] = selected
+
+            if configured_value != resolved_binary:
+                self._prefs[pref_key] = resolved_binary
+                updated_prefs = True
+
+            logger.info(
+                "Detected %s binary: %s (%s)",
+                engine_name,
+                resolved_binary,
+                selected["binary_flavor"],
+            )
+
+        if updated_prefs:
+            self._save_prefs()
+
+    def get_alignment_binary_info(self, engine_name: str) -> Dict[str, object]:
+        normalized = self._normalize_alignment_engine_name(engine_name)
+        if normalized not in self._alignment_binary_status:
+            self._refresh_alignment_binary_cache()
+        return dict(self._alignment_binary_status.get(normalized, {}))
+
+    def get_alignment_binary_path(self, engine_name: str) -> str:
+        info = self.get_alignment_binary_info(engine_name)
+        return str(info.get("resolved_binary", "") or "")
+
+    def create_alignment_runner(
+        self,
+        engine_name: str,
+        workspace_root: str,
+        camera_model: str,
+        binary_path: Optional[str] = None,
+    ):
+        from reconstruction_gui.colmap_runner import ColmapRunner
+
+        normalized = self._normalize_alignment_engine_name(engine_name)
+        resolved_binary = (binary_path or "").strip() or self.get_alignment_binary_path(normalized)
+        if not resolved_binary:
+            status = self.get_alignment_binary_info(normalized)
+            detail = status.get("error", "No binary configured")
+            raise RuntimeError(f"{normalized} binary is unavailable: {detail}")
+
+        return ColmapRunner(
+            binary_path=resolved_binary,
+            camera_model=camera_model,
+            workspace_root=workspace_root,
+            engine_name=normalized,
+        )
 
     # ── prefs ──
     # _load_prefs and _save_prefs inherited from AppInfrastructure
@@ -168,6 +425,98 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             if val:
                 entry.delete(0, "end")
                 entry.insert(0, val)
+        alignment_entry_map = [
+            ("alignment_images_dir", "alignment_images_entry"),
+            ("alignment_masks_dir", "alignment_masks_entry"),
+            ("alignment_workspace_root", "alignment_workspace_entry"),
+            ("alignment_vocab_tree_path", "alignment_vocab_tree_entry"),
+            ("alignment_camera_params", "alignment_camera_params_entry"),
+            ("alignment_pose_path", "alignment_pose_path_entry"),
+            ("alignment_camera_mask_path", "alignment_camera_mask_path_entry"),
+            ("alignment_snapshot_path", "alignment_snapshot_path_entry"),
+            ("alignment_spatial_max_distance", "alignment_spatial_max_distance_entry"),
+        ]
+        for pref_key, attr_name in alignment_entry_map:
+            entry = getattr(self, attr_name, None)
+            val = self._prefs.get(pref_key, "")
+            if entry is not None and val:
+                entry.delete(0, "end")
+                entry.insert(0, val)
+        if hasattr(self, "alignment_engine_var") and self._prefs.get("alignment_engine"):
+            self.alignment_engine_var.set(self._prefs["alignment_engine"])
+        if hasattr(self, "alignment_strategy_var") and self._prefs.get("alignment_strategy"):
+            self.alignment_strategy_var.set(self._prefs["alignment_strategy"])
+        if hasattr(self, "alignment_mapper_var") and self._prefs.get("alignment_mapper"):
+            mapper_value = str(self._prefs["alignment_mapper"])
+            if mapper_value == "global_mapper":
+                mapper_value = "global"
+            self.alignment_mapper_var.set(mapper_value)
+        if hasattr(self, "alignment_guided_var") and "alignment_guided_matching" in self._prefs:
+            self.alignment_guided_var.set(bool(self._prefs["alignment_guided_matching"]))
+        if hasattr(self, "alignment_single_camera_var") and "alignment_single_camera" in self._prefs:
+            self.alignment_single_camera_var.set(bool(self._prefs["alignment_single_camera"]))
+        if hasattr(self, "alignment_spatial_is_gps_var") and "alignment_spatial_is_gps" in self._prefs:
+            self.alignment_spatial_is_gps_var.set(bool(self._prefs["alignment_spatial_is_gps"]))
+        if hasattr(self, "alignment_ba_refine_focal_var") and "alignment_ba_refine_focal_length" in self._prefs:
+            self.alignment_ba_refine_focal_var.set(bool(self._prefs["alignment_ba_refine_focal_length"]))
+        if hasattr(self, "alignment_ba_refine_principal_var") and "alignment_ba_refine_principal_point" in self._prefs:
+            self.alignment_ba_refine_principal_var.set(bool(self._prefs["alignment_ba_refine_principal_point"]))
+        if hasattr(self, "alignment_ba_refine_extra_var") and "alignment_ba_refine_extra_params" in self._prefs:
+            self.alignment_ba_refine_extra_var.set(bool(self._prefs["alignment_ba_refine_extra_params"]))
+        if hasattr(self, "alignment_max_features_entry") and self._prefs.get("alignment_max_features"):
+            self.alignment_max_features_entry.delete(0, "end")
+            self.alignment_max_features_entry.insert(0, str(self._prefs["alignment_max_features"]))
+        if hasattr(self, "alignment_max_image_size_entry") and "alignment_max_image_size" in self._prefs:
+            self.alignment_max_image_size_entry.delete(0, "end")
+            self.alignment_max_image_size_entry.insert(0, str(self._prefs["alignment_max_image_size"]))
+        if hasattr(self, "alignment_max_num_matches_entry") and "alignment_max_num_matches" in self._prefs:
+            self.alignment_max_num_matches_entry.delete(0, "end")
+            self.alignment_max_num_matches_entry.insert(0, str(self._prefs["alignment_max_num_matches"]))
+        if hasattr(self, "alignment_min_num_inliers_entry") and "alignment_min_num_inliers" in self._prefs:
+            self.alignment_min_num_inliers_entry.delete(0, "end")
+            self.alignment_min_num_inliers_entry.insert(0, str(self._prefs["alignment_min_num_inliers"]))
+        if hasattr(self, "alignment_snapshot_freq_entry") and "alignment_snapshot_images_freq" in self._prefs:
+            self.alignment_snapshot_freq_entry.delete(0, "end")
+            snapshot_freq = self._prefs["alignment_snapshot_images_freq"]
+            if snapshot_freq not in ("", None):
+                self.alignment_snapshot_freq_entry.insert(0, str(snapshot_freq))
+        if hasattr(self, "alignment_binary_entry"):
+            engine_name = self._prefs.get("alignment_engine", "colmap")
+            pref_key = self._ALIGNMENT_BINARY_PREF_KEYS.get(engine_name, self._ALIGNMENT_BINARY_PREF_KEYS["colmap"])
+            binary_val = self._prefs.get(pref_key, "")
+            if binary_val:
+                self.alignment_binary_entry.delete(0, "end")
+                self.alignment_binary_entry.insert(0, binary_val)
+                detected_binary = self.get_alignment_binary_path(engine_name)
+                self._alignment_last_auto_binary = binary_val if binary_val == detected_binary else ""
+        if hasattr(self, "alignment_camera_model_var") and self._prefs.get("alignment_camera_model"):
+            engine_name = self._prefs.get("alignment_engine", "colmap")
+            restored_camera_model = self._prefs.get("alignment_camera_model", "")
+            if engine_name != "spheresfm" and restored_camera_model:
+                self.alignment_camera_model_var.set(restored_camera_model)
+            default_camera_model = "SPHERE" if engine_name == "spheresfm" else "PINHOLE"
+            self._alignment_last_auto_camera_model = (
+                restored_camera_model if restored_camera_model == default_camera_model else ""
+            )
+        # Rig mode, preset, file
+        # Rig mode is derived from preset selection, no checkbox to restore
+        if hasattr(self, "alignment_rig_preset_var") and self._prefs.get("alignment_rig_preset"):
+            self.alignment_rig_preset_var.set(self._prefs["alignment_rig_preset"])
+        if hasattr(self, "alignment_rig_file_entry") and self._prefs.get("alignment_rig_file"):
+            self.alignment_rig_file_entry.delete(0, "end")
+            self.alignment_rig_file_entry.insert(0, self._prefs["alignment_rig_file"])
+        for pref_key, attr_name in [
+            ("alignment_extract_args", "alignment_extract_args_text"),
+            ("alignment_match_args", "alignment_match_args_text"),
+            ("alignment_reconstruct_args", "alignment_reconstruct_args_text"),
+        ]:
+            textbox = getattr(self, attr_name, None)
+            text_val = self._prefs.get(pref_key, "")
+            if textbox is not None and text_val:
+                textbox.configure(state="normal")
+                textbox.delete("1.0", "end")
+                textbox.insert("1.0", str(text_val))
+                textbox.configure(state="disabled")
         # Restore prompt fields
         if self._prefs.get("remove_prompts"):
             self.remove_prompts_entry.delete(0, "end")
@@ -194,6 +543,12 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Load image navigator if input is set
         if self._prefs.get("input_dir"):
             self.after(200, self._load_image_list)
+        # Restore static mask layers if output dir has them
+        output_dir = self._prefs.get("output_dir", "")
+        if output_dir and Path(output_dir).is_dir():
+            sm_dir = Path(output_dir) / "static_masks"
+            if sm_dir.exists():
+                self._init_static_mask_manager(output_dir)
 
     def _on_close(self):
         """Fast shutdown — kill subprocesses, clear caches, destroy widgets."""
@@ -203,6 +558,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self._save_prefs()
         # Signal any running extraction/processing threads to stop
         self.cancel_flag.set()
+        if hasattr(self, "_alignment_cancel_event") and self._alignment_cancel_event is not None:
+            self._alignment_cancel_event.set()
+        # Destroy VTK viewer before window is destroyed
+        from tabs.alignment_tab import alignment_viewer_destroy
+        alignment_viewer_destroy(self)
         if self._editor_proc is not None and self._editor_proc.poll() is None:
             self._editor_proc.terminate()
         self._thumb_cache.clear()
@@ -237,18 +597,20 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.tabs.add("Extract")
         self.tabs.add("Mask")
         self.tabs.add("Review")
+        self.tabs.add("Align")
         self.tabs.add("Coverage")
 
         # Right: shared preview panel (collapsible)
         self._preview_visible = True
-        self._preview_panel = ctk.CTkFrame(self._main_frame)
-        self._preview_panel.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+        self._preview_panel = ctk.CTkFrame(self._main_frame, corner_radius=0)
+        self._preview_panel.grid(row=0, column=1, sticky="nsew", padx=0, pady=(17, 0))
         self._build_preview_panel()
 
         build_projects_tab(self, self.tabs.tab("Projects"))
         build_source_tab(self, self.tabs.tab("Extract"))
         self._build_process_tab()
         self._build_review_tab()
+        build_alignment_tab(self, self.tabs.tab("Align"))
         build_gaps_tab(self, self.tabs.tab("Coverage"))
 
         # Projects is the default tab — swap preview for detail panel
@@ -304,23 +666,30 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # ── I/O ──
         row = ctk.CTkFrame(core, fg_color="transparent")
         row.pack(fill="x", padx=6, pady=3)
-        ctk.CTkLabel(row, text="Input:", width=55, anchor="e").pack(side="left")
+        ctk.CTkLabel(row, text="Input:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
         self.input_entry = ctk.CTkEntry(row, placeholder_text="Folder, image, or video")
         self.input_entry.pack(side="left", fill="x", expand=True, padx=5)
-        ctk.CTkButton(row, text="Folder", width=55, command=self._browse_input_folder).pack(side="left", padx=(0, 2))
-        ctk.CTkButton(row, text="File", width=45, command=self._browse_input_file).pack(side="left")
+        ctk.CTkButton(row, text="Folder", width=55,
+                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                      font=ctk.CTkFont(size=12),
+                      command=self._browse_input_folder).pack(side="left", padx=(0, 2))
+        ctk.CTkButton(row, text="File", width=45,
+                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                      font=ctk.CTkFont(size=12),
+                      command=self._browse_input_file).pack(side="left")
 
         row2 = ctk.CTkFrame(core, fg_color="transparent")
         row2.pack(fill="x", padx=6, pady=3)
-        ctk.CTkLabel(row2, text="Output:", width=55, anchor="e").pack(side="left")
+        ctk.CTkLabel(row2, text="Output:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
         self.output_entry = ctk.CTkEntry(row2, placeholder_text="Output folder for masks")
         self.output_entry.pack(side="left", fill="x", expand=True, padx=5)
-        ctk.CTkButton(row2, text="Browse", width=65,
-                      command=lambda: self._browse_dir_into(self.output_entry)).pack(side="left")
+        ctk.CTkButton(row2, text="...", width=BROWSE_BUTTON_WIDTH,
+                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                      command=self._browse_output_folder).pack(side="left")
 
         row2b = ctk.CTkFrame(core, fg_color="transparent")
         row2b.pack(fill="x", padx=6, pady=(0, 3))
-        ctk.CTkLabel(row2b, text="", width=55).pack(side="left")
+        ctk.CTkLabel(row2b, text="", width=LABEL_FIELD_WIDTH).pack(side="left")
         self.review_folder_var = ctk.BooleanVar(value=False)
         _rf = ctk.CTkCheckBox(row2b, text="Create review folder",
                               variable=self.review_folder_var, width=0)
@@ -395,14 +764,14 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # ── Prompts & Targets ──
         r2 = ctk.CTkFrame(core, fg_color="transparent")
         r2.pack(fill="x", padx=6, pady=(8, 3))
-        ctk.CTkLabel(r2, text="Remove:", width=55, anchor="e").pack(side="left")
+        ctk.CTkLabel(r2, text="Remove:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
         self.remove_prompts_entry = ctk.CTkEntry(
             r2, placeholder_text="default: person, tripod, backpack, selfie stick")
         self.remove_prompts_entry.pack(side="left", fill="x", expand=True, padx=5)
 
         r3 = ctk.CTkFrame(core, fg_color="transparent")
         r3.pack(fill="x", padx=6, pady=3)
-        ctk.CTkLabel(r3, text="Keep:", width=55, anchor="e").pack(side="left")
+        ctk.CTkLabel(r3, text="Keep:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
         self.keep_prompts_entry = ctk.CTkEntry(
             r3, placeholder_text="(optional) objects to protect from masking")
         self.keep_prompts_entry.pack(side="left", fill="x", expand=True, padx=5)
@@ -452,6 +821,47 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         _ip.pack(side="left", padx=(40, 0))
         Tooltip(_ip, "Fill masked regions with plausible background texture\n"
                      "so 3DGS gets gradient signal instead of black void")
+
+        # ==============================================================
+        #  STATIC MASKS (user-authored persistent overlays)
+        # ==============================================================
+        sm_sec = _CollapsibleSection(scroll, "Static Masks",
+                                     subtitle="persistent overlays applied to every frame",
+                                     expanded=False)
+        sm_sec.pack(fill="x", pady=(0, 6), padx=4)
+        sm = sm_sec.content
+
+        # Layer list — plain frame, grows with content (no empty scroll area)
+        self._static_mask_list = ctk.CTkFrame(sm, fg_color="transparent")
+        self._static_mask_list.pack(fill="x", padx=6, pady=(2, 4))
+
+        # Placeholder label shown when no layers exist
+        self._sm_empty_label = ctk.CTkLabel(
+            self._static_mask_list, text="No static masks defined",
+            font=("Consolas", 10), text_color="#6b7280",
+        )
+        self._sm_empty_label.pack(pady=4)
+
+        # Buttons row
+        sm_btns = ctk.CTkFrame(sm, fg_color="transparent")
+        sm_btns.pack(fill="x", padx=6, pady=(0, 4))
+
+        ctk.CTkButton(sm_btns, text="New", width=70, height=28,
+                       fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                       font=ctk.CTkFont(size=12),
+                       command=self._on_new_static_mask).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(sm_btns, text="Edit", width=70, height=28,
+                       fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+                       font=ctk.CTkFont(size=12),
+                       command=self._on_edit_static_mask).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(sm_btns, text="Delete", width=70, height=28,
+                       fg_color=COLOR_ACTION_DANGER, hover_color=COLOR_ACTION_DANGER_H,
+                       font=ctk.CTkFont(size=12),
+                       command=self._on_delete_static_mask).pack(side="left")
+
+        self._static_mask_manager = None  # Initialized when input dir is set
+        self._sm_layer_widgets = []       # List of (frame, checkbox_var, name_label) per layer
+        self._sm_selected_index = None    # Currently selected layer for edit/delete
 
         # ==============================================================
         #  DETECTION & REFINEMENT
@@ -611,7 +1021,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.colmap_dir_var = ctk.StringVar(value="")
         ctk.CTkEntry(colr1, textvariable=self.colmap_dir_var,
                      width=200).pack(side="left", padx=2, fill="x", expand=True)
-        ctk.CTkButton(colr1, text="Browse", width=60,
+        ctk.CTkButton(colr1, text="...", width=BROWSE_BUTTON_WIDTH,
+                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                       command=self._browse_colmap_dir).pack(side="left", padx=2)
 
         colr2 = ctk.CTkFrame(colc, fg_color="transparent")
@@ -695,22 +1106,25 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         btn_row.pack(fill="x", pady=6)
 
         self._preview_run_btn = ctk.CTkButton(
-            btn_row, text="Preview", width=90, height=36,
-            fg_color="#2563eb", hover_color="#1d4ed8",
+            btn_row, text="Preview", width=90, height=38,
+            fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+            font=ctk.CTkFont(size=12),
             command=self._on_preview,
         )
         self._preview_run_btn.pack(side="left", padx=(10, 5))
 
         self.run_btn = ctk.CTkButton(
-            btn_row, text="Run Masking", width=140, height=36,
-            fg_color="#16a34a", hover_color="#15803d",
+            btn_row, text="Run Masking", height=38,
+            fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
+            font=ctk.CTkFont(size=13, weight="bold"),
             command=self._on_run,
         )
-        self.run_btn.pack(side="left", padx=5)
+        self.run_btn.pack(side="left", fill="x", expand=True, padx=5)
 
         self.stop_btn = ctk.CTkButton(
-            btn_row, text="Stop", width=80, height=36,
-            fg_color="#dc2626", hover_color="#b91c1c",
+            btn_row, text="Stop", width=70, height=38,
+            fg_color=COLOR_ACTION_DANGER, hover_color=COLOR_ACTION_DANGER_H,
+            font=ctk.CTkFont(size=12),
             command=self._on_stop,
         )
 
@@ -736,9 +1150,13 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                       command=self._mq_add_current).pack(side="left", padx=(0, 4))
         ctk.CTkButton(mq_ctrl, text="Add Subfolders", width=100,
                       command=self._mq_add_subfolders).pack(side="left", padx=(0, 4))
-        ctk.CTkButton(mq_ctrl, text="Remove", width=60, fg_color="#666",
+        ctk.CTkButton(mq_ctrl, text="Remove", width=60,
+                      fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+                      font=ctk.CTkFont(size=12),
                       command=self._mq_remove_selected).pack(side="left", padx=(0, 4))
-        ctk.CTkButton(mq_ctrl, text="Clear Done", width=72, fg_color="#666",
+        ctk.CTkButton(mq_ctrl, text="Clear Done", width=72,
+                      fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+                      font=ctk.CTkFont(size=12),
                       command=self._mq_clear_done).pack(side="left")
 
         # queue list — scrollable, auto-resizes
@@ -754,7 +1172,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         mq_btn_row.pack(fill="x", pady=(6, 4))
         self.mq_run_btn = ctk.CTkButton(
             mq_btn_row, text="Process Queue", command=self._run_masking_queue,
-            fg_color="#2E7D32", hover_color="#1B5E20",
+            fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
             font=ctk.CTkFont(size=13, weight="bold"), height=38,
         )
         self.mq_run_btn.pack(side="left", fill="x", expand=True)
@@ -828,6 +1246,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         if self._preview_mode == "process":
             self._load_image_list()
 
+    def _browse_output_folder(self):
+        self._browse_dir_into(self.output_entry, title="Select Output Folder")
+        self._reset_static_mask_manager()
+
     def _browse_input_file(self):
         self._browse_file_for(
             self.input_entry,
@@ -855,7 +1277,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         # Row 0: Header with zoom + collapse toggle
         header = ctk.CTkFrame(panel, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=4, pady=(4, 0))
+        header.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 0))
         ctk.CTkLabel(header, text="Preview",
                      font=ctk.CTkFont(size=13, weight="bold"),
                      anchor="w").pack(side="left")
@@ -977,7 +1399,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             if hasattr(self, '_preview_show_btn'):
                 self._preview_show_btn.destroy()
             self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
-            self._preview_panel.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+            self._preview_panel.grid(row=0, column=1, sticky="nsew", padx=0, pady=(17, 0))
             self._preview_visible = True
         self._prefs["preview_visible"] = self._preview_visible
         self._save_prefs()
@@ -1000,22 +1422,42 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         """Tab changed — switch navigator data source and swap right panel."""
         active = self.tabs.get()
 
-        # Swap right-side panel: Projects detail vs. preview
+        # Swap right-side panel: Projects info vs. Align detail vs. preview
         if active == "Projects":
             self._preview_panel.grid_forget()
             if hasattr(self, '_preview_show_btn'):
                 self._preview_show_btn.destroy()
-            self._proj_detail_panel.grid(
-                row=0, column=1, sticky="nsew", padx=0, pady=0,
-            )
+            if hasattr(self, '_alignment_detail_panel'):
+                self._alignment_detail_panel.grid_forget()
+            if hasattr(self, '_proj_right_panel'):
+                self._proj_right_panel.grid(
+                    row=0, column=1, sticky="nsew", padx=0, pady=(17, 0),
+                )
             self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
+        elif active == "Align":
+            self._preview_panel.grid_forget()
+            if hasattr(self, '_preview_show_btn'):
+                self._preview_show_btn.destroy()
+            if hasattr(self, '_proj_right_panel'):
+                self._proj_right_panel.grid_forget()
+            if hasattr(self, '_alignment_detail_panel'):
+                self._alignment_detail_panel.grid(
+                    row=0, column=1, sticky="nsew", padx=0, pady=(17, 0),
+                )
+            self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
+            from tabs.alignment_tab import alignment_viewer_resume
+            alignment_viewer_resume(self)
         else:
-            if hasattr(self, '_proj_detail_panel'):
-                self._proj_detail_panel.grid_forget()
+            if hasattr(self, '_proj_right_panel'):
+                self._proj_right_panel.grid_forget()
+            if hasattr(self, '_alignment_detail_panel'):
+                self._alignment_detail_panel.grid_forget()
+            from tabs.alignment_tab import alignment_viewer_pause
+            alignment_viewer_pause(self)
             if self._preview_visible:
                 self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
                 self._preview_panel.grid(
-                    row=0, column=1, sticky="nsew", padx=0, pady=0,
+                    row=0, column=1, sticky="nsew", padx=0, pady=(17, 0),
                 )
             else:
                 self._main_frame.grid_columnconfigure(1, weight=0, minsize=0)
@@ -1282,6 +1724,224 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 return files[0]
         return None
 
+    # ------------------------------------------------------------------
+    #  Static mask handlers
+    # ------------------------------------------------------------------
+
+    def _init_static_mask_manager(self, dataset_dir: str):
+        """Initialize the static mask manager for the current dataset."""
+        from static_masks import StaticMaskManager
+        self._static_mask_manager = StaticMaskManager(Path(dataset_dir))
+        self._refresh_static_mask_list()
+
+    def _reset_static_mask_manager(self):
+        """Reset the static mask manager and reload from the current output dir."""
+        self._static_mask_manager = None
+        self._refresh_static_mask_list()
+        # Auto-discover if the new output dir already has static masks
+        output_dir = self.output_entry.get().strip()
+        if output_dir and Path(output_dir).is_dir():
+            sm_dir = Path(output_dir) / "static_masks"
+            if sm_dir.exists():
+                self._init_static_mask_manager(output_dir)
+
+    def _refresh_static_mask_list(self):
+        """Rebuild the layer list UI from the manager's state."""
+        for w in self._sm_layer_widgets:
+            w["frame"].destroy()
+        self._sm_layer_widgets = []
+
+        mgr = self._static_mask_manager
+        if mgr is None or not mgr.layers:
+            self._sm_empty_label.pack(pady=4)
+            return
+
+        self._sm_empty_label.pack_forget()
+
+        for i, layer in enumerate(mgr.layers):
+            row = ctk.CTkFrame(self._static_mask_list, fg_color="#2b2b2b",
+                                corner_radius=5)
+            row.pack(fill="x", pady=2, padx=2)
+
+            # Click-to-select toggle (batch queue pattern)
+            selected = False
+            def toggle(event=None, idx=i):
+                nonlocal selected
+                selected = not selected
+                self._sm_layer_widgets[idx]["selected"] = selected
+                self._sm_layer_widgets[idx]["frame"].configure(
+                    fg_color="#3d5a80" if selected else "#2b2b2b")
+            row.bind("<Button-1>", toggle)
+
+            var = ctk.BooleanVar(value=layer.enabled)
+            cb = ctk.CTkCheckBox(row, text="", variable=var, width=24,
+                                  command=lambda idx=i, v=var: self._on_toggle_static_mask(idx, v))
+            cb.pack(side="left", padx=(6, 0))
+
+            name_label = ctk.CTkLabel(row, text=layer.name,
+                                       font=("Consolas", 11), text_color="#e5e7eb")
+            name_label.pack(side="left", padx=(4, 0))
+            name_label.bind("<Button-1>", toggle)
+
+            self._sm_layer_widgets.append({
+                "frame": row,
+                "enabled_var": var,
+                "name_label": name_label,
+                "selected": False,
+                "index": i,
+            })
+
+    def _on_toggle_static_mask(self, index, var):
+        """Toggle a layer's enabled state."""
+        if self._static_mask_manager:
+            self._static_mask_manager.set_enabled(index, var.get())
+
+    def _on_new_static_mask(self):
+        """Open the OpenCV editor to paint a new static mask."""
+        input_dir = self.input_entry.get().strip()
+        if not input_dir or not Path(input_dir).is_dir():
+            self.log("Set an input directory first")
+            return
+        output_dir = self.output_entry.get().strip()
+        if not output_dir:
+            self.log("Set an output directory first")
+            return
+
+        # Re-init if manager is missing or points to a different output dir
+        expected_dir = Path(output_dir) / "static_masks"
+        if (self._static_mask_manager is None
+                or self._static_mask_manager.static_dir != expected_dir):
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            self._init_static_mask_manager(output_dir)
+
+        reference = self._get_current_reference_image()
+        if reference is None:
+            self.log("No images found in input directory")
+            return
+        self.log(f"Opening static mask editor on: {reference.name}")
+
+        import threading
+
+        def _paint():
+            from review_masks import MaskReviewer
+            reviewer = MaskReviewer()
+            result = reviewer.paint_static_mask(
+                reference, image_list=self._image_list,
+            )
+            if result is not None:
+                self.after(0, lambda: self._prompt_static_mask_name(result))
+            else:
+                self.after(0, lambda: self.log("Static mask cancelled"))
+
+        threading.Thread(target=_paint, daemon=True).start()
+
+    def _prompt_static_mask_name(self, mask):
+        """Show a small dialog to name the new static mask layer."""
+        dialog = ctk.CTkInputDialog(
+            text="Name this static mask layer:",
+            title="Save Static Mask",
+        )
+        name = dialog.get_input()
+        if name and name.strip():
+            self._static_mask_manager.add_layer(name.strip(), mask)
+            self._refresh_static_mask_list()
+            self.log(f"Static mask saved: {name.strip()}")
+            # Persist to active project if one is selected
+            if (hasattr(self, '_project_store') and self._project_store
+                    and hasattr(self, '_selected_project_id') and self._selected_project_id):
+                proj = self._project_store.get(self._selected_project_id)
+                if proj:
+                    proj.static_masks_dir = str(self._static_mask_manager.static_dir)
+                    self._project_store.save()
+        else:
+            self.log("Static mask not saved (no name given)")
+
+    def _get_selected_static_mask_indices(self):
+        """Return indices of selected (highlighted) static mask layers."""
+        return [w["index"] for w in self._sm_layer_widgets if w["selected"]]
+
+    def _get_current_reference_image(self):
+        """Get the current preview image path, or first image in input dir."""
+        # Use the image currently shown in the preview panel
+        preview = self._preview_image_entry.get().strip()
+        if preview and Path(preview).is_file():
+            return Path(preview)
+        # Fallback to first image in input dir
+        input_dir = self.input_entry.get().strip()
+        if input_dir and Path(input_dir).is_dir():
+            img_exts = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+            images = sorted(
+                p for p in Path(input_dir).iterdir()
+                if p.suffix.lower() in img_exts
+            )
+            if images:
+                return images[0]
+        return None
+
+    def _on_edit_static_mask(self):
+        """Re-open the editor for the selected static mask layer."""
+        selected = self._get_selected_static_mask_indices()
+        if not selected:
+            self.log("Click a static mask row to select it, then click Edit")
+            return
+        if len(selected) > 1:
+            self.log("Select one layer to edit (multiple selected)")
+            return
+        mgr = self._static_mask_manager
+        if mgr is None:
+            return
+
+        import cv2 as _cv2
+        import numpy as _np
+
+        idx = selected[0]
+        layer = mgr.layers[idx]
+        mask_path = mgr.static_dir / layer.filename
+        existing = _cv2.imread(str(mask_path), _cv2.IMREAD_GRAYSCALE)
+        if existing is None:
+            self.log(f"Could not load mask: {mask_path}")
+            return
+        existing = (existing > 127).astype(_np.uint8)
+
+        reference = self._get_current_reference_image()
+        if reference is None:
+            self.log("No images found in input directory")
+            return
+        self.log(f"Editing static mask '{layer.name}' on: {reference.name}")
+
+        import threading
+
+        def _edit():
+            from review_masks import MaskReviewer
+            reviewer = MaskReviewer()
+            result = reviewer.paint_static_mask(
+                reference, existing_mask=existing,
+                image_list=self._image_list,
+            )
+            if result is not None:
+                mgr.update_layer(idx, result)
+                self.after(0, lambda: self.log(f"Static mask updated: {layer.name}"))
+            else:
+                self.after(0, lambda: self.log("Edit cancelled"))
+
+        threading.Thread(target=_edit, daemon=True).start()
+
+    def _on_delete_static_mask(self):
+        """Delete all selected static mask layers."""
+        selected = self._get_selected_static_mask_indices()
+        if not selected:
+            self.log("Click a static mask row to select it, then click Delete")
+            return
+        mgr = self._static_mask_manager
+        if mgr is None:
+            return
+        # Remove in reverse order so indices don't shift
+        names = [mgr.layers[i].name for i in selected]
+        for i in sorted(selected, reverse=True):
+            mgr.remove_layer(i)
+        self._refresh_static_mask_list()
+        self.log(f"Deleted static mask(s): {', '.join(names)}")
+
     def _on_preview(self):
         # Auto-load image list if not yet loaded
         if not self._image_list:
@@ -1404,6 +2064,13 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._prefs["save_review_folder"] = self.review_folder_var.get()
         self._prefs["save_reject_review_images"] = self.review_rejects_var.get()
         self._save_prefs()
+
+        # Initialize static mask manager for this dataset
+        expected_dir = Path(output_path) / "static_masks"
+        if (self._static_mask_manager is None
+                or self._static_mask_manager.static_dir != expected_dir):
+            if Path(output_path).is_dir():
+                self._init_static_mask_manager(output_path)
 
         if self.is_running or self.mq_processing:
             self.log("A process is already running.")
@@ -1572,6 +2239,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         )
         if remove_prompts is not None:
             config_kwargs["remove_prompts"] = remove_prompts
+
+        # Static mask overlay paths
+        if self._static_mask_manager:
+            config_kwargs["static_mask_paths"] = self._static_mask_manager.get_enabled_paths()
 
         config = MaskConfig(**config_kwargs)
         return config, model_str, geometry
@@ -2049,26 +2720,31 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         row = ctk.CTkFrame(dsc, fg_color="transparent")
         row.pack(fill="x", pady=2)
-        ctk.CTkLabel(row, text="Masks:", width=52, anchor="e").pack(side="left")
+        ctk.CTkLabel(row, text="Masks:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
         self.masks_entry = ctk.CTkEntry(row, placeholder_text="Directory containing mask files")
         self.masks_entry.pack(side="left", fill="x", expand=True, padx=4)
-        ctk.CTkButton(row, text="Browse", width=60,
+        ctk.CTkButton(row, text="...", width=BROWSE_BUTTON_WIDTH,
+                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                       command=lambda: self._browse_dir_into(self.masks_entry)).pack(side="left")
 
         row2 = ctk.CTkFrame(dsc, fg_color="transparent")
         row2.pack(fill="x", pady=2)
-        ctk.CTkLabel(row2, text="Images:", width=52, anchor="e").pack(side="left")
+        ctk.CTkLabel(row2, text="Images:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
         self.images_entry = ctk.CTkEntry(row2, placeholder_text="Directory containing source images")
         self.images_entry.pack(side="left", fill="x", expand=True, padx=4)
-        ctk.CTkButton(row2, text="Browse", width=60,
+        ctk.CTkButton(row2, text="...", width=BROWSE_BUTTON_WIDTH,
+                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                       command=lambda: self._browse_dir_into(self.images_entry)).pack(side="left")
 
         btn_row = ctk.CTkFrame(dsc, fg_color="transparent")
         btn_row.pack(fill="x", pady=(2, 0))
-        ctk.CTkButton(btn_row, text="Load Masks", width=110, fg_color="#2563eb",
-                      hover_color="#1d4ed8", command=self._load_review).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_row, text="Load Masks", width=110,
+                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                      font=ctk.CTkFont(size=12),
+                      command=self._load_review).pack(side="left", padx=(0, 8))
         ctk.CTkButton(btn_row, text="Auto-detect from Output", width=170,
-                      fg_color="#6b7280", hover_color="#4b5563",
+                      fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+                      font=ctk.CTkFont(size=12),
                       command=self._auto_detect_review_paths).pack(side="left")
 
         # ── Filter & Sort ──
@@ -2120,13 +2796,15 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         action_row = ctk.CTkFrame(cmc, fg_color="transparent")
         action_row.pack(fill="x", pady=(2, 0))
         ctk.CTkButton(action_row, text="Edit (OpenCV)", command=self._on_edit,
-                      fg_color="#2563eb", width=110).pack(side="left", padx=(0, 4))
+                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                      font=ctk.CTkFont(size=12), width=110).pack(side="left", padx=(0, 4))
         for text, cmd, color in [
-            ("Accept", self._on_accept, "#16a34a"),
-            ("Reject", self._on_reject, "#dc2626"),
-            ("Skip", self._on_skip, "#6b7280"),
+            ("Accept", self._on_accept, COLOR_ACTION_PRIMARY),
+            ("Reject", self._on_reject, COLOR_ACTION_DANGER),
+            ("Skip", self._on_skip, COLOR_ACTION_MUTED),
         ]:
             ctk.CTkButton(action_row, text=text, command=cmd, fg_color=color,
+                          font=ctk.CTkFont(size=12),
                           width=75).pack(side="left", padx=3)
 
         # ── Batch Actions ──
@@ -2135,9 +2813,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         bac = ba.content
 
         ctk.CTkButton(bac, text="Accept All Good", command=self._on_accept_all_good,
-                      fg_color="#065f46", width=140).pack(side="left", padx=4, pady=2)
+                      fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
+                      font=ctk.CTkFont(size=12), width=140).pack(side="left", padx=4, pady=2)
         ctk.CTkButton(bac, text="Hide Done", command=self._on_hide_done,
-                      fg_color="#374151", width=100).pack(side="left", padx=4, pady=2)
+                      fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+                      font=ctk.CTkFont(size=12), width=100).pack(side="left", padx=4, pady=2)
 
         self._review_summary_label = ctk.CTkLabel(
             bac, text="", font=("Consolas", 10), text_color="#9ca3af",
@@ -2702,6 +3382,76 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
 # ──────────────────────────────────────────────────────────────────────
 
+def _show_crash_dialog(exc_type, exc_value, exc_tb):
+    """Show a tkinter error dialog when the app crashes fatally.
+
+    Works even under pythonw.exe where there is no console.  Falls back
+    silently if even tkinter is broken.
+    """
+    import traceback as _tb
+    log_path = Path.home() / ".reconstruction_zone" / "crash.log"
+    detail = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        import tkinter as _tk
+        from tkinter import messagebox as _mb
+        root = _tk.Tk()
+        root.withdraw()
+        _mb.showerror(
+            "Reconstruction Zone — Fatal Error",
+            f"The application encountered an unexpected error and needs to close.\n\n"
+            f"{exc_type.__name__}: {exc_value}\n\n"
+            f"A detailed crash log has been written to:\n{log_path}",
+        )
+        root.destroy()
+    except Exception:
+        pass  # if tkinter itself is broken, nothing we can do
+
+
+def _check_environment():
+    """Run lightweight startup checks and return a list of warnings."""
+    warnings = []
+
+    # CUDA
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            warnings.append("CUDA is not available — GPU acceleration is disabled. Processing will be significantly slower.")
+    except ImportError:
+        warnings.append("PyTorch is not installed. Install with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126")
+
+    # ffmpeg / ffprobe
+    if not shutil.which("ffmpeg"):
+        warnings.append("ffmpeg not found on PATH — video extraction features will not work.")
+    if not shutil.which("ffprobe"):
+        warnings.append("ffprobe not found on PATH — video analysis features will not work.")
+
+    return warnings
+
+
+def main():
+    try:
+        app = ReconstructionZone()
+
+        # Show startup warnings in the log console (non-blocking)
+        env_warnings = _check_environment()
+        for w in env_warnings:
+            app.log(f"WARNING: {w}")
+
+        app.mainloop()
+    except Exception:
+        # Write to crash log (app_infra's excepthook may have already done this,
+        # but ensure it happens even if the app failed before infra init)
+        import traceback
+        log_dir = Path.home() / ".reconstruction_zone"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "crash.log"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*60}\nFATAL CRASH: {__import__('datetime').datetime.now().isoformat()}\n{'='*60}\n")
+            traceback.print_exc(file=f)
+
+        _show_crash_dialog(*sys.exc_info())
+        raise
+
+
 if __name__ == "__main__":
-    app = ReconstructionZone()
-    app.mainloop()
+    main()
