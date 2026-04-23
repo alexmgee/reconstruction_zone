@@ -1677,6 +1677,17 @@ def _extract_single_worker(app, video_path, base_output):
             app.log(f"\nDone: {final_count} frames "
                     f"({' \u2192 '.join(trail)}) in {total_elapsed:.1f}s")
             app.log(f"{'='*50}")
+
+            # Record activity for Recent Activity view
+            app.record_activity(
+                operation="extract",
+                input_path=video_path,
+                output_path=str(output_dir),
+                details={
+                    "frame_count": final_count,
+                    "video_file": Path(video_path).name,
+                },
+            )
         else:
             app.log(f"Error: {result.error}")
 
@@ -2011,6 +2022,19 @@ def _extract_queue_worker(app):
 
                     app.log(f"\nDone: {final_count} frames "
                             f"({' \u2192 '.join(trail)}) in {item_elapsed:.1f}s")
+
+                    # Record activity for Recent Activity view
+                    app.record_activity(
+                        operation="extract",
+                        input_path=item.video_path,
+                        output_path=str(output_dir),
+                        details={
+                            "frame_count": final_count,
+                            "interval": str(interval),
+                            "video_file": item.filename,
+                        },
+                    )
+
                     items_done += 1
                     total_frames += final_count
                 else:
@@ -3413,6 +3437,19 @@ def _fisheye_worker(
 
         summary = "\n".join(lines)
         app.log(f"\n{summary}")
+
+        # Record activity for Recent Activity view
+        input_src = video_path or frames_dir or ""
+        app.record_activity(
+            operation="reframe",
+            input_path=str(input_src),
+            output_path=output_dir,
+            details={
+                "frame_pairs": len(pairs),
+                "total_crops": total_crops,
+                "crop_size": crop_size,
+            },
+        )
 
     except Exception as e:
         import traceback

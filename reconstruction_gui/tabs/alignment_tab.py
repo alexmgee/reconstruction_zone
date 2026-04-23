@@ -1986,6 +1986,22 @@ def _alignment_worker(app, snapshot: Dict[str, object], stages_to_run: List[str]
 
             if not result.success:
                 break
+
+        # Record activity on success (all requested stages completed)
+        all_complete = all(
+            getattr(app, '_alignment_stage_states', {}).get(s) == "complete"
+            for s, _ in ALIGNMENT_STAGES
+        )
+        if all_complete:
+            app.record_activity(
+                operation="align",
+                input_path=str(snapshot["images_dir"]),
+                output_path=str(snapshot["workspace_root"]),
+                details={
+                    "engine": str(snapshot["engine_name"]),
+                    "stages_completed": len(stages_to_run),
+                },
+            )
     except Exception as exc:
         _alignment_log(app, f"Alignment failed: {exc}")
     finally:

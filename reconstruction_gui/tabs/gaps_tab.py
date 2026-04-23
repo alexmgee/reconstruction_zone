@@ -268,6 +268,17 @@ def _gap_analysis_worker(app, source_path):
             app.after(0, lambda: app.gaps_bridge_section.expand())
             app.after(0, lambda: _refresh_bridge_info(app))
 
+        # Record activity for Recent Activity view
+        app.record_activity(
+            operation="gap_analysis",
+            input_path=source_path,
+            output_path="",
+            details={
+                "source_type": app.gaps_source_var.get(),
+                "gaps_found": len(report.gaps) if report else 0,
+            },
+        )
+
     except Exception as e:
         app.log(f"Gap analysis error: {e}")
     finally:
@@ -407,6 +418,17 @@ def _bridge_worker(app, video_path, output_dir):
         report_path = str(Path(output_dir) / "bridge_result.json")
         result.save(report_path)
         app.log(f"Report saved: {report_path}")
+
+        # Record activity for Recent Activity view
+        app.record_activity(
+            operation="bridge",
+            input_path=video_path,
+            output_path=output_dir,
+            details={
+                "frames_extracted": result.total_extracted,
+                "gaps_processed": len(result.requests),
+            },
+        )
 
     except Exception as e:
         app.log(f"Bridge extraction error: {e}")

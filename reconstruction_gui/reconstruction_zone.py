@@ -18,7 +18,7 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 import threading
 import queue
 import sys
@@ -139,6 +139,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.is_running = False
         self.cancel_flag = threading.Event()
         self._prefs = self._load_prefs()
+        self._activity_store = None  # Lazy — set after project store in build_projects_tab
         self._preview_mode = "process"  # "process" or "review"
         self._alignment_binary_paths: Dict[str, str] = {}
         self._alignment_binary_status: Dict[str, Dict[str, object]] = {}
@@ -175,6 +176,27 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self.wait_window(dialog)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def record_activity(self, operation: str, input_path: str, output_path: str,
+                        status: str = "completed",
+                        details: Optional[Dict[str, Any]] = None):
+        """Record a completed operation for the Recent Activity view.
+
+        Called by tab workers after an operation finishes. Thread-safe
+        because ActivityStore.save() is atomic (write + replace).
+        """
+        if self._activity_store is None:
+            return
+        try:
+            self._activity_store.record(
+                operation=operation,
+                input_path=input_path,
+                output_path=output_path,
+                status=status,
+                details=details,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record activity: {e}")
 
     def _check_external_tools(self):
         """Warn at startup if external CLI tools are missing from PATH."""
@@ -1434,6 +1456,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                     row=0, column=1, sticky="nsew", padx=0, pady=(17, 0),
                 )
             self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
+            # Refresh recent activity when returning to Projects tab
+            if hasattr(self, '_proj_list_mode_var') and self._proj_list_mode_var.get() == "Recent Activity":
+                from tabs.projects_tab import _refresh_recent_activity
+                _refresh_recent_activity(self)
         elif active == "Align":
             self._preview_panel.grid_forget()
             if hasattr(self, '_preview_show_btn'):
@@ -2356,6 +2382,18 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
             self.log(f"Done! {json.dumps(stats, indent=2)}")
 
+            # Record activity for Recent Activity view
+            self.record_activity(
+                operation="mask",
+                input_path=input_path,
+                output_path=output_path,
+                details={
+                    "image_count": stats.get("processed_images", 0),
+                    "model": model_str,
+                    "geometry": self.geometry_var.get(),
+                },
+            )
+
             # Run COLMAP geometric validation if enabled
             colmap_dir = config.colmap_dir or ""
             if config.colmap_validate and colmap_dir:
@@ -2663,6 +2701,17 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                     self.log(f"  Done: {done_count} processed, "
                              f"{stats.get('review_images', 0)} for review, "
                              f"{stats.get('rejected_images', 0)} rejected")
+
+                    # Record activity for Recent Activity view
+                    self.record_activity(
+                        operation="mask",
+                        input_path=item.folder_path,
+                        output_path=str(masks_dir),
+                        details={
+                            "image_count": done_count,
+                            "model": model_str,
+                        },
+                    )
                 except Exception as e:
                     self.masking_queue.set_error(item.id, str(e))
                     self.log(f"  ERROR: {e}")
