@@ -17,7 +17,14 @@ from typing import Optional
 
 from widgets import (
     Section, CollapsibleSection, Tooltip,
-    LABEL_FIELD_WIDTH,
+    COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
+    COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
+    COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
+    COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
+    COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
+    FONT_TEXT_CONSOLE,
+    LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+    HEIGHT_ACTION_BAR, HEIGHT_INLINE, HEIGHT_NAV,
 )
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -88,12 +95,12 @@ def _build_left_column(app, parent):
     settings_frame = ctk.CTkFrame(parent, fg_color="transparent")
     settings_frame.pack(fill="x", padx=6, pady=(4, 6), side="bottom")
     ctk.CTkLabel(
-        settings_frame, text="Store:", font=("Consolas", 9), text_color="#6b7280",
+        settings_frame, text="Store:", font=("Consolas", 10), text_color=COLOR_TEXT_DIM,
     ).pack(side="left")
     ctk.CTkLabel(
         settings_frame,
         text=str(app._project_store.store_path) if app._project_store else "Not set",
-        font=("Consolas", 9), text_color="#6b7280",
+        font=("Consolas", 10), text_color=COLOR_TEXT_DIM,
     ).pack(side="left", padx=(4, 0))
 
 
@@ -126,7 +133,7 @@ def _build_new_project_mode(app):
     # Title
     ctk.CTkLabel(c, text="Title:", anchor="w").pack(
         side="top", anchor="w", padx=6, pady=(4, 0))
-    app._proj_new_title = ctk.CTkEntry(c, height=28)
+    app._proj_new_title = ctk.CTkEntry(c, height=HEIGHT_INLINE)
     app._proj_new_title.pack(fill="x", padx=6, pady=(0, 4))
     app._proj_new_title.insert(0, datetime.now().strftime("%Y-%m-%d Untitled"))
 
@@ -135,7 +142,7 @@ def _build_new_project_mode(app):
         side="top", anchor="w", padx=6, pady=(2, 0))
     dir_row = ctk.CTkFrame(c, fg_color="transparent")
     dir_row.pack(fill="x", padx=6, pady=(0, 4))
-    app._proj_new_dir = ctk.CTkEntry(dir_row, placeholder_text="Select project root...", height=28)
+    app._proj_new_dir = ctk.CTkEntry(dir_row, placeholder_text="Select project root...", height=HEIGHT_INLINE)
     app._proj_new_dir.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
     def _browse_root():
@@ -144,7 +151,9 @@ def _build_new_project_mode(app):
             app._proj_new_dir.delete(0, "end")
             app._proj_new_dir.insert(0, p)
 
-    ctk.CTkButton(dir_row, text="...", width=36, height=28, command=_browse_root).pack(side="right")
+    ctk.CTkButton(dir_row, text="...", width=BROWSE_BUTTON_WIDTH, height=HEIGHT_INLINE,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=_browse_root).pack(side="right")
 
     # Location (working directories)
     ctk.CTkLabel(c, text="Location:", anchor="w").pack(
@@ -153,7 +162,7 @@ def _build_new_project_mode(app):
     # Not packed — only packed by _rebuild_form_list when items exist
     loc_add_row = ctk.CTkFrame(c, fg_color="transparent")
     loc_add_row.pack(fill="x", padx=6, pady=(0, 4))
-    loc_label_entry = ctk.CTkEntry(loc_add_row, placeholder_text="Label...", height=28)
+    loc_label_entry = ctk.CTkEntry(loc_add_row, placeholder_text="Label...", height=HEIGHT_INLINE)
     loc_label_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
     def _add_location():
@@ -167,7 +176,8 @@ def _build_new_project_mode(app):
         loc_label_entry.delete(0, "end")
         _rebuild_form_list(app, app._proj_form_loc_display, app._proj_form_locations, "loc")
 
-    ctk.CTkButton(loc_add_row, text="...", width=36, height=28,
+    ctk.CTkButton(loc_add_row, text="...", width=BROWSE_BUTTON_WIDTH, height=HEIGHT_INLINE,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=_add_location).pack(side="right")
 
     # Sources
@@ -176,7 +186,7 @@ def _build_new_project_mode(app):
     app._proj_form_src_display = ctk.CTkFrame(c, fg_color="transparent")
     src_add_row = ctk.CTkFrame(c, fg_color="transparent")
     src_add_row.pack(fill="x", padx=6, pady=(0, 4))
-    src_label_entry = ctk.CTkEntry(src_add_row, placeholder_text="Label dataset...", height=28)
+    src_label_entry = ctk.CTkEntry(src_add_row, placeholder_text="Label dataset...", height=HEIGHT_INLINE)
     src_label_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
     def _add_source():
@@ -190,7 +200,8 @@ def _build_new_project_mode(app):
         src_label_entry.delete(0, "end")
         _rebuild_form_list(app, app._proj_form_src_display, app._proj_form_sources, "src")
 
-    ctk.CTkButton(src_add_row, text="...", width=36, height=28,
+    ctk.CTkButton(src_add_row, text="...", width=BROWSE_BUTTON_WIDTH, height=HEIGHT_INLINE,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=_add_source).pack(side="right")
 
     # Method
@@ -213,8 +224,9 @@ def _build_new_project_mode(app):
         _rebuild_form_list(app, app._proj_form_method_display, app._proj_form_methods, "method")
 
     for tool in ("Metashape", "RealityScan", "COLMAP"):
-        ctk.CTkButton(method_btn_row, text=tool, width=90, height=28,
-                      fg_color="#343638",
+        ctk.CTkButton(method_btn_row, text=tool, width=90, height=HEIGHT_INLINE,
+                      fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+                      font=ctk.CTkFont(size=12),
                       command=lambda t=tool: _add_method(t)).pack(side="left", padx=(0, 4))
 
     # ── Notes & Tags section ──────────────────────────────────────────
@@ -228,7 +240,7 @@ def _build_new_project_mode(app):
     app._proj_form_notes_display = ctk.CTkFrame(nt, fg_color="transparent")
     notes_add_row = ctk.CTkFrame(nt, fg_color="transparent")
     notes_add_row.pack(fill="x", padx=6, pady=(0, 4))
-    notes_entry = ctk.CTkEntry(notes_add_row, placeholder_text="Add a note...", height=28)
+    notes_entry = ctk.CTkEntry(notes_add_row, placeholder_text="Add a note...", height=HEIGHT_INLINE)
     notes_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
     def _add_note():
@@ -239,7 +251,8 @@ def _build_new_project_mode(app):
         notes_entry.delete(0, "end")
         _rebuild_form_list(app, app._proj_form_notes_display, app._proj_form_notes, "note")
 
-    ctk.CTkButton(notes_add_row, text="+", width=36, height=28,
+    ctk.CTkButton(notes_add_row, text="+", width=BROWSE_BUTTON_WIDTH, height=HEIGHT_INLINE,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=_add_note).pack(side="right")
     notes_entry.bind("<Return>", lambda e: _add_note())
 
@@ -249,7 +262,7 @@ def _build_new_project_mode(app):
     app._proj_form_tags_display = ctk.CTkFrame(nt, fg_color="transparent")
     tags_add_row = ctk.CTkFrame(nt, fg_color="transparent")
     tags_add_row.pack(fill="x", padx=6, pady=(0, 4))
-    tags_entry = ctk.CTkEntry(tags_add_row, placeholder_text="Add tag...", height=28)
+    tags_entry = ctk.CTkEntry(tags_add_row, placeholder_text="Add tag...", height=HEIGHT_INLINE)
     tags_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
     def _add_tag():
@@ -260,14 +273,16 @@ def _build_new_project_mode(app):
         tags_entry.delete(0, "end")
         _rebuild_form_list(app, app._proj_form_tags_display, app._proj_form_tags, "tag")
 
-    ctk.CTkButton(tags_add_row, text="+", width=36, height=28,
+    ctk.CTkButton(tags_add_row, text="+", width=BROWSE_BUTTON_WIDTH, height=HEIGHT_INLINE,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=_add_tag).pack(side="right")
     tags_entry.bind("<Return>", lambda e: _add_tag())
 
     # ── Create Project button ─────────────────────────────────────────
     ctk.CTkButton(
-        scroll, text="Create Project", height=34,
+        scroll, text="Create Project", height=HEIGHT_ACTION_BAR,
         font=ctk.CTkFont(size=13, weight="bold"),
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
         command=lambda: _on_create_project(app),
     ).pack(fill="x", padx=8, pady=(2, 6))
 
@@ -292,17 +307,19 @@ def _build_new_project_mode(app):
             scan_entry.delete(0, "end")
             scan_entry.insert(0, p)
 
-    ctk.CTkButton(scan_dir_row, text="...", width=36, command=_browse_scan).pack(side="right")
+    ctk.CTkButton(scan_dir_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=_browse_scan).pack(side="right")
 
     scan_btn = ctk.CTkButton(
-        sc, text="Scan", height=30,
-        font=ctk.CTkFont(size=12, weight="bold"),
-        fg_color="#343638",
+        sc, text="Scan", height=HEIGHT_INLINE,
+        font=ctk.CTkFont(size=12),
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
     )
     scan_btn.pack(fill="x", padx=6, pady=(0, 4))
 
-    scan_status = ctk.CTkLabel(sc, text="", text_color="#9ca3af",
-                               font=("Consolas", 9))
+    scan_status = ctk.CTkLabel(sc, text="", text_color=COLOR_TEXT_MUTED,
+                               font=FONT_TEXT_CONSOLE)
     scan_status.pack(fill="x", padx=6, pady=(0, 2))
 
     scan_results_frame = ctk.CTkScrollableFrame(sc, height=150)
@@ -354,7 +371,7 @@ def _show_scan_results(app, container, status_label, scan_btn, results):
 
         ctk.CTkLabel(
             row, text=display,
-            font=("Consolas", 9), anchor="w",
+            font=("Consolas", 10), anchor="w",
         ).pack(side="left", fill="x", expand=True, padx=6, pady=2)
 
         def _import(r=res):
@@ -386,8 +403,9 @@ def _show_scan_results(app, container, status_label, scan_btn, results):
             app._proj_new_scroll._parent_canvas.yview_moveto(0)
 
         ctk.CTkButton(
-            row, text="Import \u2191", width=60, height=20,
-            font=("Consolas", 9), fg_color="#1f6aa5",
+            row, text="Import \u2191", width=60, height=HEIGHT_NAV,
+            font=ctk.CTkFont(size=11), fg_color=COLOR_ACTION_SECONDARY,
+            hover_color=COLOR_ACTION_SECONDARY_H,
             command=_import,
         ).pack(side="right", padx=4, pady=2)
 
@@ -433,7 +451,7 @@ def _rebuild_form_list(app, container, items, kind):
                          anchor="w").pack(
                 side="left", fill="x", expand=True, padx=6, pady=2)
         elif kind == "tag":
-            ctk.CTkLabel(row, text=item, font=("Consolas", 9),
+            ctk.CTkLabel(row, text=item, font=("Consolas", 10),
                          text_color="#9ca3af", anchor="w").pack(
                 side="left", padx=6, pady=2)
 
@@ -548,7 +566,7 @@ def build_project_right_panel(app):
     ctk.CTkLabel(
         app._proj_empty_state,
         text="Create or select a project\nto view details",
-        text_color="#6b7280", font=ctk.CTkFont(size=13),
+        text_color=COLOR_TEXT_DIM, font=ctk.CTkFont(size=13),
         justify="center",
     ).place(relx=0.5, rely=0.5, anchor="center")
 
@@ -591,7 +609,9 @@ def _build_info_panel(app, proj):
     from project_store import STAGE_ORDER
     from widgets import (
         COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
+        COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
         COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
+        COLOR_TEXT_DIM, RADIUS_PILL,
     )
     TOOL_LABELS = {"Metashape", "RealityScan", "COLMAP"}
 
@@ -600,12 +620,18 @@ def _build_info_panel(app, proj):
     app._proj_info_panel = sec
     c = sec.content
 
-    # Title + action buttons row
+    # Title + Location (inline) + action buttons
     title_row = ctk.CTkFrame(c, fg_color="transparent")
     title_row.pack(fill="x", padx=6, pady=(0, 4))
+    loc_names = [wd.label for wd in proj.work_dirs]
+    loc_text = " · ".join(loc_names) if loc_names else ""
     ctk.CTkLabel(title_row, text=proj.title,
                  font=ctk.CTkFont(size=14, weight="bold"),
                  anchor="w").pack(side="left")
+    if loc_text:
+        ctk.CTkLabel(title_row, text=f"  —  {loc_text}",
+                     font=ctk.CTkFont(size=12), text_color=COLOR_TEXT_DIM,
+                     anchor="w").pack(side="left")
 
     def _on_edit():
         app._proj_edit_mode = not app._proj_edit_mode
@@ -613,25 +639,23 @@ def _build_info_panel(app, proj):
 
     # Buttons in top-right: Edit > Export > Delete
     ctk.CTkButton(
-        title_row, text="Delete", width=55, height=24,
+        title_row, text="Delete", width=60, height=HEIGHT_INLINE,
         fg_color=COLOR_ACTION_DANGER, hover_color=COLOR_ACTION_DANGER_H,
         font=ctk.CTkFont(size=12),
         command=lambda: _on_delete_project(app, proj),
     ).pack(side="right", padx=(4, 0))
     ctk.CTkButton(
-        title_row, text="Export", width=55, height=24,
+        title_row, text="Export", width=60, height=HEIGHT_INLINE,
         fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
         font=ctk.CTkFont(size=12),
         command=lambda: _do_export(app, proj),
     ).pack(side="right", padx=(4, 0))
     ctk.CTkButton(
-        title_row, text="Edit", width=45, height=24,
+        title_row, text="Edit", width=50, height=HEIGHT_INLINE,
         fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
         font=ctk.CTkFont(size=12),
         command=_on_edit,
     ).pack(side="right")
-
-    from widgets import COLOR_ACTION_SECONDARY, COLOR_ACTION_MUTED, COLOR_TEXT_DIM, RADIUS_PILL
 
     # 2-column info grid — no fixed height, content-driven
     grid = ctk.CTkFrame(c, fg_color="transparent")
@@ -641,31 +665,40 @@ def _build_info_panel(app, proj):
 
     row_idx = 0
 
-    # Row 0: Root | Sources
+    # Row 0: Root | Sources (full paths)
     _info_field(grid, row_idx, 0, "Root:",
                 proj.root_dir or "(not set)")
-    src_parts = []
-    for s in proj.sources:
-        if s.label not in TOOL_LABELS:
+    src_frame = ctk.CTkFrame(grid, fg_color="transparent")
+    src_frame.grid(row=row_idx, column=1, sticky="nw", padx=(8, 0), pady=(0, 4))
+    media_sources = [s for s in proj.sources if s.label not in TOOL_LABELS]
+    ctk.CTkLabel(src_frame, text="Sources:", anchor="w",
+                 font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
+    if media_sources:
+        for s in media_sources:
             count = f" ({s.file_count})" if s.file_count else ""
-            src_parts.append(f"{s.label}{count}")
-    _info_field(grid, row_idx, 1, "Sources:",
-                " · ".join(src_parts) if src_parts else "(none)")
+            ctk.CTkLabel(src_frame, text=f"{s.path}{count}" if s.path else s.label,
+                         font=ctk.CTkFont(size=11), anchor="w",
+                         wraplength=400).pack(anchor="w", padx=(12, 0))
+    else:
+        ctk.CTkLabel(src_frame, text="(none)", font=ctk.CTkFont(size=11),
+                     anchor="w").pack(anchor="w", padx=(12, 0))
     row_idx += 1
 
-    # Row 1: Location | Method + Stage
-    loc_names = [wd.label for wd in proj.work_dirs]
-    _info_field(grid, row_idx, 0, "Location:",
-                " · ".join(loc_names) if loc_names else "(none)")
-
-    method_frame = ctk.CTkFrame(grid, fg_color="transparent")
-    method_frame.grid(row=row_idx, column=1, sticky="nw", padx=(8, 0), pady=(0, 4))
-    tool_names = sorted(set(s.label for s in proj.sources if s.label in TOOL_LABELS))
-    ctk.CTkLabel(method_frame, text="Method:", anchor="w",
+    # Row 1: Reconstruction Files (full paths + stage) | (empty for sources overflow)
+    recon_frame = ctk.CTkFrame(grid, fg_color="transparent")
+    recon_frame.grid(row=row_idx, column=0, sticky="nw", pady=(0, 4))
+    tool_sources = [s for s in proj.sources if s.label in TOOL_LABELS]
+    ctk.CTkLabel(recon_frame, text="Reconstruction Files:", anchor="w",
                  font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
-    ctk.CTkLabel(method_frame, text=" · ".join(tool_names) if tool_names else "(none)",
-                 font=ctk.CTkFont(size=11), anchor="w",
-                 wraplength=300).pack(anchor="w", padx=(12, 0))
+    if tool_sources:
+        for s in tool_sources:
+            ctk.CTkLabel(recon_frame, text=s.path or s.label,
+                         font=ctk.CTkFont(size=11), anchor="w",
+                         wraplength=400).pack(anchor="w", padx=(12, 0))
+    else:
+        ctk.CTkLabel(recon_frame, text="(none)", font=ctk.CTkFont(size=11),
+                     anchor="w").pack(anchor="w", padx=(12, 0))
+    # Stage pills
     max_stage_idx = -1
     for wd in proj.work_dirs:
         try:
@@ -674,40 +707,59 @@ def _build_info_panel(app, proj):
         except ValueError:
             pass
     if max_stage_idx >= 0:
-        pills_frame = ctk.CTkFrame(method_frame, fg_color="transparent")
+        pills_frame = ctk.CTkFrame(recon_frame, fg_color="transparent")
         pills_frame.pack(anchor="w", padx=(12, 0), pady=(4, 0))
         for si, sn in enumerate(STAGE_ORDER):
-            fg = COLOR_ACTION_SECONDARY if si <= max_stage_idx else COLOR_ACTION_MUTED
-            tc = "#ffffff" if si <= max_stage_idx else COLOR_TEXT_DIM
+            if si == max_stage_idx:
+                fg = COLOR_ACTION_SECONDARY
+                tc = "#ffffff"
+            elif si < max_stage_idx:
+                fg = COLOR_ACTION_MUTED
+                tc = "#cccccc"
+            else:
+                fg = "transparent"
+                tc = COLOR_TEXT_DIM
+            # CTkLabel has no border — use dark fill for unfinished
+            if si > max_stage_idx:
+                fg = "#2a2a2a"
             ctk.CTkLabel(
                 pills_frame, text=sn.replace("_", " ").title(),
-                font=ctk.CTkFont(size=10), fg_color=fg, text_color=tc,
-                corner_radius=RADIUS_PILL, height=20,
+                font=ctk.CTkFont(size=9), fg_color=fg, text_color=tc,
+                corner_radius=RADIUS_PILL, height=15,
             ).pack(side="left", padx=(0, 3))
     row_idx += 1
 
     # Row 2: Tags | Notes
+    tag_frame = ctk.CTkFrame(grid, fg_color="transparent")
+    tag_frame.grid(row=row_idx, column=0, sticky="nw", pady=(0, 4))
+    ctk.CTkLabel(tag_frame, text="Tags:", anchor="w",
+                 font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
     all_tags = list(proj.tags)
     if all_tags:
-        tag_frame = ctk.CTkFrame(grid, fg_color="transparent")
-        tag_frame.grid(row=row_idx, column=0, sticky="nw", pady=(0, 4))
-        ctk.CTkLabel(tag_frame, text="Tags:", anchor="w",
-                     font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
         tag_pills = ctk.CTkFrame(tag_frame, fg_color="transparent")
         tag_pills.pack(anchor="w", padx=(12, 0))
         for t in all_tags:
             ctk.CTkLabel(
                 tag_pills, text=t,
-                font=ctk.CTkFont(size=10),
-                fg_color=COLOR_ACTION_MUTED, text_color="#9ca3af",
-                corner_radius=RADIUS_PILL, height=20,
+                font=ctk.CTkFont(size=9), fg_color=COLOR_ACTION_MUTED,
+                text_color="#9ca3af", corner_radius=RADIUS_PILL, height=13,
             ).pack(side="left", padx=(0, 4))
     else:
-        _info_field(grid, row_idx, 0, "Tags:", "(none)")
+        ctk.CTkLabel(tag_frame, text="(none)", font=ctk.CTkFont(size=11),
+                     anchor="w").pack(anchor="w", padx=(12, 0))
 
+    notes_frame = ctk.CTkFrame(grid, fg_color="transparent")
+    notes_frame.grid(row=row_idx, column=1, sticky="nw", padx=(8, 0), pady=(0, 4))
+    ctk.CTkLabel(notes_frame, text="Notes:", anchor="w",
+                 font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
     notes_list = [n for n in (proj.notes or "").split("\n") if n.strip()]
-    notes_text = " · ".join(notes_list) if notes_list else "(none)"
-    _info_field(grid, row_idx, 1, "Notes:", notes_text)
+    if notes_list:
+        for n in notes_list:
+            ctk.CTkLabel(notes_frame, text=n, font=ctk.CTkFont(size=11),
+                         anchor="w").pack(anchor="w", padx=(12, 0))
+    else:
+        ctk.CTkLabel(notes_frame, text="(none)", font=ctk.CTkFont(size=11),
+                     text_color=COLOR_TEXT_MUTED, anchor="w").pack(anchor="w", padx=(12, 0))
 
 
 def _on_delete_project(app, proj):
@@ -761,12 +813,38 @@ def _build_info_panel_edit(app, proj):
     app._proj_info_panel = sec
     c = sec.content
 
-    # Title row + Done button (prominent green)
+    # Title + Location (inline) + Done button
     title_row = ctk.CTkFrame(c, fg_color="transparent")
     title_row.pack(fill="x", padx=6, pady=(0, 4))
-    title_entry = ctk.CTkEntry(title_row, font=ctk.CTkFont(size=14, weight="bold"))
-    title_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+    title_entry = ctk.CTkEntry(title_row, font=ctk.CTkFont(size=14, weight="bold"),
+                               placeholder_text="Project title...")
+    title_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
     title_entry.insert(0, proj.title)
+    loc_names = [wd.label for wd in proj.work_dirs]
+    ctk.CTkLabel(title_row, text="Location", font=ctk.CTkFont(size=12),
+                 text_color=COLOR_TEXT_DIM).pack(side="left", padx=(0, 4))
+    loc_entry = ctk.CTkEntry(title_row, font=ctk.CTkFont(size=12), width=320,
+                             placeholder_text="Location...")
+    loc_entry.pack(side="left", padx=(0, 4))
+    loc_entry.insert(0, " · ".join(loc_names))
+
+    def _add_location():
+        text = loc_entry.get().strip()
+        if not text:
+            return
+        # Add as a new work_dir with this label
+        if not any(wd.label == text for wd in proj.work_dirs):
+            proj.add_work_dir(text, proj.root_dir or "")
+            proj.updated_at = datetime.now().isoformat()
+            app._project_store.save()
+            _populate_right_panel(app)
+
+    ctk.CTkButton(
+        title_row, text="+", width=36, height=HEIGHT_INLINE,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12),
+        command=_add_location,
+    ).pack(side="left", padx=(0, 8))
 
     root_entry = None  # forward ref for _done closure
 
@@ -778,6 +856,14 @@ def _build_info_panel_edit(app, proj):
             new_root = root_entry.get().strip()
             if new_root != proj.root_dir:
                 proj.root_dir = new_root
+        # Save location — replace all work_dirs with the new label(s)
+        new_loc = loc_entry.get().strip()
+        if new_loc:
+            # Keep existing paths, update first label
+            if proj.work_dirs:
+                proj.work_dirs[0].label = new_loc
+            else:
+                proj.add_work_dir(new_loc, proj.root_dir or "")
         proj.updated_at = datetime.now().isoformat()
         app._project_store.save()
         app._proj_edit_mode = False
@@ -791,22 +877,21 @@ def _build_info_panel_edit(app, proj):
         command=_done,
     ).pack(side="right")
 
-    # 2-column grid — same layout and fixed height as read-only
-    grid = ctk.CTkFrame(c, fg_color="transparent", height=200)
-    grid.pack(fill="x", padx=6, pady=(0, 4))
-    grid.pack_propagate(False)
-    grid.grid_columnconfigure(0, weight=1, uniform="editcol")
-    grid.grid_columnconfigure(1, weight=1, uniform="editcol")
+    # Two independent columns — each flows vertically without grid row alignment
+    cols = ctk.CTkFrame(c, fg_color="transparent")
+    cols.pack(fill="x", padx=6, pady=(0, 4))
+    cols.grid_columnconfigure(0, weight=1, uniform="editcol")
+    cols.grid_columnconfigure(1, weight=1, uniform="editcol")
+    left_col = ctk.CTkFrame(cols, fg_color="transparent")
+    left_col.grid(row=0, column=0, sticky="nsew")
+    right_col = ctk.CTkFrame(cols, fg_color="transparent")
+    right_col.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
 
-    row_idx = 0
-
-    # Root (editable)
-    root_frame = ctk.CTkFrame(grid, fg_color="transparent")
-    root_frame.grid(row=row_idx, column=0, sticky="new", pady=(0, 4))
-    ctk.CTkLabel(root_frame, text="Root:", anchor="w",
+    # ── Left: Root ──
+    ctk.CTkLabel(left_col, text="Root:", anchor="w",
                  font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
-    root_row = ctk.CTkFrame(root_frame, fg_color="transparent")
-    root_row.pack(fill="x", padx=(12, 0))
+    root_row = ctk.CTkFrame(left_col, fg_color="transparent")
+    root_row.pack(fill="x", padx=(12, 0), pady=(0, 6))
     root_entry = ctk.CTkEntry(root_row, font=ctk.CTkFont(size=11))
     root_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
     root_entry.insert(0, proj.root_dir or "")
@@ -819,69 +904,149 @@ def _build_info_panel_edit(app, proj):
                   fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=_browse_root).pack(side="right")
 
-    # Capture (read-only display)
-    tags_as_capture = [t.upper() for t in proj.tags if t in {"drone", "dslr", "phone", "360"}]
-    _info_field(grid, row_idx, 1, "Capture:",
-                " · ".join(tags_as_capture) if tags_as_capture else "(none)")
-    row_idx += 1
-
-    # Location (with inline add)
-    loc_frame = ctk.CTkFrame(grid, fg_color="transparent")
-    loc_frame.grid(row=row_idx, column=0, sticky="new", pady=(0, 4))
-    ctk.CTkLabel(loc_frame, text="Location:", anchor="w",
+    # ── Left: Reconstruction Files ──
+    ctk.CTkLabel(left_col, text="Reconstruction Files:", anchor="w",
                  font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
-    for idx, wd in enumerate(proj.work_dirs):
-        wd_row = ctk.CTkFrame(loc_frame, fg_color="transparent")
-        wd_row.pack(fill="x", padx=(12, 0), pady=(0, 1))
-        desc = wd.label
-        if wd.derived_from:
-            desc += f" > {wd.derived_from}"
-        exists = Path(wd.path).exists()
-        ctk.CTkLabel(wd_row, text=desc, font=ctk.CTkFont(size=11),
-                     text_color="#e0e0e0" if exists else "#ef4444",
+    tool_sources = [s for s in proj.sources if s.label in TOOL_LABELS]
+    for src in tool_sources:
+        tr = ctk.CTkFrame(left_col, fg_color="transparent")
+        tr.pack(fill="x", padx=(12, 0), pady=(0, 1))
+        ctk.CTkLabel(tr, text=src.path or src.label, font=ctk.CTkFont(size=11),
                      anchor="w").pack(side="left")
-        def _remove_wd(i=idx):
-            proj.work_dirs.pop(i)
+        def _remove_tool(s=src):
+            proj.sources.remove(s)
             proj.updated_at = datetime.now().isoformat()
             app._project_store.save()
             _populate_right_panel(app)
-        ctk.CTkButton(wd_row, text="\u2715", width=20, height=18,
+        ctk.CTkButton(tr, text="\u2715", width=20, height=18,
                       font=ctk.CTkFont(size=9), fg_color="transparent",
                       hover_color=COLOR_ACTION_DANGER,
-                      command=_remove_wd).pack(side="right")
-    # Add row
-    loc_add = ctk.CTkFrame(loc_frame, fg_color="transparent")
-    loc_add.pack(fill="x", padx=(12, 0), pady=(2, 0))
-    loc_entry = ctk.CTkEntry(loc_add, placeholder_text="Label...", height=24,
-                             font=ctk.CTkFont(size=10))
-    loc_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
-    def _add_wd():
-        label = loc_entry.get().strip()
-        if not label:
-            return
-        path = filedialog.askdirectory(title="Select Working Directory")
+                      command=_remove_tool).pack(side="right")
+    if not tool_sources:
+        ctk.CTkLabel(left_col, text="(none)", font=ctk.CTkFont(size=11),
+                     anchor="w").pack(anchor="w", padx=(12, 0))
+
+    def _add_recon_file():
+        path = filedialog.askopenfilename(
+            title="Select Reconstruction File",
+            filetypes=[
+                ("Metashape Project", "*.psx"),
+                ("RealityCapture Project", "*.rcproj"),
+                ("All Files", "*.*"),
+            ])
+        if not path:
+            path = filedialog.askdirectory(title="Select Reconstruction Folder")
         if not path:
             return
-        proj.add_work_dir(label, path)
+        ext = Path(path).suffix.lower()
+        if ext == ".psx":
+            tool_name = "Metashape"
+        elif ext == ".rcproj":
+            tool_name = "RealityScan"
+        else:
+            tool_name = "COLMAP"
+        proj.sources.append(ProjectSource(label=tool_name, path=path, media_type="other"))
+        proj.updated_at = datetime.now().isoformat()
         app._project_store.save()
         _populate_right_panel(app)
-    ctk.CTkButton(loc_add, text="...", width=BROWSE_BUTTON_WIDTH, height=24,
-                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-                  command=_add_wd).pack(side="right")
 
-    # Sources (with inline add)
-    src_frame = ctk.CTkFrame(grid, fg_color="transparent")
-    src_frame.grid(row=row_idx, column=1, sticky="new", padx=(8, 0), pady=(0, 4))
-    ctk.CTkLabel(src_frame, text="Sources:", anchor="w",
+    # + button and stage pills on the same row
+    recon_action_row = ctk.CTkFrame(left_col, fg_color="transparent")
+    recon_action_row.pack(fill="x", padx=(12, 0), pady=(2, 6))
+    ctk.CTkButton(recon_action_row, text="+", width=36, height=HEIGHT_INLINE,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  font=ctk.CTkFont(size=12),
+                  command=_add_recon_file).pack(side="left", padx=(0, 6))
+    # Stage pills inline — latest completed = blue, prior completed = grey, unfinished = outline
+    max_stage_idx = -1
+    for wd in proj.work_dirs:
+        try:
+            si = STAGE_ORDER.index(wd.stage)
+            max_stage_idx = max(max_stage_idx, si)
+        except ValueError:
+            pass
+    # Use first work_dir for clickable stage cycling (if any exist)
+    wd_idx = 0 if proj.work_dirs else -1
+    current_stage = proj.work_dirs[0].stage if proj.work_dirs else ""
+    try:
+        current_stage_idx = STAGE_ORDER.index(current_stage)
+    except ValueError:
+        current_stage_idx = -1
+    for si, sn in enumerate(STAGE_ORDER):
+        if si == current_stage_idx:
+            # Latest completed — blue
+            fg = COLOR_ACTION_SECONDARY
+            tc = "#ffffff"
+            bw = 0
+            bc = COLOR_ACTION_SECONDARY
+        elif si < current_stage_idx:
+            # Prior completed — grey filled
+            fg = COLOR_ACTION_MUTED
+            tc = "#cccccc"
+            bw = 0
+            bc = COLOR_ACTION_MUTED
+        else:
+            # Unfinished — outline only
+            fg = "transparent"
+            tc = "#666666"
+            bw = 1
+            bc = "#555555"
+        cmd = (lambda sn=sn, i=wd_idx: _cycle_work_dir_stage(app, proj.id, i, sn)) if wd_idx >= 0 else None
+        ctk.CTkButton(
+            recon_action_row, text=sn.capitalize(), fg_color=fg,
+            hover_color=COLOR_ACTION_SECONDARY, text_color=tc,
+            border_width=bw, border_color=bc,
+            width=60, height=HEIGHT_INLINE, font=ctk.CTkFont(size=9),
+            command=cmd,
+        ).pack(side="left", padx=(0, 3))
+
+    # ── Left: Tags ──
+    ctk.CTkLabel(left_col, text="Tags:", anchor="w",
+                 font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
+    tag_row = ctk.CTkFrame(left_col, fg_color="transparent")
+    tag_row.pack(fill="x", padx=(12, 0))
+    all_tags = list(proj.tags)
+    for tag in all_tags:
+        pill = ctk.CTkFrame(tag_row, fg_color=COLOR_ACTION_MUTED,
+                            corner_radius=RADIUS_PILL, cursor="hand2")
+        pill.pack(side="left", padx=(0, 4))
+        tag_lbl = ctk.CTkLabel(pill, text=tag, font=ctk.CTkFont(size=9),
+                               text_color="#e0e0e0")
+        tag_lbl.pack(padx=6, pady=0)
+        def _remove_tag(t=tag):
+            proj.tags = [x for x in proj.tags if x != t]
+            proj.updated_at = datetime.now().isoformat()
+            app._project_store.save()
+            _populate_right_panel(app)
+        for w in (pill, tag_lbl):
+            w.bind("<Button-1>", lambda e, t=tag: _remove_tag(t))
+    tag_entry = ctk.CTkEntry(tag_row, placeholder_text="Add tag...", height=HEIGHT_INLINE,
+                             width=80, font=ctk.CTkFont(size=9))
+    tag_entry.pack(side="left", padx=(10, 0))
+    def _add_tag():
+        text = tag_entry.get().strip()
+        if not text or text in proj.tags:
+            return
+        proj.tags.append(text)
+        proj.updated_at = datetime.now().isoformat()
+        app._project_store.save()
+        _populate_right_panel(app)
+    tag_entry.bind("<Return>", lambda e: _add_tag())
+    ctk.CTkButton(tag_row, text="+", width=36, height=HEIGHT_INLINE,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  font=ctk.CTkFont(size=12),
+                  command=_add_tag).pack(side="left", padx=(4, 0))
+
+    # ── Right: Sources ──
+    ctk.CTkLabel(right_col, text="Sources:", anchor="w",
                  font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
     media_sources = [(i, s) for i, s in enumerate(proj.sources) if s.label not in TOOL_LABELS]
     for idx, src in media_sources:
-        sr = ctk.CTkFrame(src_frame, fg_color="transparent")
+        sr = ctk.CTkFrame(right_col, fg_color="transparent")
         sr.pack(fill="x", padx=(12, 0), pady=(0, 1))
-        info = src.label
-        if src.file_count:
-            info += f" ({src.file_count})"
-        exists = Path(src.path).exists()
+        count = f" ({src.file_count})" if src.file_count else ""
+        info = f"{src.path}{count}" if src.path else src.label
+        exists = Path(src.path).exists() if src.path else False
         ctk.CTkLabel(sr, text=info, font=ctk.CTkFont(size=11),
                      text_color="#e0e0e0" if exists else "#ef4444",
                      anchor="w").pack(side="left")
@@ -895,151 +1060,28 @@ def _build_info_panel_edit(app, proj):
                       hover_color=COLOR_ACTION_DANGER,
                       command=_remove_src).pack(side="right")
     if not media_sources:
-        ctk.CTkLabel(src_frame, text="(none)", font=ctk.CTkFont(size=11),
+        ctk.CTkLabel(right_col, text="(none)", font=ctk.CTkFont(size=11),
                      anchor="w").pack(anchor="w", padx=(12, 0))
-    src_add = ctk.CTkFrame(src_frame, fg_color="transparent")
-    src_add.pack(fill="x", padx=(12, 0), pady=(2, 0))
-    src_entry = ctk.CTkEntry(src_add, placeholder_text="Label...", height=24,
-                             font=ctk.CTkFont(size=10))
-    src_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
     def _add_src():
-        label = src_entry.get().strip()
-        if not label:
-            return
         path = filedialog.askdirectory(title="Select Source Directory")
         if not path:
             return
+        label = Path(path).name
         proj.add_source(label, path, "images")
-        app._project_store.save()
-        _populate_right_panel(app)
-    ctk.CTkButton(src_add, text="...", width=BROWSE_BUTTON_WIDTH, height=24,
-                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-                  command=_add_src).pack(side="right")
-    row_idx += 1
-
-    # Row 2: Method + stage pills (left) | Tags (right)
-    method_frame = ctk.CTkFrame(grid, fg_color="transparent")
-    method_frame.grid(row=row_idx, column=0, sticky="new", pady=(0, 4))
-    ctk.CTkLabel(method_frame, text="Method:", anchor="w",
-                 font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
-    tool_sources = [s for s in proj.sources if s.label in TOOL_LABELS]
-    for src in tool_sources:
-        tr = ctk.CTkFrame(method_frame, fg_color="transparent")
-        tr.pack(fill="x", padx=(12, 0), pady=(0, 1))
-        ctk.CTkLabel(tr, text=src.label, font=ctk.CTkFont(size=11),
-                     anchor="w").pack(side="left")
-        def _remove_tool(s=src):
-            proj.sources.remove(s)
-            proj.updated_at = datetime.now().isoformat()
-            app._project_store.save()
-            _populate_right_panel(app)
-        ctk.CTkButton(tr, text="\u2715", width=20, height=18,
-                      font=ctk.CTkFont(size=9), fg_color="transparent",
-                      hover_color=COLOR_ACTION_DANGER,
-                      command=_remove_tool).pack(side="right")
-    if not tool_sources:
-        ctk.CTkLabel(method_frame, text="(none)", font=ctk.CTkFont(size=11),
-                     anchor="w").pack(anchor="w", padx=(12, 0))
-    tool_btns = ctk.CTkFrame(method_frame, fg_color="transparent")
-    tool_btns.pack(fill="x", padx=(12, 0), pady=(4, 0))
-    def _add_tool(tool_name):
-        if tool_name == "Metashape":
-            path = filedialog.askopenfilename(
-                title="Select Metashape Project",
-                filetypes=[("Metashape Project", "*.psx"), ("All Files", "*.*")])
-        else:
-            path = filedialog.askdirectory(title=f"Select {tool_name} folder")
-        if not path:
-            return
-        proj.sources.append(ProjectSource(label=tool_name, path=path, media_type="other"))
         proj.updated_at = datetime.now().isoformat()
         app._project_store.save()
         _populate_right_panel(app)
-    for tool in ("Metashape", "RealityScan", "COLMAP"):
-        ctk.CTkButton(tool_btns, text=tool, width=80, height=22,
-                      font=ctk.CTkFont(size=10),
-                      fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
-                      command=lambda t=tool: _add_tool(t)).pack(side="left", padx=(0, 4))
-    # Stage pills under method (clickable)
-    max_stage_idx = -1
-    for wd in proj.work_dirs:
-        try:
-            si = STAGE_ORDER.index(wd.stage)
-            max_stage_idx = max(max_stage_idx, si)
-        except ValueError:
-            pass
-    for wd_idx, wd in enumerate(proj.work_dirs):
-        wd_stage_row = ctk.CTkFrame(method_frame, fg_color="transparent")
-        wd_stage_row.pack(fill="x", padx=(12, 0), pady=(4, 0))
-        current_stage = wd.stage or ""
-        try:
-            current_stage_idx = STAGE_ORDER.index(current_stage)
-        except ValueError:
-            current_stage_idx = -1
-        for si, sn in enumerate(STAGE_ORDER):
-            fg = COLOR_ACTION_SECONDARY if si <= current_stage_idx else COLOR_ACTION_MUTED
-            tc = "#ffffff" if si <= current_stage_idx else "#888888"
-            ctk.CTkButton(
-                wd_stage_row, text=sn.capitalize(), fg_color=fg,
-                hover_color=COLOR_ACTION_SECONDARY, text_color=tc,
-                width=60, height=20, font=ctk.CTkFont(size=9),
-                command=lambda sn=sn, i=wd_idx: _cycle_work_dir_stage(app, proj.id, i, sn),
-            ).pack(side="left", padx=(0, 3))
-
-    # Tags (right column, editable)
-    tag_frame = ctk.CTkFrame(grid, fg_color="transparent")
-    tag_frame.grid(row=row_idx, column=1, sticky="new", padx=(8, 0), pady=(0, 4))
-    ctk.CTkLabel(tag_frame, text="Tags:", anchor="w",
-                 font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
-    custom_tags = [t for t in proj.tags if t not in {"drone", "dslr", "phone", "360"}]
-    if custom_tags:
-        pills_row = ctk.CTkFrame(tag_frame, fg_color="transparent")
-        pills_row.pack(fill="x", padx=(12, 0), pady=(2, 0))
-        for tag in custom_tags:
-            pill = ctk.CTkFrame(pills_row, fg_color=COLOR_ACTION_MUTED,
-                                corner_radius=RADIUS_PILL, cursor="hand2")
-            pill.pack(side="left", padx=(0, 4), pady=1)
-            tag_lbl = ctk.CTkLabel(pill, text=tag, font=ctk.CTkFont(size=10),
-                                   text_color="#e0e0e0")
-            tag_lbl.pack(padx=6, pady=2)
-            def _remove_tag(t=tag):
-                proj.tags = [x for x in proj.tags if x != t]
-                proj.updated_at = datetime.now().isoformat()
-                app._project_store.save()
-                _populate_right_panel(app)
-            for w in (pill, tag_lbl):
-                w.bind("<Button-1>", lambda e, t=tag: _remove_tag(t))
-    else:
-        ctk.CTkLabel(tag_frame, text="(none)", font=ctk.CTkFont(size=11),
-                     text_color=COLOR_TEXT_MUTED, anchor="w").pack(anchor="w", padx=(12, 0))
-    tag_add = ctk.CTkFrame(tag_frame, fg_color="transparent")
-    tag_add.pack(fill="x", padx=(12, 0), pady=(2, 0))
-    tag_entry = ctk.CTkEntry(tag_add, placeholder_text="Add tag...", height=24,
-                             font=ctk.CTkFont(size=10))
-    tag_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
-    def _add_tag():
-        text = tag_entry.get().strip()
-        if not text or text in proj.tags:
-            return
-        proj.tags.append(text)
-        proj.updated_at = datetime.now().isoformat()
-        app._project_store.save()
-        _populate_right_panel(app)
-    ctk.CTkButton(tag_add, text="+", width=BROWSE_BUTTON_WIDTH, height=24,
+    ctk.CTkButton(right_col, text="+", width=36, height=HEIGHT_INLINE,
                   fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-                  command=_add_tag).pack(side="right")
-    tag_entry.bind("<Return>", lambda e: _add_tag())
+                  font=ctk.CTkFont(size=12),
+                  command=_add_src).pack(anchor="w", padx=(12, 0), pady=(2, 6))
 
-    row_idx += 1
-
-    # Row 3: Notes (left column)
-    notes_frame = ctk.CTkFrame(grid, fg_color="transparent")
-    notes_frame.grid(row=row_idx, column=0, sticky="new", pady=(0, 4))
-    ctk.CTkLabel(notes_frame, text="Notes:", anchor="w",
+    # ── Right: Notes ──
+    ctk.CTkLabel(right_col, text="Notes:", anchor="w",
                  font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w")
     notes_list = [n for n in (proj.notes or "").split("\n") if n.strip()]
     for i, note in enumerate(notes_list):
-        nr = ctk.CTkFrame(notes_frame, fg_color="transparent")
+        nr = ctk.CTkFrame(right_col, fg_color="transparent")
         nr.pack(fill="x", padx=(12, 0), pady=(0, 1))
         lbl = ctk.CTkLabel(nr, text=note, font=ctk.CTkFont(size=11),
                            anchor="w", cursor="hand2")
@@ -1054,13 +1096,10 @@ def _build_info_panel_edit(app, proj):
                       font=ctk.CTkFont(size=9), fg_color="transparent",
                       hover_color=COLOR_ACTION_DANGER,
                       command=_remove_note).pack(side="right")
-    if not notes_list:
-        ctk.CTkLabel(notes_frame, text="(none)", font=ctk.CTkFont(size=11),
-                     text_color=COLOR_TEXT_MUTED, anchor="w").pack(anchor="w", padx=(12, 0))
-    notes_add = ctk.CTkFrame(notes_frame, fg_color="transparent")
-    notes_add.pack(fill="x", padx=(12, 0), pady=(2, 0))
-    notes_entry = ctk.CTkEntry(notes_add, placeholder_text="Add note...", height=24,
-                               font=ctk.CTkFont(size=10))
+    notes_add = ctk.CTkFrame(right_col, fg_color="transparent")
+    notes_add.pack(fill="x", padx=(12, 0), pady=(10 if notes_list else 0, 0))
+    notes_entry = ctk.CTkEntry(notes_add, placeholder_text="Add note...", height=HEIGHT_INLINE,
+                               font=ctk.CTkFont(size=11))
     notes_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
     def _add_note():
         text = notes_entry.get().strip()
@@ -1071,8 +1110,9 @@ def _build_info_panel_edit(app, proj):
         proj.updated_at = datetime.now().isoformat()
         app._project_store.save()
         _populate_right_panel(app)
-    ctk.CTkButton(notes_add, text="+", width=BROWSE_BUTTON_WIDTH, height=24,
+    ctk.CTkButton(notes_add, text="+", width=36, height=HEIGHT_INLINE,
                   fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  font=ctk.CTkFont(size=12),
                   command=_add_note).pack(side="right")
     notes_entry.bind("<Return>", lambda e: _add_note())
 
@@ -1093,7 +1133,7 @@ def _build_viewer_panel(app, proj):
         ctk.CTkLabel(
             viewer,
             text="No root directory set" if not root_dir else f"Root not found: {root_dir}",
-            text_color="#6b7280", font=ctk.CTkFont(size=11),
+            text_color=COLOR_TEXT_DIM, font=ctk.CTkFont(size=11),
             justify="center",
         ).place(relx=0.5, rely=0.5, anchor="center")
         return
@@ -1115,7 +1155,7 @@ def _build_viewer_panel(app, proj):
     # Thumb pane header + grid
     app._proj_thumb_header = ctk.CTkLabel(
         thumb_pane, text="Select a directory to browse",
-        font=("Consolas", 10), text_color="#6b7280", anchor="w",
+        font=("Consolas", 10), text_color=COLOR_TEXT_DIM, anchor="w",
     )
     app._proj_thumb_header.pack(fill="x", padx=4, pady=(4, 4))
 
@@ -1130,7 +1170,7 @@ def _build_viewer_panel(app, proj):
     # Loading indicator
     loading_lbl = ctk.CTkLabel(
         tree_frame, text="Loading directory tree...",
-        font=("Consolas", 10), text_color="#6b7280",
+        font=("Consolas", 10), text_color=COLOR_TEXT_DIM,
     )
     loading_lbl.pack(pady=10)
 
@@ -1193,7 +1233,7 @@ def _build_viewer_panel(app, proj):
             # Arrow for expandable folders
             arrow_text = "\u25BC" if has_subdirs else "  "
             arrow_lbl = tk.Label(
-                row, text=arrow_text, font=("Consolas", 9),
+                row, text=arrow_text, font=("Consolas", 10),
                 fg="#6b7280", bg=_tree_bg, cursor="hand2" if has_subdirs else "",
             )
             arrow_lbl.pack(side="left", padx=(indent + 2, 0))
@@ -1337,7 +1377,7 @@ def _load_directory_thumbnails(app, dir_path):
             app._proj_thumb_scroll, text=img_path.stem[:12],
             fg_color="#343638", corner_radius=4,
             width=thumb_box[0], height=thumb_box[1],
-            font=("Consolas", 8), text_color="#565b5e",
+            font=("Consolas", 10), text_color="#565b5e",
         )
         cell.grid(row=r, column=c, padx=6, pady=6)
         app._proj_thumb_widgets.append(cell)
@@ -1405,9 +1445,9 @@ def _open_image_preview(app, index):
     top_bar.pack(fill="x")
     top_bar.pack_propagate(False)
     ctk.CTkButton(
-        top_bar, text="X  Close", width=70, height=26,
-        font=ctk.CTkFont(size=11), fg_color="#343638",
-        hover_color="#dc2626",
+        top_bar, text="X  Close", width=70, height=HEIGHT_INLINE,
+        font=ctk.CTkFont(size=12), fg_color=COLOR_ACTION_MUTED,
+        hover_color=COLOR_ACTION_DANGER,
         command=lambda: _close_image_preview(app),
     ).pack(side="right", padx=6, pady=4)
 
@@ -1417,16 +1457,16 @@ def _open_image_preview(app, index):
 
     left_btn = ctk.CTkButton(
         mid, text="<", width=36, height=60,
-        font=ctk.CTkFont(size=18, weight="bold"), fg_color="#343638",
-        hover_color="#4a4d50", corner_radius=4,
+        font=ctk.CTkFont(size=18, weight="bold"), fg_color=COLOR_ACTION_MUTED,
+        hover_color=COLOR_ACTION_MUTED_H, corner_radius=4,
         command=lambda: _preview_navigate(app, -1),
     )
     left_btn.pack(side="left", padx=(4, 0), pady=4)
 
     right_btn = ctk.CTkButton(
         mid, text=">", width=36, height=60,
-        font=ctk.CTkFont(size=18, weight="bold"), fg_color="#343638",
-        hover_color="#4a4d50", corner_radius=4,
+        font=ctk.CTkFont(size=18, weight="bold"), fg_color=COLOR_ACTION_MUTED,
+        hover_color=COLOR_ACTION_MUTED_H, corner_radius=4,
         command=lambda: _preview_navigate(app, 1),
     )
     right_btn.pack(side="right", padx=(0, 4), pady=4)
@@ -1458,7 +1498,7 @@ def _open_image_preview(app, index):
     )
     app._proj_preview_filename.pack(side="left", padx=12, pady=2)
     app._proj_preview_counter = ctk.CTkLabel(
-        bottom_bar, text="", font=("Consolas", 9), text_color="#6b7280", anchor="e",
+        bottom_bar, text="", font=("Consolas", 10), text_color=COLOR_TEXT_DIM, anchor="e",
     )
     app._proj_preview_counter.pack(side="right", padx=12, pady=2)
 
