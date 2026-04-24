@@ -348,6 +348,67 @@ def parse_points3d_txt(path: Path) -> Dict[int, COLMAPPoint3D]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# pycolmap Reconstruction Converter
+# ══════════════════════════════════════════════════════════════════════════════
+
+def from_pycolmap_reconstruction(rec) -> Dict[str, Any]:
+    """Convert a pycolmap.Reconstruction to the same dict format as text parsers.
+
+    This lets the GeometricValidator, pointcloud viewer, and quality assessment
+    work identically whether the model was loaded via text parsers or pycolmap.
+
+    Args:
+        rec: A pycolmap.Reconstruction object.
+
+    Returns:
+        Dict with 'cameras', 'images', 'points3D' keys matching the text parser output.
+    """
+    cameras: Dict[int, COLMAPCamera] = {}
+    for cam_id, cam in rec.cameras.items():
+        cameras[cam_id] = COLMAPCamera(
+            camera_id=cam_id,
+            model=cam.model_name,
+            width=cam.width,
+            height=cam.height,
+            params=list(cam.params),
+        )
+
+    images: Dict[int, COLMAPImage] = {}
+    for img_id, img in rec.images.items():
+        quat = img.cam_from_world.rotation.quat  # [w, x, y, z]
+        tvec = img.cam_from_world.translation
+        points2d = []
+        for pt2d_idx, pt2d in enumerate(img.points2D):
+            points2d.append((pt2d.xy[0], pt2d.xy[1], pt2d.point3D_id))
+        images[img_id] = COLMAPImage(
+            image_id=img_id,
+            qw=float(quat[0]), qx=float(quat[1]),
+            qy=float(quat[2]), qz=float(quat[3]),
+            tx=float(tvec[0]), ty=float(tvec[1]), tz=float(tvec[2]),
+            camera_id=img.camera_id,
+            name=img.name,
+            points2d=points2d,
+        )
+
+    points3d: Dict[int, COLMAPPoint3D] = {}
+    for pt_id, pt in rec.points3D.items():
+        track = [(elem.image_id, elem.point2D_idx) for elem in pt.track.elements]
+        points3d[pt_id] = COLMAPPoint3D(
+            point3d_id=pt_id,
+            xyz=np.array(pt.xyz, dtype=np.float64),
+            rgb=np.array(pt.color, dtype=np.uint8),
+            error=float(pt.error),
+            track=track,
+        )
+
+    return {
+        "cameras": cameras,
+        "images": images,
+        "points3D": points3d,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Geometric Validator
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -409,8 +470,12 @@ class GeometricValidator:
     ) -> Optional[Tuple[float, float]]:
         """Project a 3D world point into a camera view.
 
+        Applies the distortion model for SIMPLE_RADIAL, RADIAL, and OPENCV
+        cameras. For pinhole models (no distortion), this is equivalent to
+        the standard K @ (R @ P + t) projection.
+
         Returns:
-            (x, y) pixel coordinates, or None if behind camera.
+            (x, y) pixel coordinates, or None if behind camera or out of bounds.
         """
         R = image.get_rotation()
         t = image.get_translation()
@@ -422,11 +487,29 @@ class GeometricValidator:
         if p_cam[2] <= 0:
             return None
 
-        # Apply intrinsics
+        # Normalized camera coordinates
+        xn = p_cam[0] / p_cam[2]
+        yn = p_cam[1] / p_cam[2]
+
+        # Apply distortion in normalized coordinates
+        dist = camera.get_distortion()
+        if dist is not None:
+            r2 = xn * xn + yn * yn
+            k1 = dist[0]
+            k2 = dist[1] if len(dist) > 1 else 0.0
+            p1 = dist[2] if len(dist) > 2 else 0.0
+            p2 = dist[3] if len(dist) > 3 else 0.0
+            radial = 1.0 + k1 * r2 + k2 * r2 * r2
+            xd = xn * radial + 2.0 * p1 * xn * yn + p2 * (r2 + 2.0 * xn * xn)
+            yd = yn * radial + p1 * (r2 + 2.0 * yn * yn) + 2.0 * p2 * xn * yn
+        else:
+            xd = xn
+            yd = yn
+
+        # Apply intrinsics to get pixel coordinates
         K = camera.get_intrinsics()
-        p_proj = K @ p_cam
-        x = p_proj[0] / p_proj[2]
-        y = p_proj[1] / p_proj[2]
+        x = K[0, 0] * xd + K[0, 2]
+        y = K[1, 1] * yd + K[1, 2]
 
         # Check bounds
         if x < 0 or x >= camera.width or y < 0 or y >= camera.height:
@@ -512,7 +595,7 @@ class GeometricValidator:
                     report.frames[img.name].missing_mask = True
                     continue
 
-                is_masked = mask[py, px] > 127 if (
+                is_masked = mask[py, px] > 0 if (
                     0 <= py < mask.shape[0] and 0 <= px < mask.shape[1]
                 ) else False
 
@@ -646,7 +729,7 @@ class GeometricValidator:
         for px_f, py_f in projected:
             px, py = int(round(px_f)), int(round(py_f))
             if 0 <= py < h and 0 <= px < w:
-                is_masked = mask[py, px] > 127
+                is_masked = mask[py, px] > 0
                 # Green = inside mask, Red = outside mask
                 color = (0, 200, 0) if is_masked else (0, 0, 200)
                 cv2.circle(overlay, (px, py), 2, color, -1)

@@ -20,7 +20,6 @@ from typing import List, Optional
 
 import customtkinter as ctk
 
-from tabs.alignment_tab import send_extract_output_to_alignment
 from widgets import (
     Section, CollapsibleSection, Tooltip,
     COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
@@ -31,6 +30,7 @@ from widgets import (
     FONT_TEXT_SUBTITLE, FONT_TEXT_MONO_VALUE, FONT_TEXT_STATUS,
     FONT_TEXT_BTN_PRIMARY, FONT_TEXT_BTN_SECONDARY,
     LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+    HEIGHT_ACTION_BAR,
 )
 
 # ── prep360 core (optional) ────────────────────────────────────────────
@@ -488,14 +488,6 @@ def _build_video_selection_section(app, parent):
                   fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: app._browse_folder_for(app.extract_output_entry)
                   ).pack(side="left", padx=(0, 4))
-    ctk.CTkButton(
-        out_frame,
-        text="To Align",
-        width=110,
-        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-        font=ctk.CTkFont(size=12),
-        command=lambda: send_extract_output_to_alignment(app),
-    ).pack(side="left")
 
     split_sec = CollapsibleSection(
         c,
@@ -906,7 +898,7 @@ def _build_extract_section(app, parent):
     app.extract_geotag_enabled_var = ctk.BooleanVar(value=True)
     _gt = ctk.CTkCheckBox(bottom_right, text="Auto-geotag from SRT",
                            variable=app.extract_geotag_enabled_var, width=0)
-    _gt.pack(side="right")
+    _gt.pack(side="left", padx=(20, 0))
     Tooltip(_gt,
             "After extraction, automatically write GPS coordinates,\n"
             "altitude, focal length, and capture datetime into each\n"
@@ -916,10 +908,10 @@ def _build_extract_section(app, parent):
             "Override in Advanced → Metadata if auto-detect fails.\n\n"
             "Requires exiftool on PATH (https://exiftool.org).")
 
-    # -- Post-Processing (collapsible parent, expanded by default) --
+    # -- Post-Processing (collapsible, collapsed by default) --
     pp_sec = CollapsibleSection(c, "Post-Processing",
                                 subtitle="filters applied after frame extraction",
-                                expanded=True, core=True)
+                                expanded=False, core=True)
     pp_sec.pack(fill="x", pady=(16, 0), padx=2)
     pp = pp_sec.content
 
@@ -1128,7 +1120,7 @@ def _build_extract_section(app, parent):
 
     app.queue_run_btn = ctk.CTkButton(
         action_row, text="Process Queue", command=lambda: _run_extract_queue(app),
-        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
+        fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
         font=ctk.CTkFont(size=13, weight="bold"), height=38, width=120,
     )
     app.queue_run_btn.pack(side="left", padx=(0, 4))
@@ -1782,6 +1774,14 @@ def _queue_refresh(app):
               f"{stats['done']} done, {stats['error']} errors")
     )
 
+    # Process Queue button: primary when there's work, muted when empty
+    if stats["pending"] > 0:
+        app.queue_run_btn.configure(
+            fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H)
+    else:
+        app.queue_run_btn.configure(
+            fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H)
+
 
 _STATUS_COLORS = {
     "pending":    "#888888",
@@ -2089,7 +2089,7 @@ def _build_metadata_section(app, parent):
     """Advanced section — power-user tools tucked out of sight for beginners."""
     adv_sec = CollapsibleSection(parent, "Advanced",
                                  subtitle="frame quality filter, SRT geotagging",
-                                 expanded=False)
+                                 expanded=False, core=True)
     adv_sec.pack(fill="x", pady=(0, 6), padx=4)
     adv = adv_sec.content
 
@@ -2679,8 +2679,8 @@ def _build_fisheye_section(app, parent):
 
     app.fisheye_split_btn = ctk.CTkButton(
         sc, text="Split Lenses", command=lambda: _run_split_lenses(app),
-        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-        font=ctk.CTkFont(size=12), height=36,
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
+        font=FONT_TEXT_BTN_PRIMARY, height=HEIGHT_ACTION_BAR,
     )
     app.fisheye_split_btn.pack(fill="x", padx=6, pady=(2, 4))
     Tooltip(app.fisheye_split_btn,
@@ -2691,7 +2691,7 @@ def _build_fisheye_section(app, parent):
     reframe_sec = CollapsibleSection(
         c, "Reframing",
         subtitle="extract pinhole perspectives from a 360 file or existing ERP frames",
-        expanded=False,
+        expanded=False, scroll_on_expand=True,
     )
     reframe_sec.pack(fill="x", padx=2, pady=(4, 0))
     rc = reframe_sec.content

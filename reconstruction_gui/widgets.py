@@ -164,6 +164,7 @@ class CollapsibleSection(ctk.CTkFrame):
         subtitle: str = "",
         expanded: bool = False,
         core: bool = False,
+        scroll_on_expand: bool = False,
         **kwargs,
     ):
         kwargs.setdefault("border_width", 1)
@@ -177,6 +178,7 @@ class CollapsibleSection(ctk.CTkFrame):
         self._expanded = expanded
         self._title = title
         self._core = core          # core sections are always bright
+        self._scroll_on_expand = scroll_on_expand
         self._active = False       # feature enabled via checkbox
         self._hovering = False
 
@@ -232,8 +234,47 @@ class CollapsibleSection(ctk.CTkFrame):
         self._update_title_color()
         if self._expanded:
             self.content.pack(fill="x", padx=4, pady=(0, 4))
+            if self._scroll_on_expand:
+                self.after_idle(self._scroll_into_view)
         else:
             self.content.pack_forget()
+
+    def _scroll_into_view(self):
+        """Scroll the nearest CTkScrollableFrame so this section's header
+        sits at the top of the viewport, maximizing visibility of expanded
+        content and any siblings below."""
+        # Walk up the widget tree to find a CTkScrollableFrame
+        w = self.master
+        scroll_frame = None
+        while w is not None:
+            if isinstance(w, ctk.CTkScrollableFrame):
+                scroll_frame = w
+                break
+            w = w.master if hasattr(w, 'master') else None
+        if scroll_frame is None:
+            return
+
+        canvas = scroll_frame._parent_canvas
+        canvas.update_idletasks()
+
+        bbox = canvas.bbox("all")
+        if not bbox:
+            return
+        scroll_height = bbox[3] - bbox[1]
+        canvas_height = canvas.winfo_height()
+        if scroll_height <= canvas_height:
+            return
+
+        # Scroll so this section's top aligns with the viewport top
+        try:
+            section_top = self.winfo_rooty()
+            canvas_top = canvas.winfo_rooty()
+        except Exception:
+            return
+
+        offset_in_canvas = canvas.canvasy(0) + (section_top - canvas_top)
+        fraction = offset_in_canvas / scroll_height
+        canvas.yview_moveto(max(0.0, min(fraction, 1.0)))
 
     def is_expanded(self) -> bool:
         return self._expanded

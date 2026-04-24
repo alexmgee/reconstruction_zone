@@ -61,6 +61,7 @@ class BinaryValidationResult:
     detected_commands: List[str] = field(default_factory=list)
     detected_capabilities: Dict[str, bool] = field(default_factory=dict)
     binary_flavor: str = "unknown"
+    version: str = ""
 
     @property
     def supports_sphere_workflow(self) -> bool:
@@ -178,6 +179,15 @@ class ColmapRunner:
             return Path(resolved).resolve()
 
         raise FileNotFoundError(f"COLMAP-compatible binary not found: {binary_path}")
+
+    @staticmethod
+    def _parse_version(output: str) -> str:
+        """Extract version string from COLMAP help output (e.g. '4.0.3')."""
+        for line in output.splitlines()[:3]:
+            match = re.match(r"COLMAP\s+([\d]+\.[\d]+[\.\d]*\S*)", line.strip())
+            if match:
+                return match.group(1)
+        return ""
 
     @classmethod
     def _parse_available_commands(cls, output: str) -> List[str]:
@@ -412,6 +422,7 @@ class ColmapRunner:
                     detected_commands=commands,
                     detected_capabilities=capabilities,
                     binary_flavor=flavor,
+                    version=self._parse_version(output),
                 )
                 self._binary_validation = result
                 self._record_binary_validation(result)
@@ -606,6 +617,7 @@ class ColmapRunner:
             "success": result.success,
             "resolved_binary": result.resolved_binary,
             "binary_flavor": result.binary_flavor,
+            "version": result.version,
             "detected_commands": result.detected_commands,
             "detected_capabilities": result.detected_capabilities,
             "error": result.error,
@@ -812,12 +824,17 @@ class ColmapRunner:
                 "database_path": self.current_run_dir / "database.db",
                 "image_path": self.current_images_dir,
                 "ImageReader.camera_model": self.camera_model,
-                "SiftExtraction.max_num_features": max_features,
             }
             mask_stats: Dict[str, Any] = {}
             normalized_feature_type = (feature_type or "").strip().upper()
-            if normalized_feature_type and normalized_feature_type != "SIFT":
-                args["FeatureExtraction.type"] = feature_type
+            is_aliked = normalized_feature_type.startswith("ALIKED")
+            if is_aliked:
+                args["FeatureExtraction.type"] = normalized_feature_type
+                args["AlikedExtraction.max_num_features"] = max_features
+            else:
+                args["SiftExtraction.max_num_features"] = max_features
+                if normalized_feature_type and normalized_feature_type != "SIFT":
+                    args["FeatureExtraction.type"] = feature_type
             if self.current_masks_dir is not None:
                 effective_masks_dir, mask_stats = self._resolve_effective_masks_dir()
                 if effective_masks_dir is not None:
@@ -1036,6 +1053,8 @@ class ColmapRunner:
                 command = "mapper"
             elif mapper_key in ("global", "global_mapper"):
                 command = "global_mapper"
+            elif mapper_key in ("pose_prior", "pose_prior_mapper"):
+                command = "pose_prior_mapper"
             else:
                 raise ValueError(f"Unknown mapper mode: {mapper}")
             self._ensure_command_supported(command)
@@ -1045,7 +1064,7 @@ class ColmapRunner:
                 "image_path": self.current_images_dir,
                 "output_path": sparse_root,
             }
-            if command == "mapper":
+            if command in ("mapper", "pose_prior_mapper"):
                 args[self._mapper_option_key("Mapper.min_num_matches")] = min_num_inliers
             if extra_args:
                 args.update({k: v for k, v in extra_args.items() if v is not None})
@@ -1258,11 +1277,22 @@ class ColmapRunner:
             if track_lengths
             else 0.0
         )
+        if track_lengths:
+            sorted_tracks = sorted(track_lengths)
+            mid = len(sorted_tracks) // 2
+            median_track = float(
+                sorted_tracks[mid]
+                if len(sorted_tracks) % 2
+                else (sorted_tracks[mid - 1] + sorted_tracks[mid]) / 2.0
+            )
+        else:
+            median_track = 0.0
         return {
             "num_registered": num_registered,
             "num_points": num_points,
             "mean_reproj_error": mean_error,
             "mean_track_length": mean_track,
+            "median_track_length": median_track,
         }
 
     def pick_best_model(
@@ -1298,10 +1328,26 @@ class ColmapRunner:
         _, best_dir, best_stats = scored[0]
         return best_dir, best_stats
 
-    def parse_model(self, model_dir: Optional[Path] = None) -> Dict[str, Any]:
-        """Parse a COLMAP text-format model and compute summary stats."""
-        parse_cameras_txt, parse_images_txt, parse_points3d_txt = _import_colmap_parsers()
+    @staticmethod
+    def _pycolmap_available() -> bool:
+        try:
+            import pycolmap  # noqa: F401
+            return True
+        except ImportError:
+            return False
 
+    def _use_pycolmap(self) -> bool:
+        """Use pycolmap for stock COLMAP, subprocess for SphereSfM."""
+        if self._is_spheresfm_like():
+            return False
+        return self._pycolmap_available()
+
+    def parse_model(self, model_dir: Optional[Path] = None) -> Dict[str, Any]:
+        """Parse a COLMAP model and compute summary stats.
+
+        Uses pycolmap if available (reads binary models directly, no text
+        conversion needed). Falls back to text parsers otherwise.
+        """
         if model_dir is None:
             self._ensure_active_run()
             selected = self.current_run_info.get("selected_model_dir", "") if self.current_run_info else ""
@@ -1314,6 +1360,36 @@ class ColmapRunner:
         model_path = Path(model_dir)
         if not model_path.is_dir():
             raise FileNotFoundError(f"Model directory not found: {model_path}")
+
+        # Try pycolmap first — reads binary models directly
+        if self._pycolmap_available():
+            try:
+                parsed = self._parse_model_pycolmap(model_path)
+                parsed["stats"] = self._model_stats_from_parsed(parsed)
+                return parsed
+            except Exception as exc:
+                logger.warning("pycolmap model read failed, falling back to text: %s", exc)
+
+        # Fallback: convert to text and parse
+        return self._parse_model_text(model_path)
+
+    def _parse_model_pycolmap(self, model_path: Path) -> Dict[str, Any]:
+        """Parse a model using pycolmap (binary or text format)."""
+        import pycolmap
+        try:
+            from colmap_validation import from_pycolmap_reconstruction
+        except ImportError:
+            from reconstruction_gui.colmap_validation import from_pycolmap_reconstruction
+
+        rec = pycolmap.Reconstruction()
+        rec.read(str(model_path))
+        parsed = from_pycolmap_reconstruction(rec)
+        parsed["model_dir"] = str(model_path.resolve())
+        return parsed
+
+    def _parse_model_text(self, model_path: Path) -> Dict[str, Any]:
+        """Parse a model using text-format parsers (legacy path)."""
+        parse_cameras_txt, parse_images_txt, parse_points3d_txt = _import_colmap_parsers()
 
         self._convert_model_to_text(model_path)
 

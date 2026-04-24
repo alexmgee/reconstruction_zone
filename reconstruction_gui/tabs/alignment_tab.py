@@ -286,7 +286,26 @@ def _build_alignment_extract_section(app, parent):
 
     row = ctk.CTkFrame(c, fg_color="transparent")
     row.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(row, text="Max features:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    ctk.CTkLabel(row, text="Features:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.alignment_feature_type_var = ctk.StringVar(value="SIFT")
+    app.alignment_feature_type_menu = ctk.CTkOptionMenu(
+        row,
+        values=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"],
+        variable=app.alignment_feature_type_var,
+        width=160,
+        command=lambda _: _on_feature_type_change(app),
+    )
+    app.alignment_feature_type_menu.pack(side="left", padx=(6, 12))
+    Tooltip(
+        app.alignment_feature_type_menu,
+        "SIFT: Classical features. Orientation-invariant. Works on all COLMAP versions.\n"
+        "ALIKED_N16ROT: Learned features via ONNX. More repeatable for low-texture\n"
+        "scenes and illumination changes. Trained for viewpoint invariance.\n"
+        "ALIKED_N32: Learned features via ONNX. Higher-dimensional descriptors,\n"
+        "more expensive. Not explicitly trained for viewpoint invariance.",
+    )
+
+    ctk.CTkLabel(row, text="Max features:", width=80, anchor="e").pack(side="left", padx=(10, 0))
     app.alignment_max_features_entry = ctk.CTkEntry(row, width=120)
     app.alignment_max_features_entry.insert(0, "8192")
     app.alignment_max_features_entry.pack(side="left", padx=(6, 12))
@@ -451,13 +470,31 @@ def _build_alignment_match_section(app, parent):
         command=lambda _: _on_strategy_change(app),
     ).pack(side="left", padx=(6, 12))
 
-    ctk.CTkLabel(row, text="Max matches:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left", padx=(10, 0))
-    app.alignment_max_num_matches_entry = ctk.CTkEntry(row, width=120)
+    ctk.CTkLabel(row, text="Matcher:", width=60, anchor="e").pack(side="left", padx=(10, 0))
+    app.alignment_matcher_type_var = ctk.StringVar(value="bruteforce")
+    app.alignment_matcher_type_menu = ctk.CTkOptionMenu(
+        row,
+        values=["bruteforce", "lightglue"],
+        variable=app.alignment_matcher_type_var,
+        width=120,
+    )
+    app.alignment_matcher_type_menu.pack(side="left", padx=(6, 4))
+    Tooltip(
+        app.alignment_matcher_type_menu,
+        "bruteforce: Classical nearest-neighbor matching.\n"
+        "lightglue: Neural network matching via ONNX. Higher inlier ratios,\n"
+        "especially for challenging viewpoint and illumination changes.",
+    )
+
+    row2 = ctk.CTkFrame(c, fg_color="transparent")
+    row2.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(row2, text="Max matches:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.alignment_max_num_matches_entry = ctk.CTkEntry(row2, width=120)
     app.alignment_max_num_matches_entry.insert(0, "32768")
     app.alignment_max_num_matches_entry.pack(side="left", padx=(6, 4))
 
     app.alignment_guided_var = ctk.BooleanVar(value=False)
-    ctk.CTkCheckBox(row, text="Guided matching", variable=app.alignment_guided_var).pack(
+    ctk.CTkCheckBox(row2, text="Guided matching", variable=app.alignment_guided_var).pack(
         side="left", padx=(10, 0))
 
     # Conditional: spatial fields (hidden by default)
@@ -492,6 +529,11 @@ def _build_alignment_match_section(app, parent):
             filetypes=[("All Files", "*.*")],
         ),
     ).pack(side="left")
+    ctk.CTkButton(
+        v_row, text="Download", width=80,
+        fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+        command=lambda: _download_vocab_tree(app),
+    ).pack(side="left", padx=(4, 0))
 
 
 def _build_alignment_reconstruct_section(app, parent):
@@ -503,16 +545,57 @@ def _build_alignment_reconstruct_section(app, parent):
     row = ctk.CTkFrame(c, fg_color="transparent")
     row.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(row, text="Mapper:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    app.alignment_mapper_var = ctk.StringVar(value="incremental")
-    ctk.CTkOptionMenu(
-        row, values=["incremental", "global"],
+    app.alignment_mapper_var = ctk.StringVar(value="global")
+    app.alignment_mapper_menu = ctk.CTkOptionMenu(
+        row, values=["global", "incremental", "pose_prior"],
         variable=app.alignment_mapper_var, width=160,
-    ).pack(side="left", padx=(6, 12))
+        command=lambda _: _on_mapper_change(app),
+    )
+    app.alignment_mapper_menu.pack(side="left", padx=(6, 12))
+    Tooltip(
+        app.alignment_mapper_menu,
+        "global: GLOMAP global SfM. Optimizes all camera poses simultaneously.\n"
+        "incremental: Traditional sequential registration. Adds one image at a time.\n"
+        "pose_prior: Incremental with GPS/position constraints from EXIF metadata.\n"
+        "Constrains camera poses to known positions during bundle adjustment.",
+    )
 
     ctk.CTkLabel(row, text="Min inliers:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left", padx=(10, 0))
     app.alignment_min_num_inliers_entry = ctk.CTkEntry(row, width=120)
     app.alignment_min_num_inliers_entry.insert(0, "15")
     app.alignment_min_num_inliers_entry.pack(side="left", padx=(6, 0))
+
+    # Pose prior controls (shown only when mapper = pose_prior)
+    app._alignment_pose_prior_frame = ctk.CTkFrame(c, fg_color="transparent")
+    pp_row = ctk.CTkFrame(app._alignment_pose_prior_frame, fg_color="transparent")
+    pp_row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(pp_row, text="Position std:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.alignment_prior_std_x_entry = ctk.CTkEntry(pp_row, width=70, placeholder_text="X")
+    app.alignment_prior_std_x_entry.insert(0, "1.0")
+    app.alignment_prior_std_x_entry.pack(side="left", padx=(6, 2))
+    app.alignment_prior_std_y_entry = ctk.CTkEntry(pp_row, width=70, placeholder_text="Y")
+    app.alignment_prior_std_y_entry.insert(0, "1.0")
+    app.alignment_prior_std_y_entry.pack(side="left", padx=(0, 2))
+    app.alignment_prior_std_z_entry = ctk.CTkEntry(pp_row, width=70, placeholder_text="Z")
+    app.alignment_prior_std_z_entry.insert(0, "1.0")
+    app.alignment_prior_std_z_entry.pack(side="left", padx=(0, 6))
+    Tooltip(
+        app.alignment_prior_std_x_entry,
+        "Standard deviation of position priors in meters (X, Y, Z).\n"
+        "Lower values = tighter constraint. 1.0m is typical for consumer GPS.\n"
+        "Use 0.01-0.1m for RTK/PPK GPS.",
+    )
+    app.alignment_prior_overwrite_var = ctk.BooleanVar(value=True)
+    ctk.CTkCheckBox(
+        pp_row, text="Override prior covariance",
+        variable=app.alignment_prior_overwrite_var,
+    ).pack(side="left", padx=(6, 0))
+    Tooltip(
+        pp_row,
+        "When checked, the std values above override per-image covariance\n"
+        "stored in the database. When unchecked, COLMAP uses the covariance\n"
+        "from the database (extracted from EXIF or imported).",
+    )
 
     row2 = ctk.CTkFrame(c, fg_color="transparent")
     row2.pack(fill="x", pady=3, padx=6)
@@ -534,6 +617,16 @@ def _build_alignment_reconstruct_section(app, parent):
         row2, text="Refine extra", variable=app.alignment_ba_refine_extra_var,
     )
     app._alignment_ba_refine_extra_cb.pack(side="left")
+
+    app.alignment_deterministic_var = ctk.BooleanVar(value=False)
+    ctk.CTkCheckBox(
+        row2, text="Deterministic", variable=app.alignment_deterministic_var,
+    ).pack(side="left", padx=(16, 0))
+    Tooltip(
+        row2,
+        "When enabled, passes random_seed=0 to the mapper for fully\n"
+        "reproducible reconstructions across identical runs.",
+    )
 
     row3 = ctk.CTkFrame(c, fg_color="transparent")
     row3.pack(fill="x", pady=3, padx=6)
@@ -1213,6 +1306,38 @@ def _append_textbox_text(textbox, text: str):
     textbox.see("end")
 
 
+_VOCAB_TREE_URL = "https://demuc.de/colmap/vocab_tree_flickr100K_words32K.bin"
+_VOCAB_TREE_FILENAME = "vocab_tree_flickr100K_words32K.bin"
+
+
+def _download_vocab_tree(app):
+    """Download the standard COLMAP 32K vocab tree to the workspace."""
+    import urllib.request
+
+    workspace = app.alignment_workspace_entry.get().strip()
+    if not workspace:
+        workspace = str(Path.home() / "COLMAP")
+    dest_dir = Path(workspace)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / _VOCAB_TREE_FILENAME
+
+    if dest.exists():
+        _set_entry_text(app.alignment_vocab_tree_entry, str(dest))
+        app.log(f"Vocab tree already exists: {dest}")
+        return
+
+    def _worker():
+        try:
+            app.after(0, lambda: app.log(f"Downloading vocab tree to {dest} ..."))
+            urllib.request.urlretrieve(_VOCAB_TREE_URL, str(dest))
+            app.after(0, lambda: _set_entry_text(app.alignment_vocab_tree_entry, str(dest)))
+            app.after(0, lambda: app.log(f"Vocab tree downloaded: {dest}"))
+        except Exception as exc:
+            app.after(0, lambda: app.log(f"Vocab tree download failed: {exc}"))
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def _browse_alignment_binary_override(app):
     app._browse_file_for(
         app.alignment_binary_entry,
@@ -1270,11 +1395,47 @@ def _on_engine_change(app, force: bool = False):
     if hasattr(app, "_alignment_rig_section"):
         _update_rig_section_state(app)
 
+    # Lock feature/matcher/mapper for SphereSfM (SIFT brute-force incremental only)
+    if hasattr(app, "alignment_feature_type_menu"):
+        if engine_name == "spheresfm":
+            app.alignment_feature_type_var.set("SIFT")
+            app.alignment_feature_type_menu.configure(state="disabled")
+            app.alignment_matcher_type_var.set("bruteforce")
+            app.alignment_matcher_type_menu.configure(state="disabled")
+            app.alignment_mapper_var.set("incremental")
+            app.alignment_mapper_menu.configure(state="disabled")
+        else:
+            app.alignment_feature_type_menu.configure(state="normal")
+            app.alignment_matcher_type_menu.configure(state="normal")
+            app.alignment_mapper_menu.configure(state="normal")
+
     # Lock BA refine checkboxes for SphereSfM
     if hasattr(app, "_alignment_ba_refine_focal_cb"):
         _update_ba_refine_lock(app)
 
     _update_alignment_binary_hint(app)
+
+
+def _on_mapper_change(app):
+    """Show/hide pose prior controls based on mapper selection."""
+    mapper = app.alignment_mapper_var.get().strip().lower()
+    frame = getattr(app, "_alignment_pose_prior_frame", None)
+    if frame is None:
+        return
+    if mapper == "pose_prior":
+        frame.pack(fill="x")
+    else:
+        frame.pack_forget()
+
+
+def _on_feature_type_change(app):
+    """Auto-correct matcher type when feature type changes for compatibility."""
+    feature_type = app.alignment_feature_type_var.get().strip().upper()
+    is_aliked = feature_type.startswith("ALIKED")
+    # SphereSfM only supports SIFT — force it back
+    engine = app.alignment_engine_var.get().strip().lower()
+    if engine == "spheresfm" and is_aliked:
+        app.alignment_feature_type_var.set("SIFT")
 
 
 def _on_strategy_change(app):
@@ -1573,6 +1734,8 @@ def _normalized_mapper(mapper_value: str) -> str:
     mapper_key = (mapper_value or "").strip().lower()
     if mapper_key in {"global", "global_mapper"}:
         return "global_mapper"
+    if mapper_key in {"pose_prior", "pose_prior_mapper"}:
+        return "pose_prior_mapper"
     return "incremental"
 
 
@@ -1585,7 +1748,8 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     strategy = app.alignment_strategy_var.get().strip().lower()
     mapper = _normalized_mapper(app.alignment_mapper_var.get())
     camera_model = app.alignment_camera_model_var.get().strip().upper() if engine_name != "spheresfm" else "SPHERE"
-    feature_type = "SIFT"
+    feature_type = app.alignment_feature_type_var.get().strip().upper() if engine_name != "spheresfm" else "SIFT"
+    matcher_type = app.alignment_matcher_type_var.get().strip().lower() if engine_name != "spheresfm" else "bruteforce"
     camera_params = app.alignment_camera_params_entry.get().strip()
     pose_path = app.alignment_pose_path_entry.get().strip()
     camera_mask_path = app.alignment_camera_mask_path_entry.get().strip()
@@ -1641,6 +1805,13 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     ba_refine_principal = bool(app.alignment_ba_refine_principal_var.get())
     ba_refine_extra = bool(app.alignment_ba_refine_extra_var.get())
 
+    # Pose prior settings (only used when mapper = pose_prior_mapper)
+    prior_std_x = _parse_optional_float(app.alignment_prior_std_x_entry.get(), "Prior std X")
+    prior_std_y = _parse_optional_float(app.alignment_prior_std_y_entry.get(), "Prior std Y")
+    prior_std_z = _parse_optional_float(app.alignment_prior_std_z_entry.get(), "Prior std Z")
+    prior_overwrite = bool(app.alignment_prior_overwrite_var.get())
+    deterministic = bool(app.alignment_deterministic_var.get())
+
     extract_args_raw = app.alignment_extract_args_text.get("1.0", "end").strip()
     match_args_raw = app.alignment_match_args_text.get("1.0", "end").strip()
     reconstruct_args_raw = app.alignment_reconstruct_args_text.get("1.0", "end").strip()
@@ -1649,7 +1820,11 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     match_cli_args = _parse_cli_args_text(match_args_raw, "Match args")
     reconstruct_cli_args = _parse_cli_args_text(reconstruct_args_raw, "Reconstruct args")
 
-    base_mapper = "global" if mapper == "global_mapper" else "incremental"
+    _MAPPER_KEY_MAP = {
+        "global_mapper": "global",
+        "pose_prior_mapper": "pose_prior",
+    }
+    base_mapper = _MAPPER_KEY_MAP.get(mapper, "incremental")
     rig_mode = False
     rig_preset_name = "None"
     rig_file_path = ""
@@ -1734,6 +1909,13 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     if camera_mask_path:
         extract_args["ImageReader.camera_mask_path"] = camera_mask_path
 
+    # Set feature matching type for COLMAP 4.0+ (SIFT_BRUTEFORCE is the default)
+    if matcher_type == "lightglue":
+        is_aliked = feature_type.startswith("ALIKED")
+        match_args["FeatureMatching.type"] = "ALIKED_LIGHTGLUE" if is_aliked else "SIFT_LIGHTGLUE"
+    elif feature_type.startswith("ALIKED"):
+        match_args["FeatureMatching.type"] = "ALIKED_BRUTEFORCE"
+
     if strategy == "spatial":
         match_args["SpatialMatching.is_gps"] = int(spatial_is_gps)
         if spatial_max_distance is not None:
@@ -1745,7 +1927,20 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     if snapshot_path:
         reconstruct_args["Mapper.snapshot_path"] = snapshot_path
     if snapshot_images_freq:
-        reconstruct_args["Mapper.snapshot_frames_freq"] = snapshot_images_freq
+        reconstruct_args["Mapper.snapshot_images_freq"] = snapshot_images_freq
+
+    # Pose prior args (pose_prior_mapper only — ignored by other mappers)
+    if base_mapper == "pose_prior":
+        reconstruct_args["overwrite_priors_covariance"] = prior_overwrite
+        if prior_std_x is not None:
+            reconstruct_args["prior_position_std_x"] = prior_std_x
+        if prior_std_y is not None:
+            reconstruct_args["prior_position_std_y"] = prior_std_y
+        if prior_std_z is not None:
+            reconstruct_args["prior_position_std_z"] = prior_std_z
+
+    if deterministic:
+        reconstruct_args["Mapper.random_seed"] = 0
 
     profile = replace(
         profile,
@@ -1768,6 +1963,7 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     prefs["alignment_binary_path"] = binary_path
     prefs["alignment_camera_model"] = camera_model
     prefs["alignment_feature_type"] = feature_type
+    prefs["alignment_matcher_type"] = matcher_type
     prefs["alignment_single_camera"] = single_camera
     prefs["alignment_camera_params"] = camera_params
     prefs["alignment_pose_path"] = pose_path
@@ -1787,6 +1983,11 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     prefs["alignment_ba_refine_focal_length"] = ba_refine_focal
     prefs["alignment_ba_refine_principal_point"] = ba_refine_principal
     prefs["alignment_ba_refine_extra_params"] = ba_refine_extra
+    prefs["alignment_prior_std_x"] = "" if prior_std_x is None else prior_std_x
+    prefs["alignment_prior_std_y"] = "" if prior_std_y is None else prior_std_y
+    prefs["alignment_prior_std_z"] = "" if prior_std_z is None else prior_std_z
+    prefs["alignment_prior_overwrite"] = prior_overwrite
+    prefs["alignment_deterministic"] = deterministic
     prefs["alignment_extract_args"] = extract_args_raw
     prefs["alignment_match_args"] = match_args_raw
     prefs["alignment_reconstruct_args"] = reconstruct_args_raw
@@ -1806,6 +2007,7 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
         "mapper": base_mapper,
         "camera_model": camera_model,
         "feature_type": feature_type,
+        "matcher_type": matcher_type,
         "single_camera": single_camera,
         "camera_params": camera_params,
         "pose_path": pose_path,
@@ -1823,6 +2025,11 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
         "ba_refine_focal_length": ba_refine_focal,
         "ba_refine_principal_point": ba_refine_principal,
         "ba_refine_extra_params": ba_refine_extra,
+        "prior_std_x": prior_std_x,
+        "prior_std_y": prior_std_y,
+        "prior_std_z": prior_std_z,
+        "prior_overwrite": prior_overwrite,
+        "deterministic": deterministic,
         "extract_extra_args": profile.extract_extra_args,
         "match_extra_args": profile.match_extra_args,
         "reconstruct_extra_args": profile.reconstruct_extra_args,
@@ -2113,19 +2320,34 @@ def _assess_alignment_quality(app, selected_stats: Dict[str, object]) -> Dict[st
     else:
         ratio = None
 
-    if num_points < 100:
-        findings.append(f"Very sparse model: only {num_points} points.")
+    # Points-per-registered-image ratio (scales with dataset size)
+    if num_registered > 0:
+        pts_per_img = num_points / num_registered
+        if pts_per_img < 10:
+            findings.append(f"Very sparse model: {num_points} points across {num_registered} images ({pts_per_img:.0f} pts/img).")
+            severity = max(severity, 3)
+        elif pts_per_img < 50:
+            findings.append(f"Sparse model: {num_points} points across {num_registered} images ({pts_per_img:.0f} pts/img).")
+            severity = max(severity, 2)
+        elif pts_per_img < 100:
+            findings.append(f"Limited sparse detail: {num_points} points across {num_registered} images ({pts_per_img:.0f} pts/img).")
+            severity = max(severity, 1)
+    elif num_points == 0:
+        findings.append("No 3D points reconstructed.")
         severity = max(severity, 3)
-    elif num_points < 500:
-        findings.append(f"Sparse model: only {num_points} points.")
-        severity = max(severity, 2)
-    elif num_points < 2000:
-        findings.append(f"Limited sparse detail: {num_points} points.")
-        severity = max(severity, 1)
 
     if mean_reproj_value is not None and mean_reproj_value > 2.0:
         findings.append(f"High mean reprojection error: {mean_reproj_value:.3f}px.")
         severity = max(severity, 2)
+
+    median_track = selected_stats.get("median_track_length")
+    try:
+        median_track_value = float(median_track)
+    except Exception:
+        median_track_value = None
+    if median_track_value is not None and median_track_value < 3.0 and num_points > 0:
+        findings.append(f"Low median track length: {median_track_value:.1f} (most 3D points seen in few views).")
+        severity = max(severity, 1)
 
     if severity >= 3:
         summary = "Poor"

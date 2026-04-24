@@ -23,7 +23,7 @@ from widgets import (
     COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
     COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
     COLOR_BORDER_SECTION,
-    FONT_TEXT_CONSOLE,
+    FONT_TEXT_CONSOLE, FONT_TEXT_BTN_PRIMARY,
     LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
     HEIGHT_ACTION_BAR, HEIGHT_INLINE, HEIGHT_NAV,
 )
@@ -689,9 +689,9 @@ def _build_scan_mode(app):
                   command=_browse_scan).pack(side="right")
 
     scan_btn = ctk.CTkButton(
-        sc, text="Scan", height=HEIGHT_INLINE,
-        font=ctk.CTkFont(size=12),
-        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        sc, text="Scan", height=HEIGHT_ACTION_BAR,
+        font=FONT_TEXT_BTN_PRIMARY,
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
     )
     scan_btn.pack(fill="x", padx=6, pady=(0, 4))
 

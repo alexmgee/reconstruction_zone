@@ -51,9 +51,9 @@ logger = logging.getLogger(__name__)
 def _import_pipeline():
     from reconstruction_pipeline import (
         MaskingPipeline, MaskConfig, SegmentationModel,
-        ImageGeometry, CLASS_PRESETS, COCO_CLASSES,
+        ImageGeometry, CLASS_PRESETS, COCO_CLASSES, COCO_NAME_TO_ID,
     )
-    return MaskingPipeline, MaskConfig, SegmentationModel, ImageGeometry, CLASS_PRESETS, COCO_CLASSES
+    return MaskingPipeline, MaskConfig, SegmentationModel, ImageGeometry, CLASS_PRESETS, COCO_CLASSES, COCO_NAME_TO_ID
 
 
 def _import_review():
@@ -66,16 +66,6 @@ def _import_review():
             QUALITY_COLORS, STATUS_COLORS,
             ReviewStatusManager, MaskStatus)
 
-
-# ---------- mask targets ----------
-# label → COCO class ID (or None for prompt-only targets)
-MASK_TARGETS = [
-    ("person", 0),
-    ("backpack", 24),
-    ("car", 2),
-    ("camera", None),
-    ("selfie stick", None),
-]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -466,6 +456,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 entry.insert(0, val)
         if hasattr(self, "alignment_engine_var") and self._prefs.get("alignment_engine"):
             self.alignment_engine_var.set(self._prefs["alignment_engine"])
+        if hasattr(self, "alignment_feature_type_var") and self._prefs.get("alignment_feature_type"):
+            self.alignment_feature_type_var.set(self._prefs["alignment_feature_type"])
+        if hasattr(self, "alignment_matcher_type_var") and self._prefs.get("alignment_matcher_type"):
+            self.alignment_matcher_type_var.set(self._prefs["alignment_matcher_type"])
         if hasattr(self, "alignment_strategy_var") and self._prefs.get("alignment_strategy"):
             self.alignment_strategy_var.set(self._prefs["alignment_strategy"])
         if hasattr(self, "alignment_mapper_var") and self._prefs.get("alignment_mapper"):
@@ -485,6 +479,20 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self.alignment_ba_refine_principal_var.set(bool(self._prefs["alignment_ba_refine_principal_point"]))
         if hasattr(self, "alignment_ba_refine_extra_var") and "alignment_ba_refine_extra_params" in self._prefs:
             self.alignment_ba_refine_extra_var.set(bool(self._prefs["alignment_ba_refine_extra_params"]))
+        for attr, pref_key in [
+            ("alignment_prior_std_x_entry", "alignment_prior_std_x"),
+            ("alignment_prior_std_y_entry", "alignment_prior_std_y"),
+            ("alignment_prior_std_z_entry", "alignment_prior_std_z"),
+        ]:
+            if hasattr(self, attr) and pref_key in self._prefs:
+                val = self._prefs[pref_key]
+                if val not in ("", None):
+                    getattr(self, attr).delete(0, "end")
+                    getattr(self, attr).insert(0, str(val))
+        if hasattr(self, "alignment_prior_overwrite_var") and "alignment_prior_overwrite" in self._prefs:
+            self.alignment_prior_overwrite_var.set(bool(self._prefs["alignment_prior_overwrite"]))
+        if hasattr(self, "alignment_deterministic_var") and "alignment_deterministic" in self._prefs:
+            self.alignment_deterministic_var.set(bool(self._prefs["alignment_deterministic"]))
         if hasattr(self, "alignment_max_features_entry") and self._prefs.get("alignment_max_features"):
             self.alignment_max_features_entry.delete(0, "end")
             self.alignment_max_features_entry.insert(0, str(self._prefs["alignment_max_features"]))
@@ -712,20 +720,20 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         row2b = ctk.CTkFrame(core, fg_color="transparent")
         row2b.pack(fill="x", padx=6, pady=(0, 3))
         ctk.CTkLabel(row2b, text="", width=LABEL_FIELD_WIDTH).pack(side="left")
-        self.review_folder_var = ctk.BooleanVar(value=False)
-        _rf = ctk.CTkCheckBox(row2b, text="Create review folder",
-                              variable=self.review_folder_var, width=0)
-        _rf.pack(side="left", padx=(5, 0))
-        Tooltip(_rf, "Creates masks/ and review/ subdirectories inside Output")
-        self.review_rejects_var = ctk.BooleanVar(value=True)
-        _rr = ctk.CTkCheckBox(row2b, text="Include rejects",
-                              variable=self.review_rejects_var, width=0)
-        _rr.pack(side="left", padx=(16, 0))
-        Tooltip(_rr, "Creates a mask for every image regardless of confidence score")
 
+        ctk.CTkLabel(row2b, text="Input file types:").pack(side="left", padx=(5, 2))
         self.pattern_var = ctk.StringVar(value="*.jpg *.png")
-        ctk.CTkEntry(row2b, textvariable=self.pattern_var, width=80).pack(side="right", padx=(2, 70))
-        ctk.CTkLabel(row2b, text="File types:").pack(side="right", padx=(0, 2))
+        ctk.CTkEntry(row2b, textvariable=self.pattern_var, width=80).pack(side="left", padx=(0, 12))
+
+        self.output_format_var = ctk.StringVar(value="png")
+        ctk.CTkLabel(row2b, text="Output format:").pack(side="left", padx=(0, 2))
+        _fmt = ctk.CTkOptionMenu(row2b, variable=self.output_format_var,
+                                 values=["png", "jpg", "npy"], width=65)
+        _fmt.pack(side="left", padx=(0, 0))
+        Tooltip(_fmt, "Mask output format:\n"
+                      "  png — lossless, standard (recommended)\n"
+                      "  jpg — lossy, smaller files\n"
+                      "  npy — numpy array for programmatic use")
 
         # ── Model ──
         sam3_mode_row = ctk.CTkFrame(core, fg_color="transparent")
@@ -749,20 +757,30 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             from prep360.distribution import is_gumroad as _is_gumroad_check
         except ImportError:
             def _is_gumroad_check(): return False
-        _all_models = ["auto", "yolo26", "rfdetr", "sam3", "fastsam"]
+        _all_models = ["auto", "sam3", "rfdetr", "yolo26", "fastsam"]
         if _is_gumroad_check():
             _model_values = [m for m in _all_models if m not in ("yolo26", "fastsam")]
         else:
             _model_values = _all_models
         self.model_var = ctk.StringVar(value="auto")
-        ctk.CTkOptionMenu(r1, variable=self.model_var,
+        _model_menu = ctk.CTkOptionMenu(r1, variable=self.model_var,
                           values=_model_values,
-                          width=95).pack(side="left", padx=2)
+                          command=self._on_model_change,
+                          width=95)
+        _model_menu.pack(side="left", padx=2)
+        Tooltip(_model_menu,
+                "auto — picks best available (SAM3 > RF-DETR > YOLO)\n"
+                "sam3 — text-prompted (any object). 848M params, slowest.\n"
+                "rfdetr — transformer, 80 COCO classes. Good ensemble partner.\n"
+                "yolo26 — CNN, 80 COCO classes. Fastest for known objects.\n"
+                "fastsam — legacy, segments everything unfiltered.")
 
-        ctk.CTkLabel(r1, text="YOLO size:").pack(side="left", padx=(12, 2))
+        self._yolo_size_label = ctk.CTkLabel(r1, text="YOLO size:")
+        self._yolo_size_label.pack(side="left", padx=(12, 2))
         self.yolo_size_var = ctk.StringVar(value="n")
-        ctk.CTkOptionMenu(r1, variable=self.yolo_size_var,
-                          values=["n", "s", "m", "l", "x"], width=55).pack(side="left", padx=2)
+        self._yolo_size_menu = ctk.CTkOptionMenu(r1, variable=self.yolo_size_var,
+                          values=["n", "s", "m", "l", "x"], width=55)
+        self._yolo_size_menu.pack(side="left", padx=2)
 
         ctk.CTkLabel(r1, text="Geometry:").pack(side="left", padx=(12, 2))
         self.geometry_var = ctk.StringVar(value="pinhole")
@@ -798,9 +816,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             r3, placeholder_text="(optional) objects to protect from masking")
         self.keep_prompts_entry.pack(side="left", fill="x", expand=True, padx=5)
 
-        self._target_vars: dict = {}
-
-        mp_wrapper = ctk.CTkFrame(core, fg_color="transparent")
+        self._mp_wrapper = mp_wrapper = ctk.CTkFrame(core, fg_color="transparent")
         mp_wrapper.pack(fill="x", padx=6, pady=3)
         mp_toggle_row = ctk.CTkFrame(mp_wrapper, fg_color="transparent")
         mp_toggle_row.pack(fill="x")
@@ -811,6 +827,12 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         _mp.pack(side="left")
         Tooltip(_mp, "Run SAM3 once per prompt with individual confidence\n"
                      "thresholds, then union all masks together")
+        self.multi_label_var = ctk.BooleanVar(value=False)
+        _ml = ctk.CTkCheckBox(mp_toggle_row, text="Multi-label output",
+                              variable=self.multi_label_var, width=0)
+        _ml.pack(side="left", padx=(24, 0))
+        Tooltip(_ml, "Export per-class segmentation maps (pixel values = class IDs)\n"
+                     "for Gaussian Grouping and semantic scene decomposition")
         ctk.CTkButton(mp_toggle_row, text="+ Add Pass", width=80,
                       command=self._add_multi_pass_row).pack(side="right", padx=2)
         ctk.CTkButton(mp_toggle_row, text="Remove", width=70,
@@ -831,16 +853,20 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                               variable=self.skip_existing_var, width=0)
         _se.pack(side="left")
         Tooltip(_se, "Skip images that already have a mask file in the output directory")
-        self.multi_label_var = ctk.BooleanVar(value=False)
-        _ml = ctk.CTkCheckBox(out_row, text="Multi-label output",
-                              variable=self.multi_label_var, width=0)
-        _ml.pack(side="left")
-        Tooltip(_ml, "Export per-class segmentation maps (pixel values = class IDs)\n"
-                     "for Gaussian Grouping and semantic scene decomposition")
+        self.review_folder_var = ctk.BooleanVar(value=False)
+        _rf = ctk.CTkCheckBox(out_row, text="Create review folder",
+                              variable=self.review_folder_var, width=0)
+        _rf.pack(side="left", padx=(16, 0))
+        Tooltip(_rf, "Creates masks/ and review/ subdirectories inside Output")
+        self.review_rejects_var = ctk.BooleanVar(value=True)
+        _rr = ctk.CTkCheckBox(out_row, text="Include rejects",
+                              variable=self.review_rejects_var, width=0)
+        _rr.pack(side="left", padx=(16, 0))
+        Tooltip(_rr, "Creates a mask for every image regardless of confidence score")
         self.inpaint_var = ctk.BooleanVar(value=False)
         _ip = ctk.CTkCheckBox(out_row, text="Inpaint masked",
                               variable=self.inpaint_var, width=0)
-        _ip.pack(side="left", padx=(40, 0))
+        _ip.pack(side="left", padx=(16, 0))
         Tooltip(_ip, "Fill masked regions with plausible background texture\n"
                      "so 3DGS gets gradient signal instead of black void")
 
@@ -888,7 +914,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # ==============================================================
         #  DETECTION & REFINEMENT
         # ==============================================================
-        self._detect_sec = _CollapsibleSection(scroll, "Detection & Refinement", expanded=True)
+        self._detect_sec = _CollapsibleSection(scroll, "Detection & Refinement", expanded=False)
         detect_sec = self._detect_sec
         detect_sec.pack(fill="x", pady=(0, 6), padx=4)
         detect = detect_sec.content
@@ -1181,6 +1207,16 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                       font=ctk.CTkFont(size=12),
                       command=self._mq_clear_done).pack(side="left")
 
+        self.num_workers_var = ctk.StringVar(value="4")
+        _nw = ctk.CTkOptionMenu(mq_ctrl, variable=self.num_workers_var,
+                                values=["1", "2", "4", "8"], width=55)
+        _nw.pack(side="right", padx=(0, 0))
+        ctk.CTkLabel(mq_ctrl, text="Workers:", font=ctk.CTkFont(size=11)).pack(
+            side="right", padx=(8, 2))
+        Tooltip(_nw, "Number of parallel threads for batch processing.\n"
+                     "Higher = faster but uses more GPU memory.\n"
+                     "Set to 1 for sequential processing.")
+
         # queue list — scrollable, auto-resizes
         self.mq_scroll = ctk.CTkScrollableFrame(mqc, height=0, fg_color="transparent")
         self.mq_scroll.pack(fill="x", pady=(0, 4))
@@ -1234,6 +1270,32 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         glow = "#1a5276" if value == "Unified Video" else "transparent"
         for entry in (self.remove_prompts_entry, self.keep_prompts_entry):
             entry.master.configure(fg_color=glow)
+
+    def _on_model_change(self, value):
+        """Grey out controls irrelevant to the selected model.
+
+        Rules:
+        - YOLO size: only relevant for yolo26
+        - Multi-pass SAM3: only relevant for sam3
+        - auto: everything enabled (actual model unknown until runtime)
+        """
+        # Skip if Unified Video mode is active (it overrides everything)
+        if self.sam3_unified_var.get():
+            return
+
+        yolo_state = "normal" if value in ("auto", "yolo26") else "disabled"
+        for w in (self._yolo_size_label, self._yolo_size_menu):
+            w.configure(state=yolo_state)
+            if isinstance(w, ctk.CTkOptionMenu):
+                if yolo_state == "disabled":
+                    w._original_fg = w.cget("fg_color")
+                    w._original_btn = w.cget("button_color")
+                    w.configure(fg_color="#555555", button_color="#555555")
+                elif hasattr(w, "_original_fg"):
+                    w.configure(fg_color=w._original_fg, button_color=w._original_btn)
+
+        mp_state = "normal" if value in ("auto", "sam3") else "disabled"
+        self._set_widgets_state(self._mp_wrapper, mp_state)
 
     def _set_widgets_state(self, parent, state):
         """Recursively enable/disable all interactive widgets under *parent*."""
@@ -2123,7 +2185,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         Returns (config, model_str, geometry) tuple.
         """
-        _, MaskConfig, SegmentationModel, ImageGeometry, _, _ = _import_pipeline()
+        _, MaskConfig, SegmentationModel, ImageGeometry, _, _, COCO_NAME_TO_ID = _import_pipeline()
 
         model_str = self.model_var.get()
         model_map = {
@@ -2139,16 +2201,33 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         raw_keep = self.keep_prompts_entry.get().strip()
         keep_prompts = [p.strip() for p in raw_keep.split(",") if p.strip()] if raw_keep else []
 
-        # Build YOLO classes + text prompts from target checkboxes.
-        # Every checked label goes to remove_prompts (for SAM3/text models).
-        # Labels with COCO IDs also go to classes (for YOLO models).
+        # Auto-derive YOLO class IDs from Remove text via COCO name lookup.
+        # SAM3 uses the text directly; YOLO/RF-DETR need numeric class IDs.
         classes = []
-        for label, (var, coco_id) in self._target_vars.items():
-            if var.get():
+        if remove_prompts:
+            for prompt in remove_prompts:
+                coco_id = COCO_NAME_TO_ID.get(prompt.lower())
                 if coco_id is not None:
                     classes.append(coco_id)
-                if label not in remove_prompts:
-                    remove_prompts.append(label)
+                else:
+                    # Try common aliases (e.g. "phone" → "cell phone")
+                    for coco_name, cid in COCO_NAME_TO_ID.items():
+                        if prompt.lower() in coco_name or coco_name in prompt.lower():
+                            classes.append(cid)
+                            break
+        # Auto-derive keep class IDs from Keep text the same way.
+        keep_classes = []
+        if keep_prompts:
+            for prompt in keep_prompts:
+                coco_id = COCO_NAME_TO_ID.get(prompt.lower())
+                if coco_id is not None:
+                    keep_classes.append(coco_id)
+                else:
+                    for coco_name, cid in COCO_NAME_TO_ID.items():
+                        if prompt.lower() in coco_name or coco_name in prompt.lower():
+                            keep_classes.append(cid)
+                            break
+
         remove_prompts = remove_prompts or None
 
         geometry_map = {
@@ -2248,6 +2327,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             edge_injection=self.edge_inject_var.get(),
             multi_label=self.multi_label_var.get(),
             inpaint_masked=self.inpaint_var.get(),
+            output_format=self.output_format_var.get(),
+            num_workers=int(self.num_workers_var.get()),
             mask_dilate_px=int(self.mask_dilate_var.get()),
             fill_holes=self.fill_holes_var.get(),
             nadir_mask_percent=float(self.nadir_mask_var.get()),
@@ -2262,6 +2343,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             save_review_images=self.review_folder_var.get(),
             save_reject_review_images=self.review_rejects_var.get(),
             keep_prompts=keep_prompts,
+            keep_classes=keep_classes,
         )
         if remove_prompts is not None:
             config_kwargs["remove_prompts"] = remove_prompts

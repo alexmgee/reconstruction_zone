@@ -74,20 +74,6 @@ except ImportError:
     warnings.warn("FastSAM not found. Install with: pip install ultralytics")
 
 try:
-    # EfficientSAM - Efficient fallback
-    from efficient_sam import build_efficient_sam
-    HAS_EFFICIENTSAM = True
-except ImportError:
-    HAS_EFFICIENTSAM = False
-
-try:
-    # Original SAM2 - Legacy fallback
-    from segment_anything import sam_model_registry, SamPredictor
-    HAS_SAM2 = True
-except ImportError:
-    HAS_SAM2 = False
-
-try:
     # YOLO26 - Production recommendation for class-based detection
     if _is_gumroad():
         raise ImportError("YOLO excluded from Gumroad build")
@@ -160,10 +146,6 @@ class SegmentationModel(Enum):
     YOLO26 = "yolo26"            # YOLO26 instance segmentation (production)
     RFDETR = "rfdetr"             # RF-DETR-Seg transformer segmentation (Roboflow)
     FASTSAM = "fastsam"          # YOLO-based (fast)
-    EFFICIENTSAM = "efficient"   # TensorRT optimized
-    SAM2 = "sam2"                # Legacy SAM2
-    MOBILESAM = "mobile"         # Mobile-optimized
-    OPENCV = "opencv"            # Traditional CV (fallback)
 
 
 class MaskQuality(Enum):
@@ -191,6 +173,7 @@ class MaskConfig:
         "selfie stick",
     ])
     keep_prompts: List[str] = field(default_factory=list)  # Objects to keep
+    keep_classes: List[int] = field(default_factory=list)  # COCO class IDs to exclude (derived from keep_prompts)
 
     # Multi-pass SAM3 prompting — list of (prompt_text, confidence_threshold) tuples
     # When non-empty, overrides remove_prompts and runs SAM3 once per tuple
@@ -867,6 +850,39 @@ class SAM3Segmenter(BaseSegmenter):
                 except Exception as e:
                     logger.warning(f"SAM3 prompt '{prompt_text}' failed: {e}")
 
+            # Keep prompts: detect protected objects and subtract from results
+            keep_mask = None
+            for keep_text in prompts.get('keep', []):
+                try:
+                    self.processor.reset_all_prompts(inference_state)
+                    output = self.processor.set_text_prompt(
+                        state=inference_state, prompt=keep_text
+                    )
+                    k_masks = output.get('masks')
+                    if k_masks is None or len(k_masks) == 0:
+                        continue
+                    for km in k_masks:
+                        if hasattr(km, 'cpu'):
+                            km = km.cpu().numpy()
+                        if km.ndim == 3 and km.shape[0] == 1:
+                            km = km[0]
+                        km = (km > 0.5).astype(np.uint8)
+                        if km.shape[:2] != image.shape[:2]:
+                            km = cv2.resize(km, (image.shape[1], image.shape[0]),
+                                            interpolation=cv2.INTER_NEAREST)
+                        if keep_mask is None:
+                            keep_mask = km
+                        else:
+                            keep_mask = np.maximum(keep_mask, km)
+                    logger.info(f"  Keep prompt '{keep_text}': protected region found")
+                except Exception as e:
+                    logger.warning(f"SAM3 keep prompt '{keep_text}' failed: {e}")
+
+            # Subtract keep regions from all remove results
+            if keep_mask is not None:
+                for r in results:
+                    r.mask = (r.mask & ~keep_mask).astype(np.uint8)
+
         # Merge overlapping masks from same prompt
         return self._merge_similar_masks(results)
 
@@ -1065,6 +1081,12 @@ class YOLO26Segmenter(BaseSegmenter):
             boxes = results[0].boxes
 
             for i, mask in enumerate(masks):
+                class_id = int(boxes.cls[i])
+
+                # Skip detections that match keep_classes
+                if self.config.keep_classes and class_id in self.config.keep_classes:
+                    continue
+
                 # Ensure mask matches original image size
                 if mask.shape[:2] != image.shape[:2]:
                     mask = cv2.resize(mask, (image.shape[1], image.shape[0]))
@@ -1075,7 +1097,6 @@ class YOLO26Segmenter(BaseSegmenter):
                 mask_processed = self.postprocess_mask(mask, geometry)
 
                 confidence = float(boxes.conf[i]) if boxes is not None else 0.8
-                class_id = int(boxes.cls[i])
                 class_name = results[0].names[class_id]
                 box = boxes.xyxy[i].cpu().numpy().astype(int).tolist()
 
@@ -1167,6 +1188,10 @@ class RFDETRSegmenter(BaseSegmenter):
 
                 # Apply class filter (same COCO classes as YOLO)
                 if self.config.yolo_classes and class_id not in self.config.yolo_classes:
+                    continue
+
+                # Skip detections that match keep_classes
+                if self.config.keep_classes and class_id in self.config.keep_classes:
                     continue
 
                 mask = masks[i].astype(np.uint8)
@@ -1725,10 +1750,6 @@ class MaskingPipeline:
         elif HAS_FASTSAM:
             logger.warning("SAM3/RF-DETR/YOLO26 not available, using FastSAM")
             return SegmentationModel.FASTSAM
-        elif HAS_EFFICIENTSAM:
-            return SegmentationModel.EFFICIENTSAM
-        elif HAS_SAM2:
-            return SegmentationModel.SAM2
         else:
             raise RuntimeError("No segmentation models available")
 
@@ -3094,7 +3115,7 @@ def main():
     
     # Model selection
     parser.add_argument(
-        "--model", choices=["sam3", "yolo26", "fastsam", "efficient", "sam2", "auto"],
+        "--model", choices=["sam3", "yolo26", "rfdetr", "fastsam", "auto"],
         default="auto",
         help="Segmentation model to use"
     )
@@ -3199,9 +3220,8 @@ def main():
         model_map = {
             'sam3': SegmentationModel.SAM3,
             'yolo26': SegmentationModel.YOLO26,
+            'rfdetr': SegmentationModel.RFDETR,
             'fastsam': SegmentationModel.FASTSAM,
-            'efficient': SegmentationModel.EFFICIENTSAM,
-            'sam2': SegmentationModel.SAM2,
             'auto': None
         }
         
