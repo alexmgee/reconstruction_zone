@@ -677,12 +677,12 @@ class PairedSplitVideoExtractor:
                     best_back_gpu = None
                     best_frame_num = -1
 
-                if total_frames > 0 and relative_idx % max(1, total_frames // 100) == 0:
+                if total_frames > 0 and relative_idx % max(1, total_frames // 10) == 0:
                     pct = int(relative_idx / total_frames * 80)
                     if progress_callback:
                         progress_callback(pct, 100,
-                            f"Analyzing pair (GPU): {relative_idx}/{total_frames} "
-                            f"({int(relative_idx / total_frames * 100)}%)")
+                            f"Analyzing pair (GPU): {int(relative_idx / total_frames * 100)}% "
+                            f"({relative_idx}/{total_frames})")
 
             # Check cancel before first-frame processing
             if cancel_check and cancel_check():

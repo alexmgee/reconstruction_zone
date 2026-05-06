@@ -502,9 +502,10 @@ class SharpestExtractor:
                     best_gpu_frame = None
                     best_frame_idx = -1
 
-                if frames_in_range > 0 and relative_idx % max(1, frames_in_range // 100) == 0:
+                if frames_in_range > 0:
                     pct = int(relative_idx / frames_in_range * 100)
-                    _progress(pct, 100, f"Processing (GPU): frame {relative_idx}/{frames_in_range}")
+                    if relative_idx % max(1, frames_in_range // 10) == 0:
+                        _progress(pct, 100, f"Processing (GPU): {pct}% ({relative_idx}/{frames_in_range})")
 
             # Final flush (inside try — a cv2.error here still falls back)
             if best_gpu_frame is not None:
@@ -700,9 +701,10 @@ class SharpestExtractor:
                 best_frame_idx = -1
 
             # Progress (linear 0-100%)
-            if frames_in_range > 0 and (relative_idx) % max(1, frames_in_range // 100) == 0:
+            if frames_in_range > 0:
                 pct = int(relative_idx / frames_in_range * 100)
-                _progress(pct, 100, f"Processing: frame {relative_idx}/{frames_in_range}")
+                if relative_idx % max(1, frames_in_range // 10) == 0:
+                    _progress(pct, 100, f"Processing: {pct}% ({relative_idx}/{frames_in_range})")
 
             frame_idx += 1
 
