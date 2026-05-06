@@ -62,6 +62,15 @@ try:
 except ImportError:
     HAS_PREP360 = False
 
+# GPU extraction availability (uses extractor's hardened check)
+_HAS_CUDACODEC = False
+try:
+    from prep360.core.sharpest_extractor import SharpestExtractor as _SE
+    _HAS_CUDACODEC = _SE()._gpu_available()
+    del _SE
+except Exception:
+    pass
+
 try:
     from PIL import Image
     HAS_PIL = True
@@ -907,6 +916,20 @@ def _build_extract_section(app, parent):
             "filename (e.g. my_video.mp4 → my_video.SRT).\n"
             "Override in Advanced → Metadata if auto-detect fails.\n\n"
             "Requires exiftool on PATH (https://exiftool.org).")
+    gpu_label = ctk.CTkLabel(
+        bottom_right,
+        text="GPU ready" if _HAS_CUDACODEC else "CPU only",
+        text_color="#4CAF50" if _HAS_CUDACODEC else COLOR_TEXT_DIM,
+        font=ctk.CTkFont(size=11),
+    )
+    gpu_label.pack(side="right", padx=(8, 12))
+    Tooltip(gpu_label,
+            "GPU acceleration for sharpest-frame scoring.\n"
+            "Requires CUDA OpenCV with cudacodec (NVDEC).\n"
+            "Falls back to CPU automatically when unavailable."
+            if _HAS_CUDACODEC else
+            "Install CUDA OpenCV for GPU-accelerated extraction.\n"
+            "See benchmarks/BENCHMARK_RESULTS.md for setup.")
 
     # -- Post-Processing (collapsible, collapsed by default) --
     pp_sec = CollapsibleSection(c, "Post-Processing",
@@ -1613,6 +1636,10 @@ def _extract_single_worker(app, video_path, base_output):
                 )
                 app.log(f"Analyzed {sharp_result.total_frames_analyzed} frames, "
                         f"selected {sharp_result.frames_extracted} sharpest")
+                if sharp_result.gpu_accelerated:
+                    app.log("  Acceleration: GPU (NVDEC + CUDA scoring)")
+                else:
+                    app.log("  Acceleration: CPU")
             else:
                 result = ExtractionResult(
                     success=False, frame_count=0,
@@ -1968,6 +1995,10 @@ def _extract_queue_worker(app):
                         )
                         app.log(f"Analyzed {sharp_result.total_frames_analyzed} frames, "
                                 f"selected {sharp_result.frames_extracted} sharpest")
+                        if sharp_result.gpu_accelerated:
+                            app.log("  Acceleration: GPU (NVDEC + CUDA scoring)")
+                        else:
+                            app.log("  Acceleration: CPU")
                     else:
                         result = ExtractionResult(
                             success=False, frame_count=0,
@@ -3224,6 +3255,10 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         return
 
     app.log(f"  {result.pair_count} pairs extracted ({extract_elapsed:.1f}s)")
+    if result.gpu_accelerated:
+        app.log("  Acceleration: GPU (NVDEC + CUDA scoring)")
+    else:
+        app.log("  Acceleration: CPU")
 
     # Run post-processing on both front and back frame directories
     settings = _snapshot_settings(app)

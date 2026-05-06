@@ -43,6 +43,7 @@ class PairedSplitResult:
     source_front_frames: list[int] = field(default_factory=list)
     source_back_frames: list[int] = field(default_factory=list)
     error: Optional[str] = None
+    gpu_accelerated: bool = False
 
 
 class PairedSplitVideoExtractor:
@@ -366,6 +367,9 @@ class PairedSplitVideoExtractor:
 
         for frame_idx in range(start_frame, end_frame):
             if cancel_check and cancel_check():
+                # Clean up files written so far before raising
+                for p in front_paths + back_paths:
+                    Path(p).unlink(missing_ok=True)
                 raise RuntimeError("Cancelled")
 
             ok_front, front_frame = front_cap.read()
@@ -409,6 +413,382 @@ class PairedSplitVideoExtractor:
             source_front_frames,
             source_back_frames,
         )
+
+    # ── GPU streaming paired extraction ────────────────────────────
+
+    def _extract_sharpest_gpu(
+        self,
+        front_video: str,
+        back_video: str,
+        out_root: Path,
+        front_out: Path,
+        back_out: Path,
+        start_frame: int,
+        end_frame: int,
+        window_size: int,
+        shared_fps: float,
+        config: PairedSplitConfig,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        _log: Optional[Callable[[str], None]] = None,
+    ) -> Optional[PairedSplitResult]:
+        """GPU streaming single-pass paired extraction.
+
+        Scores and writes winners directly from GPU memory to avoid
+        GPU/CPU decoder frame-index misalignment.
+
+        Returns PairedSplitResult on success or cancellation.
+        Returns None on GPU init/runtime failure (caller falls back to CPU).
+        """
+        import numpy as np
+        import time
+
+        if _log is None:
+            _log = lambda _msg: None
+
+        if not SharpestExtractor._gpu_available(SharpestExtractor()):
+            return None
+
+        total_frames = end_frame - start_frame
+        scene_aware = config.scene_detection
+
+        # Open both cudacodec readers with firstFrameIdx
+        params = cv2.cudacodec.VideoReaderInitParams()
+        if start_frame > 0:
+            params.firstFrameIdx = start_frame
+        try:
+            front_reader = cv2.cudacodec.createVideoReader(front_video, params=params)
+        except (cv2.error, TypeError):
+            _log("  GPU: front cudacodec reader failed")
+            return None
+        try:
+            back_reader = cv2.cudacodec.createVideoReader(back_video, params=params)
+        except (cv2.error, TypeError):
+            _log("  GPU: back cudacodec reader failed")
+            return None
+
+        # Everything from here can fail with cv2.error — wrap for CPU fallback
+        gpu_written_paths: list[str] = []
+
+        try:
+            # Read first frame pair for format detection
+            ret_f, first_front = front_reader.nextFrame()
+            ret_b, first_back = back_reader.nextFrame()
+            if not ret_f or not ret_b:
+                _log("  GPU: could not read first frame pair")
+                return None
+
+            # Format detection — validate BOTH streams
+            f_ch, b_ch = first_front.channels(), first_back.channels()
+            f_depth, b_depth = first_front.type() & 7, first_back.type() & 7
+
+            if f_ch != b_ch or f_depth != b_depth:
+                _log(f"  GPU: front/back format mismatch "
+                     f"(front: {f_ch}ch depth={f_depth}, back: {b_ch}ch depth={b_depth})")
+                return None
+
+            channels = f_ch
+            is_16bit = (f_depth == 2)
+            is_8bit = (f_depth == 0)
+
+            if not (is_8bit or is_16bit):
+                _log(f"  GPU: unsupported frame depth (depth={f_depth})")
+                return None
+            if channels not in (3, 4):
+                _log(f"  GPU: unsupported frame format ({channels} channels)")
+                return None
+
+            gray_code = cv2.COLOR_BGRA2GRAY if channels == 4 else cv2.COLOR_BGR2GRAY
+            bgr_code = cv2.COLOR_BGRA2BGR if channels == 4 else None
+
+            _log(f"  GPU: paired NVDEC decode, {channels}ch "
+                 f"{'uint16' if is_16bit else 'uint8'}, "
+                 f"scoring: {config.scoring_method}, scene detection: {scene_aware}")
+
+            # Pre-create GPU filters
+            if config.scoring_method == "tenengrad":
+                sobel_x = cv2.cuda.createSobelFilter(cv2.CV_8UC1, cv2.CV_32F, 1, 0, ksize=3)
+                sobel_y = cv2.cuda.createSobelFilter(cv2.CV_8UC1, cv2.CV_32F, 0, 1, ksize=3)
+            else:
+                lap_filter = cv2.cuda.createLaplacianFilter(cv2.CV_32FC1, cv2.CV_32FC1, ksize=1)
+
+            # ── Helper functions ─────────────────────────────────────
+
+            def _prepare_gray(gpu_frm):
+                w, h = gpu_frm.size()
+                if config.scale_width and w > config.scale_width:
+                    gpu_small = cv2.cuda.resize(
+                        gpu_frm, (config.scale_width, int(h * config.scale_width / w)))
+                else:
+                    gpu_small = gpu_frm
+                gpu_gray = cv2.cuda.cvtColor(gpu_small, gray_code)
+                if is_16bit:
+                    gpu_8u = cv2.cuda.GpuMat(gpu_gray.size(), cv2.CV_8UC1)
+                    gpu_gray.convertTo(cv2.CV_8UC1, gpu_8u, alpha=1.0 / 256.0)
+                else:
+                    gpu_8u = gpu_gray
+                return gpu_8u
+
+            def _score_tenengrad(gpu_8u):
+                gx = sobel_x.apply(gpu_8u)
+                gy = sobel_y.apply(gpu_8u)
+                gx2 = cv2.cuda.multiply(gx, gx)
+                gy2 = cv2.cuda.multiply(gy, gy)
+                energy = cv2.cuda.add(gx2, gy2)
+                s = cv2.cuda.sum(energy)
+                n = energy.size()[0] * energy.size()[1]
+                return s[0] / n
+
+            def _score_laplacian(gpu_8u):
+                gpu_32f = cv2.cuda.GpuMat(gpu_8u.size(), cv2.CV_32FC1)
+                gpu_8u.convertTo(cv2.CV_32FC1, gpu_32f)
+                dst = lap_filter.apply(gpu_32f)
+                sq = cv2.cuda.multiply(dst, dst)
+                sum_sq = cv2.cuda.sum(sq)
+                sum_val = cv2.cuda.sum(dst)
+                n = dst.size()[0] * dst.size()[1]
+                mean = sum_val[0] / n
+                return sum_sq[0] / n - mean * mean
+
+            score_fn = _score_tenengrad if config.scoring_method == "tenengrad" else _score_laplacian
+
+            def _prepare_scene_bgr(gpu_frm):
+                w, h = gpu_frm.size()
+                scene_w = min(480, w)
+                scene_h = int(h * scene_w / w)
+                gpu_small = cv2.cuda.resize(gpu_frm, (scene_w, scene_h))
+                if channels == 4:
+                    gpu_bgr = cv2.cuda.cvtColor(gpu_small, cv2.COLOR_BGRA2BGR)
+                else:
+                    gpu_bgr = gpu_small
+                if is_16bit:
+                    gpu_bgr_8u = cv2.cuda.GpuMat(gpu_bgr.size(), cv2.CV_8UC3)
+                    gpu_bgr.convertTo(cv2.CV_8UC3, gpu_bgr_8u, alpha=1.0 / 256.0)
+                    return gpu_bgr_8u.download()
+                return gpu_bgr.download()
+
+            def _save_winner_gpu(gpu_frm, filepath):
+                frame = gpu_frm.download()
+                if is_16bit:
+                    frame = (frame >> 8).astype(np.uint8)
+                if bgr_code is not None:
+                    frame = cv2.cvtColor(frame, bgr_code)
+                ext = config.output_format
+                if ext in ("jpg", "jpeg"):
+                    cv2.imwrite(str(filepath), frame,
+                                [cv2.IMWRITE_JPEG_QUALITY, int(config.quality)])
+                else:
+                    cv2.imwrite(str(filepath), frame)
+
+            # ── Output tracking ──────────────────────────────────────
+
+            ext = config.output_format
+            winners_written = 0
+            front_paths: list[str] = []
+            back_paths: list[str] = []
+            selected_times: list[float] = []
+            source_front_frames: list[int] = []
+            source_back_frames: list[int] = []
+            selected_front_scores: list[float] = []
+            selected_back_scores: list[float] = []
+
+            def _write_pair_winner(best_f_gpu, best_b_gpu, frame_num, f_score, b_score):
+                nonlocal winners_written
+                winners_written += 1
+                idx_str = f"{winners_written:06d}"
+                f_path = front_out / f"{idx_str}.{ext}"
+                b_path = back_out / f"{idx_str}.{ext}"
+                _save_winner_gpu(best_f_gpu, f_path)
+                _save_winner_gpu(best_b_gpu, b_path)
+                front_paths.append(str(f_path))
+                back_paths.append(str(b_path))
+                gpu_written_paths.extend([str(f_path), str(b_path)])
+                selected_times.append(round(frame_num / shared_fps, 3))
+                source_front_frames.append(frame_num)
+                source_back_frames.append(frame_num)
+                selected_front_scores.append(f_score)
+                selected_back_scores.append(b_score)
+
+            # ── Streaming single-pass loop ───────────────────────────
+
+            t_start = time.perf_counter()
+            total_scored = 0
+            scene_count = 0
+
+            best_key = None
+            best_front_gpu = None
+            best_back_gpu = None
+            best_frame_num = -1
+            best_f_score = 0.0
+            best_b_score = 0.0
+            prev_front_scene = None
+            prev_back_scene = None
+
+            def _flush_best():
+                if best_front_gpu is not None:
+                    _write_pair_winner(best_front_gpu, best_back_gpu,
+                                       best_frame_num, best_f_score, best_b_score)
+
+            def _process_pair(f_gpu, b_gpu, frame_num, relative_idx):
+                nonlocal best_key, best_front_gpu, best_back_gpu, best_frame_num
+                nonlocal best_f_score, best_b_score, scene_count, total_scored
+                nonlocal prev_front_scene, prev_back_scene
+
+                f_score = score_fn(_prepare_gray(f_gpu))
+                b_score = score_fn(_prepare_gray(b_gpu))
+                total_scored += 1
+
+                is_scene = False
+                if scene_aware:
+                    f_scene_bgr = _prepare_scene_bgr(f_gpu)
+                    b_scene_bgr = _prepare_scene_bgr(b_gpu)
+                    if prev_front_scene is not None:
+                        f_sc = SharpestExtractor._detect_scene_change(
+                            prev_front_scene, f_scene_bgr, config.scene_threshold)
+                        b_sc = SharpestExtractor._detect_scene_change(
+                            prev_back_scene, b_scene_bgr, config.scene_threshold)
+                        is_scene = f_sc or b_sc
+                    prev_front_scene = f_scene_bgr
+                    prev_back_scene = b_scene_bgr
+
+                if is_scene:
+                    scene_count += 1
+                    _flush_best()
+                    best_key = None
+                    best_front_gpu = None
+                    best_back_gpu = None
+                    best_frame_num = -1
+
+                pair_key = self._pair_sharpness_sort_key({
+                    "front_score": f_score, "back_score": b_score,
+                })
+                if best_key is None or pair_key > best_key:
+                    best_key = pair_key
+                    best_front_gpu = f_gpu.clone()
+                    best_back_gpu = b_gpu.clone()
+                    best_frame_num = frame_num
+                    best_f_score = f_score
+                    best_b_score = b_score
+
+                if (relative_idx + 1) % window_size == 0:
+                    _flush_best()
+                    best_key = None
+                    best_front_gpu = None
+                    best_back_gpu = None
+                    best_frame_num = -1
+
+                if total_frames > 0 and relative_idx % max(1, total_frames // 100) == 0:
+                    pct = int(relative_idx / total_frames * 80)
+                    if progress_callback:
+                        progress_callback(pct, 100,
+                            f"Analyzing pair (GPU): {relative_idx}/{total_frames} "
+                            f"({int(relative_idx / total_frames * 100)}%)")
+
+            # Check cancel before first-frame processing
+            if cancel_check and cancel_check():
+                raise RuntimeError("Cancelled")
+
+            # Process first pair (already read for format detection)
+            _process_pair(first_front, first_back, start_frame, 0)
+
+            # Continue with remaining frames
+            for frame_idx in range(start_frame + 1, end_frame):
+                if cancel_check and cancel_check():
+                    for p in gpu_written_paths:
+                        Path(p).unlink(missing_ok=True)
+                    raise RuntimeError("Cancelled")
+
+                ret_f, f_gpu = front_reader.nextFrame()
+                ret_b, b_gpu = back_reader.nextFrame()
+                if not ret_f or not ret_b:
+                    break
+
+                relative_idx = frame_idx - start_frame
+                _process_pair(f_gpu, b_gpu, frame_idx, relative_idx)
+
+            # Final flush (inside try — cv2.error here still falls back)
+            _flush_best()
+
+        except RuntimeError:
+            raise  # re-raise cancel — do NOT catch as GPU error
+
+        except cv2.error as e:
+            _log(f"  GPU error during paired processing: {e}")
+            for p in gpu_written_paths:
+                Path(p).unlink(missing_ok=True)
+            return None
+
+        elapsed = time.perf_counter() - t_start
+        _log(f"  GPU paired {config.scoring_method.title()} scoring: "
+             f"{total_scored} frame pairs ({elapsed:.1f}s)")
+        if scene_aware:
+            _log(f"  Scene changes detected: {scene_count}")
+        _log(f"  Winners: {winners_written} pairs extracted")
+
+        if winners_written == 0:
+            return PairedSplitResult(
+                success=False,
+                output_dir=str(out_root),
+                error="No pairs selected (GPU path)",
+            )
+
+        # Build manifest
+        scoring_method = config.scoring_method
+        selection_method = (
+            f"{scoring_method}_scene_aware_pair"
+            if scene_aware else f"{scoring_method}_pair"
+        )
+        manifest = {
+            "schema_version": 1,
+            "dataset_type": "paired_split_frames",
+            "front_video": str(Path(front_video).resolve()),
+            "back_video": str(Path(back_video).resolve()),
+            "mode": "sharpest",
+            "scoring_method": scoring_method,
+            "scene_detection": scene_aware,
+            "interval_sec": config.interval_sec,
+            "fps": shared_fps,
+            "selection_method": selection_method,
+            "gpu_accelerated": True,
+            "pairs": [],
+        }
+        for index, (fp, bp, t, sf, sb, fs, bs) in enumerate(
+            zip(front_paths, back_paths, selected_times,
+                source_front_frames, source_back_frames,
+                selected_front_scores, selected_back_scores),
+            start=1,
+        ):
+            manifest["pairs"].append({
+                "pair_index": index,
+                "frame_id": f"{index:06d}",
+                "front_image": Path(fp).relative_to(out_root).as_posix(),
+                "back_image": Path(bp).relative_to(out_root).as_posix(),
+                "time_sec": t,
+                "source_front_frame": sf,
+                "source_back_frame": sb,
+                "score_kind": f"{scoring_method}_sharpness",
+                "front_score": fs,
+                "back_score": bs,
+                "pair_score": min(fs, bs),
+            })
+
+        manifest_path = out_root / "paired_extraction_manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8")
+
+        return PairedSplitResult(
+            success=True,
+            pair_count=winners_written,
+            output_dir=str(out_root),
+            front_paths=front_paths,
+            back_paths=back_paths,
+            selected_times=selected_times,
+            source_front_frames=source_front_frames,
+            source_back_frames=source_back_frames,
+            gpu_accelerated=True,
+        )
+
+    # ── main public API ──────────────────────────────────────────────
 
     def extract(
         self,
@@ -471,6 +851,27 @@ class PairedSplitVideoExtractor:
             total_frames = end_frame - start_frame
             effective_duration = total_frames / shared_fps if shared_fps > 0 else 0.0
 
+            # Release CPU captures before GPU path to avoid 4 simultaneous readers
+            front_cap.release()
+            back_cap.release()
+            front_cap = back_cap = None
+
+            # Try GPU streaming path for sharpest mode
+            if mode == "sharpest" and SharpestExtractor._gpu_available(SharpestExtractor()):
+                gpu_result = self._extract_sharpest_gpu(
+                    front_video, back_video, out_root, front_out, back_out,
+                    start_frame, end_frame, window_size, shared_fps, config,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                    _log=_log,
+                )
+                if gpu_result is not None:
+                    return gpu_result
+                _log("  Falling back to CPU paired extraction")
+
+            # Re-open CPU captures for CPU path
+            front_cap, _, _ = self._open_video(front_video)
+            back_cap, _, _ = self._open_video(back_video)
             front_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             back_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
