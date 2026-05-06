@@ -224,17 +224,27 @@ def _update_sharpness_ui(app):
 
 # ── time parser ───────────────────────────────────────────────────────
 
-def _parse_time(time_str: str) -> float:
-    """Parse *time_str* (seconds or ``MM:SS`` or ``HH:MM:SS``) → float seconds."""
+def _parse_time(time_str: str) -> Optional[float]:
+    """Parse *time_str* (seconds or ``MM:SS`` or ``HH:MM:SS``) → float seconds.
+
+    Returns None if the string is incomplete or unparseable (e.g. mid-typing "0:").
+    """
+    time_str = time_str.strip()
+    if not time_str:
+        return None
     try:
         return float(time_str)
     except ValueError:
-        parts = time_str.split(":")
+        pass
+    parts = time_str.split(":")
+    try:
         if len(parts) == 3:
             return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
         if len(parts) == 2:
             return int(parts[0]) * 60 + float(parts[1])
-        return 0.0
+    except (ValueError, IndexError):
+        return None
+    return None
 
 
 # ── live estimation ────────────────────────────────────────────────────
@@ -390,7 +400,11 @@ def _update_estimate(app, *_args):
     start_str = app.extract_start_entry.get().strip()
     end_str = app.extract_end_entry.get().strip()
     start_sec = _parse_time(start_str) if start_str else 0.0
+    if start_sec is None:
+        start_sec = 0.0
     end_sec = _parse_time(end_str) if end_str and end_str.lower() != "end" else total_dur
+    if end_sec is None:
+        end_sec = total_dur
     end_sec = min(end_sec, total_dur)
     eff_dur = max(0.0, end_sec - start_sec)
 
@@ -1252,6 +1266,8 @@ def _maybe_geotag(app, video_path, output_dir):
         interval = app.extract_interval_var.get()
         start = app.extract_start_entry.get().strip()
         start_sec = _parse_time(start) if start else 0.0
+        if start_sec is None:
+            start_sec = 0.0
         result = geotag_from_interval(str(output_dir), srt_path, interval, start_sec)
 
     if result.success:
