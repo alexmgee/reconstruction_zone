@@ -6,10 +6,10 @@ Unified photogrammetry prep GUI. Double-click to launch.
 
 Tabs:
   Projects — central registry for photogrammetry projects, lifecycle tracking
-  Prepare  — video analysis, frame extraction (queue), reframe, fisheye, LUT, filters
-  Mask     — multi-model masking pipeline (YOLO, SAM, shadow, ensemble)
+  Extract  — video analysis, frame extraction (queue), reframe, fisheye, LUT, filters
+  Mask     — multi-model masking pipeline (YOLO, SAM3, RF-DETR)
   Review   — paginated thumbnail grid, large preview, OpenCV editor launch
-  Gaps     — spatial gap detection, bridge frame extraction
+  Align    — sparse COLMAP / SphereSfM alignment
 
 No CLI arguments required. All configuration via the GUI.
 """
@@ -23,6 +23,7 @@ import threading
 import queue
 import sys
 import os
+import copy
 import json
 import logging
 import shutil
@@ -58,13 +59,11 @@ def _import_pipeline():
 
 def _import_review():
     from review_gui import (
-        load_overlay_thumbnail, compute_mask_area_percent,
-        QUALITY_COLORS, STATUS_COLORS,
+        load_overlay_thumbnail, compute_mask_area_percent, REVIEW_COLORS,
     )
     from review_status import ReviewStatusManager, MaskStatus
     return (load_overlay_thumbnail, compute_mask_area_percent,
-            QUALITY_COLORS, STATUS_COLORS,
-            ReviewStatusManager, MaskStatus)
+            REVIEW_COLORS, ReviewStatusManager, MaskStatus)
 
 
 
@@ -86,7 +85,6 @@ from widgets import (
 from app_infra import AppInfrastructure
 from tabs.alignment_tab import build_alignment_tab
 from tabs.source_tab import build_source_tab
-from tabs.gaps_tab import build_gaps_tab
 from tabs.projects_tab import build_projects_tab
 
 
@@ -144,11 +142,32 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._thumb_widgets: Dict[str, ctk.CTkFrame] = {}  # stem → cell widget
         self._thumb_cell_count = 0
         self._nav_debounce_id = None  # after() ID for slider debounce
+        self._zoom_debounce_id = None  # after() ID for scroll-zoom debounce
+        # Layered review state (lazy, populated when Layered mode is loaded)
+        self._layer_dirs: Dict[str, Path] = {}                  # name → directory
+        self._layer_colors: Dict[str, tuple] = {}               # name → (b_delta, g_delta, r_delta)
+        self._layer_visible: Dict[str, ctk.BooleanVar] = {}     # name → visibility toggle
+        self._layer_status_mgrs: Dict[str, Any] = {}            # name → ReviewStatusManager
+        self._active_layer_var = ctk.StringVar(value="")
+        # Per-layer manual-delete state (two-click confirm)
+        self._layer_delete_btns: Dict[str, Any] = {}            # name → × button widget
+        self._delete_pending_layer: Optional[str] = None        # name in confirm-window, or None
+        self._delete_pending_after_id = None                    # after() id for the 3s revert timer
+        # Auto-delete checkbox (above the Merge button). Default OFF preserves
+        # the re-editable design; users opt in for consume-after-merge.
+        self._auto_delete_merged_var = ctk.BooleanVar(value=False)
         # Persistent OpenCV editor state (subprocess-based)
         self._editor_proc = None
         self._editor_cmd_file = None
         self._editor_signal_file = None
         self._editor_poll_id = None
+        # Shared MaskingPipeline cache. All call sites go through
+        # ``_get_pipeline`` so the SAM3 image model is loaded once and reused.
+        # ``_pipeline_lock`` guards both construction (get-or-build) and
+        # inference (process_image / predict_inst) to serialize GPU access.
+        self._pipeline_cached = None
+        self._pipeline_cached_key = None
+        self._pipeline_lock = threading.Lock()
 
         self._build_ui()
         self._init_infrastructure()  # logging + console redirect (from AppInfrastructure)
@@ -554,12 +573,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         if self._prefs.get("keep_prompts"):
             self.keep_prompts_entry.delete(0, "end")
             self.keep_prompts_entry.insert(0, self._prefs["keep_prompts"])
-        if self._prefs.get("shadow_detector"):
-            self.shadow_detector_var.set(self._prefs["shadow_detector"])
-        if self._prefs.get("shadow_verifier"):
-            self.shadow_verifier_var.set(self._prefs["shadow_verifier"])
-        if self._prefs.get("shadow_spatial"):
-            self.shadow_spatial_var.set(self._prefs["shadow_spatial"])
         if "save_review_folder" in self._prefs:
             self.review_folder_var.set(bool(self._prefs["save_review_folder"]))
         if "save_reject_review_images" in self._prefs:
@@ -599,6 +612,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._thumb_widgets.clear()
         self._preview_overlay_pil = None
         self._preview_mask_pil = None
+        # Release the cached pipeline and any click-PVS session (frees GPU mem).
+        self._release_pipeline()
         self.destroy()
 
     # log(), _poll_log_queue(), _setup_console_redirect() inherited from AppInfrastructure
@@ -628,7 +643,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.tabs.add("Mask")
         self.tabs.add("Review")
         self.tabs.add("Align")
-        self.tabs.add("Coverage")
 
         # Right: shared preview panel (collapsible)
         self._preview_visible = True
@@ -641,7 +655,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._build_process_tab()
         self._build_review_tab()
         build_alignment_tab(self, self.tabs.tab("Align"))
-        build_gaps_tab(self, self.tabs.tab("Coverage"))
 
         # Projects is the default tab — swap preview for detail panel
         self.after(50, self._on_tab_change)
@@ -738,17 +751,22 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # ── Model ──
         sam3_mode_row = ctk.CTkFrame(core, fg_color="transparent")
         sam3_mode_row.pack(fill="x", padx=6, pady=(8, 3))
-        ctk.CTkLabel(sam3_mode_row, text="SAM3 mode:").pack(side="left", padx=(0, 2))
-        self.sam3_unified_var = ctk.BooleanVar(value=False)
+        ctk.CTkLabel(sam3_mode_row, text="Mode:").pack(side="left", padx=(0, 2))
+        self.temporal_tracking_var = ctk.BooleanVar(value=False)
         self._sam3_mode_btn = ctk.CTkSegmentedButton(
-            sam3_mode_row, values=["Hybrid", "Unified Video"],
+            sam3_mode_row, values=["Per-frame", "Tracked"],
             command=self._on_sam3_mode_change,
         )
-        self._sam3_mode_btn.set("Hybrid")
+        self._sam3_mode_btn.set("Per-frame")
         self._sam3_mode_btn.pack(side="left", padx=4)
-        ctk.CTkLabel(sam3_mode_row,
-                     text="Hybrid = per-frame detect+segment; Unified = SAM3 video tracking",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(6, 0))
+        _mode_hint = ctk.CTkLabel(sam3_mode_row,
+                     text="Per-frame = detect each image; Tracked = SAM3 video tracking + full pipeline",
+                     font=("Consolas", 10), text_color="#9ca3af")
+        _mode_hint.pack(side="left", padx=(6, 0))
+        Tooltip(_mode_hint,
+                "Per-frame -- detect objects independently on each image. All models.\n"
+                "Tracked -- SAM3 detects on one keyframe, tracks across all frames.\n"
+                "  Requires SAM3.")
 
         r1 = ctk.CTkFrame(core, fg_color="transparent")
         r1.pack(fill="x", padx=6, pady=3)
@@ -771,7 +789,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         Tooltip(_model_menu,
                 "auto — picks best available (SAM3 > RF-DETR > YOLO)\n"
                 "sam3 — text-prompted (any object). 848M params, slowest.\n"
-                "rfdetr — transformer, 80 COCO classes. Good ensemble partner.\n"
+                "rfdetr — transformer, 80 COCO classes. Fast and accurate.\n"
                 "yolo26 — CNN, 80 COCO classes. Fastest for known objects.\n"
                 "fastsam — legacy, segments everything unfiltered.")
 
@@ -853,11 +871,29 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                               variable=self.skip_existing_var, width=0)
         _se.pack(side="left")
         Tooltip(_se, "Skip images that already have a mask file in the output directory")
+        self.merge_existing_var = ctk.BooleanVar(value=False)
+        _me = ctk.CTkCheckBox(out_row, text="Merge with existing",
+                              variable=self.merge_existing_var, width=0)
+        _me.pack(side="left", padx=(16, 0))
+        Tooltip(_me, "Union new detections into existing mask files\n"
+                     "instead of overwriting. Use for additive passes.")
+
+        # Mutual exclusion: Skip and Merge can't both be on
+        def _on_skip_toggle(*_):
+            if self.skip_existing_var.get() and self.merge_existing_var.get():
+                self.merge_existing_var.set(False)
+        def _on_merge_toggle(*_):
+            if self.merge_existing_var.get() and self.skip_existing_var.get():
+                self.skip_existing_var.set(False)
+        self.skip_existing_var.trace_add("write", _on_skip_toggle)
+        self.merge_existing_var.trace_add("write", _on_merge_toggle)
+
         self.review_folder_var = ctk.BooleanVar(value=False)
         _rf = ctk.CTkCheckBox(out_row, text="Create review folder",
                               variable=self.review_folder_var, width=0)
         _rf.pack(side="left", padx=(16, 0))
-        Tooltip(_rf, "Creates masks/ and review/ subdirectories inside Output")
+        Tooltip(_rf, "Also write review preview JPGs to a review/ subfolder\n"
+                     "alongside the masks. Output remains the masks folder.")
         self.review_rejects_var = ctk.BooleanVar(value=True)
         _rr = ctk.CTkCheckBox(out_row, text="Include rejects",
                               variable=self.review_rejects_var, width=0)
@@ -869,6 +905,18 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         _ip.pack(side="left", padx=(16, 0))
         Tooltip(_ip, "Fill masked regions with plausible background texture\n"
                      "so 3DGS gets gradient signal instead of black void")
+
+        # Layer name row — separates this masking pass into a named layer
+        layer_row = ctk.CTkFrame(core, fg_color="transparent")
+        layer_row.pack(fill="x", padx=6, pady=(0, 3))
+        ctk.CTkLabel(layer_row, text="Layer:", width=LABEL_FIELD_WIDTH,
+                     anchor="e").pack(side="left")
+        self.layer_name_var = ctk.StringVar(value="")
+        _le = ctk.CTkEntry(layer_row, textvariable=self.layer_name_var,
+                           placeholder_text="(optional) people, shadows, tripods")
+        _le.pack(side="left", fill="x", expand=True, padx=4)
+        Tooltip(_le, "Name this masking pass. Saves to layers/{name}/ inside the masks folder.\n"
+                     "Leave empty for standard mask output.")
 
         # ==============================================================
         #  STATIC MASKS (user-authored persistent overlays)
@@ -910,175 +958,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._static_mask_manager = None  # Initialized when input dir is set
         self._sm_layer_widgets = []       # List of (frame, checkbox_var, name_label) per layer
         self._sm_selected_index = None    # Currently selected layer for edit/delete
-
-        # ==============================================================
-        #  DETECTION & REFINEMENT
-        # ==============================================================
-        self._detect_sec = _CollapsibleSection(scroll, "Detection & Refinement", expanded=False)
-        detect_sec = self._detect_sec
-        detect_sec.pack(fill="x", pady=(0, 6), padx=4)
-        detect = detect_sec.content
-
-        # Shadow Detection
-        shadow_section = _CollapsibleSection(detect, "Shadow Detection",
-            subtitle="detect shadows cast by masked objects")
-        shadow_section.pack(fill="x", padx=2, pady=(0, 4))
-        sc = shadow_section.content
-
-        sr1 = ctk.CTkFrame(sc, fg_color="transparent")
-        sr1.pack(fill="x", pady=2)
-        self.shadow_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(sr1, text="Enable", variable=self.shadow_var,
-                        width=80).pack(side="left")
-        ctk.CTkLabel(sr1, text="Detector:").pack(side="left", padx=(12, 2))
-        self.shadow_detector_var = ctk.StringVar(value="targeted_person")
-        ctk.CTkOptionMenu(sr1, variable=self.shadow_detector_var,
-                          values=["targeted_person", "brightness",
-                                  "c1c2c3", "hybrid"],
-                          width=140).pack(side="left", padx=2)
-        ctk.CTkLabel(sr1, text="Verify:").pack(side="left", padx=(12, 2))
-        self.shadow_verifier_var = ctk.StringVar(value="none")
-        ctk.CTkOptionMenu(sr1, variable=self.shadow_verifier_var,
-                          values=["none", "c1c2c3", "hybrid", "brightness"],
-                          width=100).pack(side="left", padx=2)
-
-        sr2 = ctk.CTkFrame(sc, fg_color="transparent")
-        sr2.pack(fill="x", pady=2)
-        ctk.CTkLabel(sr2, text="Spatial:").pack(side="left")
-        self.shadow_spatial_var = ctk.StringVar(value="near_objects")
-        ctk.CTkSegmentedButton(sr2, values=["all", "near_objects", "connected"],
-                               variable=self.shadow_spatial_var).pack(side="left", padx=4)
-        self.shadow_dilation_var = self._slider(sr2, "Dilation", 0, 200, 50, 40,
-                                               fmt=".0f", pad_left=8)
-        ctk.CTkLabel(sr2, text="px", font=("Consolas", 10),
-                     text_color="#9ca3af").pack(side="left", padx=2)
-
-        sr3 = ctk.CTkFrame(sc, fg_color="transparent")
-        sr3.pack(fill="x", pady=2)
-        self.shadow_conf_var = self._slider(sr3, "Confidence", 0, 1, 0.50, 20)
-        self.shadow_darkness_var = self._slider(sr3, "Darkness", 0, 1, 0.70, 20, pad_left=8)
-        sr4 = ctk.CTkFrame(sc, fg_color="transparent")
-        sr4.pack(fill="x", pady=2)
-        self.shadow_chroma_var = self._slider(sr4, "Chromaticity", 0, 0.5, 0.15, 25)
-
-        # SAM Mask Refinement
-        sam_section = _CollapsibleSection(detect, "SAM Mask Refinement",
-            subtitle="tighten mask edges using SAM point prompts")
-        sam_section.pack(fill="x", padx=2, pady=(0, 4))
-        samc = sam_section.content
-
-        samr1 = ctk.CTkFrame(samc, fg_color="transparent")
-        samr1.pack(fill="x", pady=2)
-        self.sam_refine_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(samr1, text="Enable", variable=self.sam_refine_var,
-                        width=80).pack(side="left")
-        ctk.CTkLabel(samr1, text="SAM model:").pack(side="left", padx=(12, 2))
-        self.sam_model_var = ctk.StringVar(value="vit_b")
-        ctk.CTkOptionMenu(samr1, variable=self.sam_model_var,
-                          values=["vit_b", "vit_l", "vit_h"],
-                          width=90).pack(side="left", padx=2)
-        ctk.CTkLabel(samr1, text="(vit_b=375MB, fastest)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
-
-        samr2 = ctk.CTkFrame(samc, fg_color="transparent")
-        samr2.pack(fill="x", pady=2)
-        self.sam_margin_var = self._slider(samr2, "Box margin", 0, 0.5, 0.15, 10)
-        self.sam_iou_var = self._slider(samr2, "IoU threshold", 0, 1, 0.5, 20, pad_left=8)
-
-        # Alpha Matting
-        mat_section = _CollapsibleSection(detect, "Alpha Matting (ViTMatte)",
-            subtitle="soft alpha edges for hair, fur, semi-transparent boundaries")
-        mat_section.pack(fill="x", padx=2, pady=(0, 4))
-        matc = mat_section.content
-
-        matr1 = ctk.CTkFrame(matc, fg_color="transparent")
-        matr1.pack(fill="x", pady=2)
-        self.matting_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(matr1, text="Enable", variable=self.matting_var,
-                        width=80).pack(side="left")
-        ctk.CTkLabel(matr1, text="Model:").pack(side="left", padx=(12, 2))
-        self.matting_model_var = ctk.StringVar(value="small")
-        ctk.CTkOptionMenu(matr1, variable=self.matting_model_var,
-                          values=["small", "base"],
-                          width=90).pack(side="left", padx=2)
-        ctk.CTkLabel(matr1, text="(small=~100MB, recommended)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
-
-        matr2 = ctk.CTkFrame(matc, fg_color="transparent")
-        matr2.pack(fill="x", pady=2)
-        self.matting_erode_var = self._slider(matr2, "Erode", 0, 50, 10, 50, fmt=".0f")
-        self.matting_dilate_var = self._slider(matr2, "Dilate", 0, 50, 10, 50,
-                                              fmt=".0f", pad_left=8)
-        ctk.CTkLabel(matr2, text="(trimap border)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
-
-        # Ensemble Detection
-        ens_section = _CollapsibleSection(detect, "Ensemble Detection (WMF)",
-            subtitle="run multiple detectors and merge results")
-        ens_section.pack(fill="x", padx=2, pady=(0, 4))
-        ensc = ens_section.content
-
-        ensr1 = ctk.CTkFrame(ensc, fg_color="transparent")
-        ensr1.pack(fill="x", pady=2)
-        self.ensemble_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(ensr1, text="Enable", variable=self.ensemble_var,
-                        width=80).pack(side="left")
-        ctk.CTkLabel(ensr1, text="RF-DETR size:").pack(side="left", padx=(12, 2))
-        self.rfdetr_size_var = ctk.StringVar(value="small")
-        ctk.CTkOptionMenu(ensr1, variable=self.rfdetr_size_var,
-                          values=["nano", "small", "medium", "large"],
-                          width=90).pack(side="left", padx=2)
-        ctk.CTkLabel(ensr1, text="(runs YOLO26 + RF-DETR, fuses masks)",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=4)
-
-        ensr2 = ctk.CTkFrame(ensc, fg_color="transparent")
-        ensr2.pack(fill="x", pady=2)
-        ctk.CTkLabel(ensr2, text="Models:").pack(side="left")
-        self.ens_models_var = ctk.StringVar(value="yolo26, rfdetr")
-        ctk.CTkEntry(ensr2, textvariable=self.ens_models_var,
-                     width=140).pack(side="left", padx=2)
-        self.ens_iou_var = self._slider(ensr2, "IoU threshold", 0, 1, 0.5, 20, pad_left=8)
-
-        # Edge Injection
-        edge_section = _CollapsibleSection(detect, "Edge Injection",
-            subtitle="canny edges for thin structures like wires and antennas")
-        edge_section.pack(fill="x", padx=2, pady=(0, 4))
-        edgec = edge_section.content
-
-        edge_row = ctk.CTkFrame(edgec, fg_color="transparent")
-        edge_row.pack(fill="x", pady=2)
-        self.edge_inject_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(edge_row, text="Enable",
-                        variable=self.edge_inject_var, width=80).pack(side="left")
-        ctk.CTkLabel(edge_row,
-                     text="Detects thin structures that object detectors miss",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=8)
-
-        # COLMAP Geometric Validation
-        col_section = _CollapsibleSection(detect, "COLMAP Geometric Validation",
-            subtitle="cross-check masks against 3D reconstruction")
-        col_section.pack(fill="x", padx=2, pady=(0, 4))
-        colc = col_section.content
-
-        colr1 = ctk.CTkFrame(colc, fg_color="transparent")
-        colr1.pack(fill="x", pady=2)
-        self.colmap_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(colr1, text="Enable", variable=self.colmap_var,
-                        width=80).pack(side="left")
-        ctk.CTkLabel(colr1, text="Sparse dir:").pack(side="left", padx=(12, 2))
-        self.colmap_dir_var = ctk.StringVar(value="")
-        ctk.CTkEntry(colr1, textvariable=self.colmap_dir_var,
-                     width=200).pack(side="left", padx=2, fill="x", expand=True)
-        ctk.CTkButton(colr1, text="...", width=BROWSE_BUTTON_WIDTH,
-                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-                      command=self._browse_colmap_dir).pack(side="left", padx=2)
-
-        colr2 = ctk.CTkFrame(colc, fg_color="transparent")
-        colr2.pack(fill="x", pady=2)
-        self.colmap_agree_var = self._slider(colr2, "Agreement", 0, 1, 0.7, 20)
-        self.colmap_flag_var = self._slider(colr2, "Flag above", 0, 1, 0.15, 20, pad_left=8)
-        ctk.CTkLabel(colr2, text="3D check",
-                     font=("Consolas", 10), text_color="#9ca3af").pack(side="left", padx=(6, 0))
 
         # ==============================================================
         #  POST-PROCESSING
@@ -1253,23 +1132,24 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
     # ── SAM3 mode toggle ──
 
     def _on_sam3_mode_change(self, value):
-        """Grey out widgets irrelevant to SAM3 Unified Video mode."""
-        self.sam3_unified_var.set(value == "Unified Video")
-        state = "disabled" if value == "Unified Video" else "normal"
-        # Core Process: model/geometry row + mask target checkboxes
-        for frame in self._unified_disable_frames:
-            self._set_widgets_state(frame, state)
-        # Entire Detection & Refinement + Post-Processing sections
-        for sec in (self._detect_sec, self._post_sec):
-            self._set_widgets_state(sec.content, state)
-            if value == "Unified Video":
-                sec.collapse()
-            else:
-                sec.expand()
-        # Glow on Remove/Keep entries — these are the SAM3 text prompts
-        glow = "#1a5276" if value == "Unified Video" else "transparent"
-        for entry in (self.remove_prompts_entry, self.keep_prompts_entry):
-            entry.master.configure(fg_color=glow)
+        """Update state for Per-frame / Tracked mode selector."""
+        self.temporal_tracking_var.set(value == "Tracked")
+
+        if value == "Per-frame":
+            for frame in self._unified_disable_frames:
+                self._set_widgets_state(frame, "normal")
+            self._set_widgets_state(self._post_sec.content, "normal")
+            for entry in (self.remove_prompts_entry, self.keep_prompts_entry):
+                entry.master.configure(fg_color="transparent")
+
+        elif value == "Tracked":
+            # All controls enabled (tracking feeds into full pipeline),
+            # glow on prompts since they drive the tracker
+            for frame in self._unified_disable_frames:
+                self._set_widgets_state(frame, "normal")
+            self._set_widgets_state(self._post_sec.content, "normal")
+            for entry in (self.remove_prompts_entry, self.keep_prompts_entry):
+                entry.master.configure(fg_color="#1a5276")
 
     def _on_model_change(self, value):
         """Grey out controls irrelevant to the selected model.
@@ -1279,10 +1159,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         - Multi-pass SAM3: only relevant for sam3
         - auto: everything enabled (actual model unknown until runtime)
         """
-        # Skip if Unified Video mode is active (it overrides everything)
-        if self.sam3_unified_var.get():
-            return
-
         yolo_state = "normal" if value in ("auto", "yolo26") else "disabled"
         for w in (self._yolo_size_label, self._yolo_size_menu):
             w.configure(state=yolo_state)
@@ -1346,11 +1222,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         if self._preview_mode == "process":
             self._load_image_list()
 
-    def _browse_colmap_dir(self):
-        path = filedialog.askdirectory(title="Select COLMAP Sparse Reconstruction Dir")
-        if path:
-            self.colmap_dir_var.set(path)
-
     # ── preview panel ──
 
     def _build_preview_panel(self):
@@ -1368,6 +1239,12 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         # Zoom control (100% = fit to panel width)
         self._zoom_var = ctk.DoubleVar(value=100)
+        # Pan offsets applied via place() on the overlay/mask labels. Reset
+        # on image change; updated by mouse-wheel zoom-to-cursor and middle-
+        # mouse drag.
+        self._preview_pan_x = 0
+        self._preview_pan_y = 0
+        self._pan_drag_anchor = None
         self._preview_overlay_pil = None  # cached PIL images for zoom
         self._preview_mask_pil = None
         ctk.CTkLabel(header, text="Zoom:", font=("Consolas", 10),
@@ -1394,12 +1271,45 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         )
         self._preview_collapse_btn.pack(side="right")
 
-        # Row 1: Image display area (scrollable for tall equirect previews)
-        self._preview_image_frame = ctk.CTkScrollableFrame(panel)
+        # Cached-pipeline indicator + free button. Only visible when a model
+        # is loaded in GPU memory — doubles as a status display ("sam3 cached
+        # on cuda") and a one-click way to free that memory if the user wants
+        # to launch something else GPU-heavy.
+        self._preview_cache_btn = ctk.CTkButton(
+            header, text="", width=110, height=24,
+            fg_color="transparent", hover_color=("gray75", "gray25"),
+            text_color="#9ca3af", font=("Consolas", 10),
+            command=self._clear_preview_pipeline,
+        )
+        # Not packed initially — _refresh_preview_cache_indicator controls visibility.
+        Tooltip(self._preview_cache_btn,
+                "Click to free GPU memory.\nNext Preview will reload the model.")
+
+        # Row 1: Image display area. Regular frame (not scrollable) — labels
+        # are placed via place() at center+pan offsets so zoom keeps the
+        # image visually centered, and middle-mouse drag pans when zoomed in.
+        self._preview_image_frame = ctk.CTkFrame(panel, fg_color="#1e1e1e")
         self._preview_image_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
 
         self._process_overlay_label = ctk.CTkLabel(self._preview_image_frame, text="")
-        self._process_overlay_label.pack(padx=4, pady=4)
+        self._process_overlay_label.place(
+            relx=0.5, rely=0.5, anchor="center",
+            x=self._preview_pan_x, y=self._preview_pan_y,
+        )
+        # SAM3 click-PVS bindings (Phase 2). Handlers no-op unless click mode
+        # is "ready" AND the Mask tab is current; Review tab is unaffected.
+        self._process_overlay_label.bind(
+            "<Button-1>", lambda e: self._on_click_overlay(e, positive=True))
+        self._process_overlay_label.bind(
+            "<Button-3>", lambda e: self._on_click_overlay(e, positive=False))
+        # Mouse wheel = zoom-to-cursor. Middle-mouse drag = pan. Bind on the
+        # label AND the surrounding frame so empty space around the image
+        # also reacts.
+        for _w in (self._process_overlay_label, self._preview_image_frame):
+            _w.bind("<MouseWheel>", self._on_preview_wheel_zoom)
+            _w.bind("<ButtonPress-2>", self._on_preview_pan_start)
+            _w.bind("<B2-Motion>", self._on_preview_pan_motion)
+            _w.bind("<ButtonRelease-2>", self._on_preview_pan_end)
 
         # Mask view (hidden by default — toggled via checkbox)
         self._process_mask_label = ctk.CTkLabel(self._preview_image_frame, text="")
@@ -1437,10 +1347,44 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         console_frame.grid(row=3, column=0, sticky="nsew", padx=4, pady=(0, 4))
         console_frame.grid_rowconfigure(1, weight=1)
         console_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(console_frame, text="Console", font=("Consolas", 10),
-                     anchor="w").grid(row=0, column=0, sticky="w", padx=5, pady=(2, 0))
+
+        # Console header row: label on left, controls on right
+        console_header = ctk.CTkFrame(console_frame, fg_color="transparent")
+        console_header.grid(row=0, column=0, sticky="ew", padx=5, pady=(2, 0))
+        ctk.CTkLabel(console_header, text="Console", font=("Consolas", 10),
+                     anchor="w").pack(side="left")
+        ctk.CTkButton(
+            console_header, text="Clear", width=50, height=20,
+            fg_color="transparent", hover_color=("gray75", "gray25"),
+            text_color="#9ca3af", font=("Consolas", 9),
+            command=self._clear_console,
+        ).pack(side="right", padx=(0, 4))
+        ctk.CTkButton(
+            console_header, text="↓ End", width=50, height=20,
+            fg_color="transparent", hover_color=("gray75", "gray25"),
+            text_color="#9ca3af", font=("Consolas", 9),
+            command=self._console_scroll_to_end,
+        ).pack(side="right", padx=(0, 4))
+
         self.log_textbox = ctk.CTkTextbox(console_frame, font=("Consolas", 10), height=80)
         self.log_textbox.grid(row=1, column=0, sticky="nsew", padx=5, pady=(0, 4))
+
+    def _clear_console(self):
+        """Empty the console textbox."""
+        if hasattr(self, "log_textbox"):
+            try:
+                self.log_textbox.delete("1.0", "end")
+            except Exception:
+                pass
+
+    def _console_scroll_to_end(self):
+        """Force the console textbox to scroll to the latest entry."""
+        if hasattr(self, "log_textbox"):
+            try:
+                self.log_textbox.see("end")
+                self.log_textbox.update_idletasks()
+            except Exception:
+                pass
 
     def _toggle_multi_pass(self):
         """Show/hide multi-pass list frame."""
@@ -1491,7 +1435,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
     def _on_view_toggle(self):
         """Toggle mask view visibility in preview panel."""
         if self._show_mask_view.get():
-            self._process_mask_label.pack(padx=4, pady=4)
+            self._process_mask_label.place(
+                relx=0.5, rely=0.5, anchor="center",
+                x=self._preview_pan_x, y=self._preview_pan_y,
+            )
             if self._preview_mask_pil is not None:
                 zoom = self._zoom_var.get() / 100.0
                 ow, oh = self._preview_mask_pil.size
@@ -1500,7 +1447,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 self._process_mask_label.configure(image=ctk_mask, text="")
                 self._process_mask_label._ctk_image = ctk_mask
         else:
-            self._process_mask_label.pack_forget()
+            self._process_mask_label.place_forget()
 
     def _on_tab_change(self):
         """Tab changed — switch navigator data source and swap right panel."""
@@ -1558,9 +1505,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self._load_review_nav_list()
         else:
             self._preview_mode = active.lower()
-            if active == "Coverage":
-                from tabs.gaps_tab import _refresh_bridge_info
-                _refresh_bridge_info(self)
 
     def _browse_preview_image(self):
         path = filedialog.askopenfilename(
@@ -1620,6 +1564,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
     def _on_nav_change(self, value):
         """Slider moved — update labels immediately, debounce heavy image load."""
         idx = int(float(value))
+
         n = len(self._image_list)
         if n == 0:
             return
@@ -1645,6 +1590,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._preview_stats.configure(text=img_path.name)
         self._preview_image_entry.delete(0, "end")
         self._preview_image_entry.insert(0, str(img_path))
+
+        # New image → reset pan so the next render is centered.
+        self._reset_preview_pan()
 
     def _deferred_review_load(self, pair):
         """Load review overlay after debounce delay."""
@@ -1694,40 +1642,66 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._on_nav_change(self._nav_idx.get())
 
     def _show_review_overlay(self, pair):
-        """Render overlay for a review pair into the shared preview panel."""
+        """Render the preview pane: composite of all visible layers in their colors.
+
+        Mirrors the thumbnail composite so the big preview matches what the
+        user sees in the grid. The "Mask" toggle (top-right) shows the active
+        layer's mask in white-on-black.
+        """
         import cv2
         import numpy as np
         from PIL import Image as PILImage
 
         img = cv2.imread(str(pair["image_path"]))
-        mask = cv2.imread(str(pair["mask_path"]), cv2.IMREAD_GRAYSCALE)
-        if img is None or mask is None:
+        if img is None:
             return
 
         h, w = img.shape[:2]
         # winfo_width/height return physical pixels; CTkImage size is logical pixels
-        # Use panel width from scrollable frame, but height from parent panel
-        # (CTkScrollableFrame.winfo_height returns content height, not viewport)
         panel_w = self._preview_image_frame.winfo_width() / self._dpi_scale
         panel_total_h = self._preview_panel.winfo_height() / self._dpi_scale
         # Subtract header (~35), nav bar (~35), console (~15% of panel)
         panel_h = panel_total_h * 0.80 - 70
         target_w = max(200, panel_w - 20) if panel_w > 60 else 500
         target_h = max(200, panel_h) if panel_h > 60 else 500
-        # Fit entire image within panel (both width and height)
         scale = min(target_w / w, target_h / h)
         pw, ph = int(w * scale), int(h * scale)
         img_r = cv2.resize(img, (pw, ph))
-        mask_r = cv2.resize(mask, (pw, ph))
 
-        # Red tint overlay on masked-out regions (black in mask = foreground to remove)
+        # Composite every visible layer using additive BGR-delta blending — the
+        # exact same math as load_multi_layer_thumbnail, so the big preview
+        # matches the grid.
         overlay = img_r.copy()
-        masked = mask_r < 128
-        overlay[masked] = (overlay[masked].astype(np.float32) * 0.4 +
-                           np.array([0, 0, 200], dtype=np.float32) * 0.6).astype(np.uint8)
+        layer_masks = pair.get("layer_masks", {})
+        for name in self._layer_dirs:
+            if not (name in self._layer_visible and self._layer_visible[name].get()):
+                continue
+            mask_path = layer_masks.get(name)
+            if mask_path is None or not mask_path.exists():
+                continue
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                continue
+            mask_r = cv2.resize(mask, (pw, ph), interpolation=cv2.INTER_NEAREST)
+            masked = mask_r < 128
+            b, g, r = self._layer_colors[name]
+            overlay[masked, 0] = np.clip(overlay[masked, 0].astype(int) + b, 0, 255).astype(np.uint8)
+            overlay[masked, 1] = np.clip(overlay[masked, 1].astype(int) + g, 0, 255).astype(np.uint8)
+            overlay[masked, 2] = np.clip(overlay[masked, 2].astype(int) + r, 0, 255).astype(np.uint8)
         overlay_pil = PILImage.fromarray(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
-        mask_pil = PILImage.fromarray(cv2.cvtColor(
-            cv2.cvtColor(mask_r, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2RGB))
+
+        # "Mask" toggle view: render the ACTIVE layer's mask only, white on black
+        active_mask_path = pair.get("mask_path")
+        mask_pil = None
+        if active_mask_path is not None and active_mask_path.exists():
+            mask = cv2.imread(str(active_mask_path), cv2.IMREAD_GRAYSCALE)
+            if mask is not None:
+                mask_r = cv2.resize(mask, (pw, ph))
+                mask_pil = PILImage.fromarray(cv2.cvtColor(
+                    cv2.cvtColor(mask_r, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2RGB))
+        if mask_pil is None:
+            # Fallback: empty black canvas so the Mask toggle doesn't show stale data
+            mask_pil = PILImage.new("RGB", (pw, ph), (0, 0, 0))
 
         self._preview_overlay_pil = overlay_pil
         self._preview_mask_pil = mask_pil
@@ -1749,18 +1723,30 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         if not self._selected_stem or not self._review_status_mgr:
             return
         ms = self._review_status_mgr.get(self._selected_stem)
+        mod_str = ""
+        if ms.last_edit_modified is True:
+            mod_str = "  |  edited"
+        elif ms.last_edit_modified is False:
+            mod_str = "  |  unchanged"
+        # When >1 layer is loaded, surface the active layer so the user knows
+        # which one Save / Delete / Skip / Edit will act on.
+        active_str = ""
+        if len(self._layer_dirs) > 1:
+            active = self._active_layer_var.get()
+            if active:
+                active_str = f"  ·  active: {active}"
         self._review_info_label.configure(
-            text=f"{self._selected_stem}\n"
-                 f"Quality: {ms.quality or '?'}  |  Conf: {ms.confidence:.0%}  |  "
-                 f"Area: {ms.area_percent:.1f}%  |  Status: {ms.status}"
+            text=f"{self._selected_stem}{active_str}\n"
+                 f"{ms.status}  |  Conf: {ms.confidence:.0%}  |  "
+                 f"Area: {ms.area_percent:.1f}%{mod_str}"
         )
         # Update summary
         if self._review_status_mgr:
             summary = self._review_status_mgr.get_summary()
-            done = summary.get("accepted", 0) + summary.get("edited", 0)
+            reviewed = summary.get("reviewed", 0)
+            unreviewed = summary.get("unreviewed", 0)
             self._review_summary_label.configure(
-                text=f"{done} done | {summary.get('rejected', 0)} rej | "
-                     f"{summary.get('pending', 0)} pending"
+                text=f"{reviewed} reviewed | {unreviewed} unreviewed"
             )
 
     # ── zoom ──
@@ -1769,6 +1755,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         """Re-render cached preview images at new zoom level."""
         pct = int(float(value))
         self._zoom_label.configure(text=f"{pct}%")
+        self._zoom_render(pct)
+
+    def _zoom_render(self, pct):
+        """Create CTkImage at the given zoom percent and push to label."""
         if self._preview_overlay_pil is None:
             return
         zoom = pct / 100.0
@@ -1783,6 +1773,81 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             ctk_mask = ctk.CTkImage(light_image=self._preview_mask_pil, size=(zw, zh))
             self._process_mask_label.configure(image=ctk_mask, text="")
             self._process_mask_label._ctk_image = ctk_mask
+
+    def _on_preview_wheel_zoom(self, event):
+        """Mouse wheel on the preview area -> zoom-to-cursor with debounce."""
+        if event.delta == 0:
+            return "break"
+        step = 5  # slider granularity (25..300 / 55 steps)
+        direction = 1 if event.delta > 0 else -1
+        cur = self._zoom_var.get()
+        new = max(25, min(300, cur + direction * step))
+        if new == cur:
+            return "break"
+
+        # Cursor position relative to the preview frame, in logical pixels.
+        frame = self._preview_image_frame
+        cx = (event.x_root - frame.winfo_rootx()) / self._dpi_scale
+        cy = (event.y_root - frame.winfo_rooty()) / self._dpi_scale
+        fw = frame.winfo_width() / self._dpi_scale
+        fh = frame.winfo_height() / self._dpi_scale
+
+        # Adjust pan so the image-pixel under the cursor stays under the
+        # cursor across the zoom change. Scale factor f = new/old.
+        f = new / cur
+        self._preview_pan_x = (cx - fw / 2) * (1 - f) + f * self._preview_pan_x
+        self._preview_pan_y = (cy - fh / 2) * (1 - f) + f * self._preview_pan_y
+
+        self._zoom_var.set(new)
+        self._zoom_label.configure(text=f"{new}%")
+        # Debounce the expensive CTkImage creation. Cancel any pending render
+        # and schedule a new one 30ms out. Pan updates immediately so the
+        # position tracks the cursor without waiting for the image rebuild.
+        if hasattr(self, "_zoom_debounce_id") and self._zoom_debounce_id is not None:
+            self.after_cancel(self._zoom_debounce_id)
+        self._zoom_debounce_id = self.after(30, lambda: self._zoom_render(new))
+        self._apply_preview_pan()
+        return "break"
+
+    def _on_preview_pan_start(self, event):
+        """Middle-mouse press: anchor pan drag."""
+        self._pan_drag_anchor = (
+            event.x_root, event.y_root,
+            self._preview_pan_x, self._preview_pan_y,
+        )
+
+    def _on_preview_pan_motion(self, event):
+        """Middle-mouse drag: shift pan offsets."""
+        if self._pan_drag_anchor is None:
+            return
+        rx, ry, px0, py0 = self._pan_drag_anchor
+        # event.x_root is in physical pixels; convert via dpi.
+        dx = (event.x_root - rx) / self._dpi_scale
+        dy = (event.y_root - ry) / self._dpi_scale
+        self._preview_pan_x = px0 + dx
+        self._preview_pan_y = py0 + dy
+        self._apply_preview_pan()
+
+    def _on_preview_pan_end(self, event):
+        """Middle-mouse release."""
+        self._pan_drag_anchor = None
+
+    def _apply_preview_pan(self):
+        """Push current pan offsets onto the placed labels."""
+        try:
+            self._process_overlay_label.place_configure(
+                x=self._preview_pan_x, y=self._preview_pan_y)
+            if self._show_mask_view.get():
+                self._process_mask_label.place_configure(
+                    x=self._preview_pan_x, y=self._preview_pan_y)
+        except Exception:
+            pass
+
+    def _reset_preview_pan(self):
+        """Reset pan offsets to centered. Called when the image changes."""
+        self._preview_pan_x = 0
+        self._preview_pan_y = 0
+        self._apply_preview_pan()
 
     # ── preview execution ──
 
@@ -2031,9 +2096,19 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.log(f"Deleted static mask(s): {', '.join(names)}")
 
     def _on_preview(self):
+        # Invalidate cached image list + explicit preview image if the Input
+        # field has changed since the last scan. Without this, switching
+        # between sibling folders (e.g. front/frames → back/frames) keeps the
+        # navigator pointing at stale entries and _resolve_preview_image()
+        # returns the old explicit path because the file still exists.
+        current_input = self.input_entry.get().strip()
+        if current_input != getattr(self, "_image_list_input_path", None):
+            self._image_list = []
+            self._preview_image_entry.delete(0, "end")
         # Auto-load image list if not yet loaded
         if not self._image_list:
             self._load_image_list()
+            self._image_list_input_path = current_input
         img_path = self._resolve_preview_image()
         if img_path is None:
             self.log("Preview: no image found. Set an input path first.")
@@ -2041,6 +2116,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         if self.is_running:
             self.log("Preview: batch is running, wait for it to finish.")
             return
+        # Immediate click feedback — the worker thread will log "loading model..."
+        # next, but model init can take several seconds. Without this line the
+        # user sees nothing happen for that whole wait.
+        self.log(f"Preview: starting on {img_path.name}...")
         self._prefs["preview_image"] = str(img_path)
         self._save_prefs()
         self._preview_run_btn.configure(state="disabled", text="Running...")
@@ -2054,15 +2133,48 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         panel_h = panel_total_h * 0.80 - 70
         threading.Thread(target=self._preview_worker, args=(img_path, panel_w, panel_h), daemon=True).start()
 
+    def _refresh_preview_cache_indicator(self):
+        """Show/hide the 'cached pipeline' button in the Preview header."""
+        if not hasattr(self, "_preview_cache_btn"):
+            return
+        if self._pipeline_cached is None:
+            self._preview_cache_btn.pack_forget()
+            return
+        model_str = "model"
+        device = ""
+        try:
+            model_str = self._pipeline_cached.config.model.value
+            device = self._pipeline_cached.config.device
+        except Exception:
+            pass
+        label = f"\u2715 {model_str} on {device}" if device else f"\u2715 {model_str}"
+        self._preview_cache_btn.configure(text=label)
+        self._preview_cache_btn.pack(
+            side="right", padx=(0, 4), before=self._preview_collapse_btn)
+
+    def _clear_preview_pipeline(self):
+        """Free the cached pipeline (and its GPU memory)."""
+        if self._pipeline_cached is None:
+            return
+        model_label = ""
+        try:
+            model_label = self._pipeline_cached.config.model.value
+        except Exception:
+            pass
+        self._release_pipeline()
+        msg = f"Cleared cached {model_label} pipeline" if model_label else "Cleared cached pipeline"
+        self.log(msg)
+        self._refresh_preview_cache_indicator()
+
     def _preview_worker(self, img_path: Path, panel_w: float = 0, panel_h: float = 0):
         try:
             import cv2
             import numpy as np
             from PIL import Image as PILImage
 
-            MaskingPipeline = _import_pipeline()[0]
             config, model_str, geometry = self._build_mask_config()
-            pipeline = MaskingPipeline(config=config, auto_select_model=(model_str == "auto"))
+            auto_select = (model_str == "auto")
+            pipeline = self._get_pipeline(config, auto_select=auto_select)
 
             image = cv2.imread(str(img_path))
             if image is None:
@@ -2070,7 +2182,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 return
 
             self.log(f"Preview: processing {img_path.name}...")
-            result = pipeline.process_image(image, geometry)
+            with self._pipeline_lock:
+                result = pipeline.process_image(image, geometry)
 
             # Build overlay — fit entire image within panel
             h, w = image.shape[:2]
@@ -2146,9 +2259,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._prefs["output_dir"] = output_path
         self._prefs["remove_prompts"] = self.remove_prompts_entry.get().strip()
         self._prefs["keep_prompts"] = self.keep_prompts_entry.get().strip()
-        self._prefs["shadow_detector"] = self.shadow_detector_var.get()
-        self._prefs["shadow_verifier"] = self.shadow_verifier_var.get()
-        self._prefs["shadow_spatial"] = self.shadow_spatial_var.get()
         self._prefs["save_review_folder"] = self.review_folder_var.get()
         self._prefs["save_reject_review_images"] = self.review_rejects_var.get()
         self._save_prefs()
@@ -2179,6 +2289,129 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         if self.is_running:
             self.log("Stopping...")
             self.cancel_flag.set()
+
+    # ── shared MaskingPipeline cache ──
+    # See docs/planning/2026-04-30-pipeline-cache.md.
+    # Concurrency policy A: ``_pipeline_lock`` covers BOTH construction
+    # (get-or-build) and inference. This serializes click-mode decode against
+    # an in-flight batch run; tradeoff is a click can wait one batch image's
+    # duration. Lock is held by ``_get_pipeline`` and by every inference call
+    # site. Encoder-only granularity is deferred until SAM3 reentrancy is
+    # verified.
+
+    def _pipeline_cache_key(self, config):
+        """Build a hashable cache key from constructor-affecting config bits.
+
+        Excludes per-call inference fields (confidence_threshold, prompts,
+        yolo_classes, multi_pass_prompts, geometry, postprocess knobs, etc.).
+        Includes everything ``MaskingPipeline.__init__`` reads to load weights.
+
+        Per-call fields are patched onto the cached pipeline in
+        ``_get_pipeline`` on cache hit — any new per-call field must be
+        added there too.
+        """
+        def _hash_subdict(d):
+            if d is None:
+                return None
+            if isinstance(d, dict):
+                return tuple(sorted((k, _hash_subdict(v)) for k, v in d.items()))
+            if isinstance(d, (list, tuple)):
+                return tuple(_hash_subdict(v) for v in d)
+            return d
+
+        return (
+            config.model,
+            config.device,
+        )
+
+    def _normalize_pipeline_config(self, config, auto_select):
+        """Deep-copy ``config`` and resolve auto-select to a concrete model.
+
+        Returns ``(MaskConfig copy, key tuple)``. The copy isolates the GUI's
+        live config from ``MaskingPipeline.__init__``'s internal mutation, and
+        normalizes ``("auto", True)`` and ``("SAM3", False)`` to the same key
+        when SAM3 is auto-resolvable.
+        """
+        from reconstruction_pipeline import resolve_segmentation_model
+        normalized = copy.deepcopy(config)
+        if auto_select:
+            normalized.model = resolve_segmentation_model()
+        key = self._pipeline_cache_key(normalized)
+        return normalized, key
+
+    def _get_pipeline(self, config, auto_select):
+        """Get-or-build the cached ``MaskingPipeline``. Holds ``_pipeline_lock``.
+
+        Caller passes the current GUI ``MaskConfig`` and whether the user
+        selected "auto" in the model dropdown. Returns a pipeline whose
+        constructor inputs hash to the same key for the current config; if
+        the cached key matches, returns the existing instance, otherwise
+        evicts and rebuilds.
+        """
+        MaskingPipeline = _import_pipeline()[0]
+        with self._pipeline_lock:
+            normalized, key = self._normalize_pipeline_config(config, auto_select)
+            if self._pipeline_cached is not None and self._pipeline_cached_key == key:
+                # Patch per-call config fields that are excluded from the
+                # cache key (prompts, class filters, thresholds, geometry
+                # knobs, postprocess, output).  These don't require model
+                # reload but must reflect the current GUI state.
+                cached_cfg = self._pipeline_cached.config
+                cached_cfg.remove_prompts = normalized.remove_prompts
+                cached_cfg.keep_prompts = normalized.keep_prompts
+                cached_cfg.keep_classes = normalized.keep_classes
+                cached_cfg.multi_pass_prompts = normalized.multi_pass_prompts
+                cached_cfg.yolo_classes = normalized.yolo_classes
+                cached_cfg.confidence_threshold = normalized.confidence_threshold
+                cached_cfg.review_threshold = normalized.review_threshold
+                cached_cfg.pole_mask_expand = normalized.pole_mask_expand
+                cached_cfg.nadir_mask_percent = normalized.nadir_mask_percent
+                cached_cfg.fisheye_circle_mask = normalized.fisheye_circle_mask
+                cached_cfg.fisheye_margin_percent = normalized.fisheye_margin_percent
+                cached_cfg.cubemap_overlap = normalized.cubemap_overlap
+                cached_cfg.mask_dilate_px = normalized.mask_dilate_px
+                cached_cfg.fill_holes = normalized.fill_holes
+                cached_cfg.multi_label = normalized.multi_label
+                cached_cfg.inpaint_masked = normalized.inpaint_masked
+                cached_cfg.output_format = normalized.output_format
+                cached_cfg.num_workers = normalized.num_workers
+                cached_cfg.temporal_tracking = normalized.temporal_tracking
+                cached_cfg.save_review_images = normalized.save_review_images
+                cached_cfg.save_reject_review_images = normalized.save_reject_review_images
+                cached_cfg.torch_compile = normalized.torch_compile
+                cached_cfg.yolo_model_size = normalized.yolo_model_size
+                cached_cfg.rfdetr_model_size = normalized.rfdetr_model_size
+                cached_cfg.static_mask_paths = normalized.static_mask_paths
+                return self._pipeline_cached
+            # Mismatch (or cold): evict before building so GPU memory is freed
+            # before the new pipeline allocates.
+            self._release_pipeline_locked()
+            pipeline = MaskingPipeline(config=normalized, auto_select_model=False)
+            self._pipeline_cached = pipeline
+            self._pipeline_cached_key = key
+            return pipeline
+
+    def _release_pipeline_locked(self):
+        """Drop the cached pipeline and any click session that depends on it.
+
+        MUST be called with ``_pipeline_lock`` held. The click session holds
+        an inference_state tied to the current model, so close it before the
+        pipeline reference is dropped. UI cleanup is routed to the main
+        thread via ``after()`` because ``_get_pipeline`` runs on workers.
+        """
+        self._pipeline_cached = None
+        self._pipeline_cached_key = None
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _release_pipeline(self):
+        """Public release: acquires the lock, then delegates."""
+        with self._pipeline_lock:
+            self._release_pipeline_locked()
 
     def _build_mask_config(self):
         """Build MaskConfig from current GUI settings.
@@ -2244,55 +2477,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         except ImportError:
             device = "cpu"
 
-        shadow_config = None
-        shadow_enabled = self.shadow_var.get()
-        if shadow_enabled:
-            det = self.shadow_detector_var.get()
-            verifier = self.shadow_verifier_var.get()
-            shadow_config = {
-                'primary_detector': det,
-                'verification_detector': verifier if verifier != "none" else None,
-                'spatial_mode': self.shadow_spatial_var.get(),
-                'dilation_radius': int(self.shadow_dilation_var.get()),
-                'confidence_threshold': float(self.shadow_conf_var.get()),
-                'darkness_ratio_threshold': float(self.shadow_darkness_var.get()),
-                'chromaticity_threshold': float(self.shadow_chroma_var.get()),
-                'device': device,
-            }
-
-        sam_refine_config = None
-        sam_refine_enabled = self.sam_refine_var.get()
-        if sam_refine_enabled:
-            sam_refine_config = {
-                'sam_model_type': self.sam_model_var.get(),
-                'box_margin_ratio': float(self.sam_margin_var.get()),
-                'iou_threshold': float(self.sam_iou_var.get()),
-                'device': device,
-            }
-
-        matting_config = None
-        matting_enabled = self.matting_var.get()
-        if matting_enabled:
-            matting_config = {
-                'model_size': self.matting_model_var.get(),
-                'erode_kernel': int(self.matting_erode_var.get()),
-                'dilate_kernel': int(self.matting_dilate_var.get()),
-                'device': device,
-            }
-
-        ensemble_enabled = self.ensemble_var.get()
-        ens_models_raw = self.ens_models_var.get().strip()
-        ensemble_models = [m.strip() for m in ens_models_raw.split(",") if m.strip()] if ens_models_raw else ["yolo26", "rfdetr"]
-
-        colmap_enabled = self.colmap_var.get()
-        colmap_dir = self.colmap_dir_var.get().strip()
-        colmap_config = None
-        if colmap_enabled and colmap_dir:
-            colmap_config = {
-                'agreement_threshold': float(self.colmap_agree_var.get()),
-                'inconsistency_threshold': float(self.colmap_flag_var.get()),
-            }
-
         # Collect multi-pass prompts
         multi_pass = []
         if self.multi_pass_var.get():
@@ -2309,22 +2493,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             model=model_map.get(model_str),
             device=device,
             yolo_classes=classes,
-            detect_shadows=shadow_enabled,
-            shadow_config=shadow_config,
-            sam_refine=sam_refine_enabled,
-            sam_refine_config=sam_refine_config,
-            matting=matting_enabled,
-            matting_config=matting_config,
-            ensemble=ensemble_enabled,
-            ensemble_models=ensemble_models,
-            ensemble_iou_threshold=float(self.ens_iou_var.get()),
-            rfdetr_model_size=self.rfdetr_size_var.get(),
-            sam3_unified=self.sam3_unified_var.get(),
+            rfdetr_model_size="small",
+            temporal_tracking=self.temporal_tracking_var.get(),
             multi_pass_prompts=multi_pass,
-            colmap_validate=colmap_enabled and bool(colmap_dir),
-            colmap_dir=colmap_dir,
-            colmap_config=colmap_config,
-            edge_injection=self.edge_inject_var.get(),
             multi_label=self.multi_label_var.get(),
             inpaint_masked=self.inpaint_var.get(),
             output_format=self.output_format_var.get(),
@@ -2374,17 +2545,21 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             if config.keep_prompts:
                 self.log(f"Keep: {config.keep_prompts}")
 
-            pipeline = MaskingPipeline(config=config, auto_select_model=(model_str == "auto"))
+            pipeline = self._get_pipeline(config, auto_select=(model_str == "auto"))
 
-            # Quality bridge: write per-image results to review_status.json
-            if create_review_folder:
-                mask_out_dir = out / "masks"
-                review_dir = out / "review"
-            else:
-                mask_out_dir = out
-                review_dir = None
+            # The Output field IS the masks folder. "Create review folder"
+            # purely controls whether review previews are also written alongside.
+            mask_out_dir = out
+            review_dir = (out / "review") if create_review_folder else None
+
+            # Layered output: nest into layers/<name>/ inside the masks folder
+            layer_name = self.layer_name_var.get().strip()
+            if layer_name:
+                mask_out_dir = mask_out_dir / "layers" / layer_name
+                self.log(f"Saving to layer: {layer_name}")
+
             try:
-                ReviewStatusManager = _import_review()[4]
+                ReviewStatusManager = _import_review()[3]
                 _status_mgr = ReviewStatusManager(mask_out_dir)
                 def _on_result(stem, result):
                     area = float(np.sum(result.mask > 0) / result.mask.size * 100)
@@ -2394,23 +2569,79 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             except Exception:
                 _on_result = None
 
-            if inp.is_dir():
+            paired_frame_dirs = None
+            if inp.is_dir() and (inp / "front" / "frames").is_dir() and (inp / "back" / "frames").is_dir():
+                paired_frame_dirs = {
+                    "front": inp / "front" / "frames",
+                    "back": inp / "back" / "frames",
+                }
+
+            if paired_frame_dirs:
+                manifest = inp / "adjustment_manifest.json"
+                self.log(f"Detected paired dataset: {inp}")
+                if manifest.exists():
+                    self.log(f"Adjustment manifest: {manifest}")
+                total_stats = {"processed_images": 0, "review_images": 0, "paired_dataset": True}
+                for lens, lens_input in paired_frame_dirs.items():
+                    if self.cancel_flag.is_set():
+                        break
+                    lens_root = out / lens
+                    lens_mask_dir = lens_root / "masks"
+                    if layer_name:
+                        lens_mask_dir = lens_mask_dir / "layers" / layer_name
+                    lens_review_dir = (lens_root / "review") if create_review_folder else None
+                    if create_review_folder:
+                        self.log(f"Output {lens}: masks → {lens_mask_dir}, review → {lens_review_dir}")
+                    else:
+                        self.log(f"Output {lens}: masks → {lens_mask_dir}")
+                    self.log(f"Processing paired {lens} frames: {lens_input}")
+                    try:
+                        ReviewStatusManager = _import_review()[3]
+                        lens_status_mgr = ReviewStatusManager(lens_mask_dir)
+
+                        def lens_result_cb(stem, result, _mgr=lens_status_mgr):
+                            area = float(np.sum(result.mask > 0) / result.mask.size * 100)
+                            _mgr.set_quality_info(
+                                stem,
+                                quality=result.quality.value,
+                                confidence=result.confidence,
+                                area_percent=area,
+                            )
+                    except Exception:
+                        lens_result_cb = None
+                    with self._pipeline_lock:
+                        lens_stats = pipeline.process_directory(
+                            input_dir=lens_input,
+                            output_dir=lens_root,
+                            geometry=geometry,
+                            pattern=self.pattern_var.get(),
+                            result_callback=lens_result_cb,
+                            skip_existing=self.skip_existing_var.get(),
+                            merge_existing=self.merge_existing_var.get(),
+                            cancel_event=self.cancel_flag,
+                            mask_dir=lens_mask_dir,
+                            review_dir=lens_review_dir,
+                        )
+                    total_stats["processed_images"] += int(lens_stats.get("processed_images", 0) or 0)
+                    total_stats["review_images"] += int(lens_stats.get("review_images", 0) or 0)
+                    total_stats[f"{lens}_stats"] = lens_stats
+                stats = total_stats
+            elif inp.is_dir():
                 if create_review_folder:
                     self.log(f"Output: masks → {mask_out_dir}, review → {review_dir}")
                 else:
                     self.log(f"Output: masks → {mask_out_dir}")
-                if self.sam3_unified_var.get() and pipeline.sam3_video_pipeline is not None:
-                    self.log(f"Processing directory with SAM3 unified video: {inp}")
-                    stats = pipeline.process_directory_sam3_unified(
-                        input_dir=inp, output_dir=out,
-                    )
+                if self.temporal_tracking_var.get():
+                    self.log(f"Processing directory with SAM3 temporal tracking: {inp}")
                 else:
                     self.log(f"Processing directory: {inp}")
+                with self._pipeline_lock:
                     stats = pipeline.process_directory(
                         input_dir=inp, output_dir=out,
                         geometry=geometry, pattern=self.pattern_var.get(),
                         result_callback=_on_result,
                         skip_existing=self.skip_existing_var.get(),
+                        merge_existing=self.merge_existing_var.get(),
                         cancel_event=self.cancel_flag,
                         mask_dir=mask_out_dir,
                         review_dir=review_dir,
@@ -2420,21 +2651,18 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                     self.log(f"Output: masks → {mask_out_dir}, review → {review_dir}")
                 else:
                     self.log(f"Output: masks → {mask_out_dir}")
-                if self.sam3_unified_var.get() and pipeline.sam3_video_pipeline is not None:
-                    self.log(f"Processing video with SAM 3.1 unified: {inp}")
-                    stats = pipeline.process_video_sam3_unified(
-                        video_path=inp, output_dir=out,
-                        mask_dir=mask_out_dir,
-                    )
+                if self.temporal_tracking_var.get():
+                    self.log(f"Processing video with SAM3 temporal tracking: {inp}")
                 else:
                     self.log(f"Processing video: {inp}")
+                with self._pipeline_lock:
                     stats = pipeline.process_video(
-                        video_path=inp, output_dir=out,
-                        geometry=geometry,
-                        save_review=create_review_folder,
-                        mask_dir=mask_out_dir,
-                        review_dir=review_dir,
-                    )
+                            video_path=inp, output_dir=out,
+                            geometry=geometry,
+                            save_review=create_review_folder,
+                            mask_dir=mask_out_dir,
+                            review_dir=review_dir,
+                        )
             else:
                 self.log(f"Processing single image: {inp}")
                 import cv2, shutil
@@ -2442,7 +2670,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 if image is None:
                     self.log(f"ERROR: Failed to load image: {inp}")
                     return
-                result = pipeline.process_image(image, geometry)
+                with self._pipeline_lock:
+                    result = pipeline.process_image(image, geometry)
                 mask_dir = mask_out_dir
                 mask_dir.mkdir(exist_ok=True)
                 cv2.imwrite(str(mask_dir / f"{inp.stem}.png"), result.mask * 255)
@@ -2475,27 +2704,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                     "geometry": self.geometry_var.get(),
                 },
             )
-
-            # Run COLMAP geometric validation if enabled
-            colmap_dir = config.colmap_dir or ""
-            if config.colmap_validate and colmap_dir:
-                self.log("Running COLMAP geometric validation...")
-                try:
-                    mask_dir = out / "masks"
-                    val_result = pipeline.validate_masks_colmap(
-                        masks_dir=str(mask_dir),
-                        images_dir=str(inp) if inp.is_dir() else None,
-                        colmap_dir=colmap_dir,
-                    )
-                    if val_result:
-                        self.log(f"COLMAP validation: {val_result['flagged_frames']}/{val_result['total_frames']} "
-                                 f"frames flagged, avg consistency={val_result['avg_consistency']:.3f}")
-                        if val_result.get('flagged_names'):
-                            self.log(f"  Flagged: {', '.join(val_result['flagged_names'][:10])}")
-                    else:
-                        self.log("COLMAP validation: no results (check reconstruction path)")
-                except Exception as e:
-                    self.log(f"COLMAP validation error: {e}")
 
             self.after(0, lambda: self.stats_label.configure(
                 text=f"Complete. {stats.get('processed_images', stats.get('processed_frames', '?'))} processed."
@@ -2691,14 +2899,18 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             config, model_str, geometry = self._build_mask_config()
             pattern = self.pattern_var.get()
             skip_existing = self.skip_existing_var.get()
+            merge_existing = self.merge_existing_var.get()
+            layer_name = self.layer_name_var.get().strip()
 
             self.log(f"Queue: Model={model_str} | Geometry={self.geometry_var.get()} | "
                      f"Confidence={config.confidence_threshold}")
             if config.remove_prompts:
                 self.log(f"Queue: Remove prompts: {config.remove_prompts}")
+            if layer_name:
+                self.log(f"Queue: Saving to layer: {layer_name}")
 
             # Load pipeline once — reuse across all folders
-            pipeline = MaskingPipeline(config=config, auto_select_model=(model_str == "auto"))
+            pipeline = self._get_pipeline(config, auto_select=(model_str == "auto"))
 
             folder_idx = 0
             total_pending = self.masking_queue.get_pending_count()
@@ -2715,6 +2927,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 input_dir = Path(item.folder_path)
                 masks_dir = input_dir.parent / f"{input_dir.name}_masks"
                 review_dir = input_dir.parent / f"{input_dir.name}_review"
+
+                # Layered output: nest into layers/<name>/ inside the masks folder
+                if layer_name:
+                    masks_dir = masks_dir / "layers" / layer_name
 
                 self.log(f"Queue [{folder_idx}/{total_pending}]: {item.folder_name}")
                 self.log(f"  Masks  → {masks_dir}")
@@ -2752,7 +2968,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
                 # Review status bridge
                 try:
-                    ReviewStatusManager = _import_review()[4]
+                    ReviewStatusManager = _import_review()[3]
                     _status_mgr = ReviewStatusManager(masks_dir)
                     def on_result_with_review(stem, result, _iid=item.id, _count=image_count,
                                               _fidx=folder_idx, _total=total_pending,
@@ -2767,17 +2983,19 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                     result_cb = on_result
 
                 try:
-                    stats = pipeline.process_directory(
-                        input_dir=input_dir,
-                        output_dir=masks_dir,
-                        mask_dir=masks_dir,
-                        review_dir=review_dir,
-                        geometry=geometry,
-                        pattern=pattern,
-                        result_callback=result_cb,
-                        skip_existing=skip_existing,
-                        cancel_event=self.cancel_flag,
-                    )
+                    with self._pipeline_lock:
+                        stats = pipeline.process_directory(
+                            input_dir=input_dir,
+                            output_dir=masks_dir,
+                            mask_dir=masks_dir,
+                            review_dir=review_dir,
+                            geometry=geometry,
+                            pattern=pattern,
+                            result_callback=result_cb,
+                            skip_existing=skip_existing,
+                            merge_existing=merge_existing,
+                            cancel_event=self.cancel_flag,
+                        )
                     done_count = stats.get('processed_images', 0)
                     self.masking_queue.set_done(item.id, processed_count=done_count)
                     self.log(f"  Done: {done_count} processed, "
@@ -2845,31 +3063,34 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         container.grid_rowconfigure(2, weight=1)  # Thumbnails row fills remaining space
 
         # ── Data Source ──
-        ds = _Section(container, "Data Source", subtitle="Masks + source images")
+        ds = _Section(container, "Data Source",
+                      subtitle="Masks folder (optionally containing layers/) + source images")
         ds.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         dsc = ds.content
 
-        row = ctk.CTkFrame(dsc, fg_color="transparent")
-        row.pack(fill="x", pady=2)
-        ctk.CTkLabel(row, text="Masks:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-        self.masks_entry = ctk.CTkEntry(row, placeholder_text="Directory containing mask files")
+        # Masks folder row — root may contain bare *.png and/or layers/<name>/*.png
+        masks_row = ctk.CTkFrame(dsc, fg_color="transparent")
+        masks_row.pack(fill="x", pady=2)
+        ctk.CTkLabel(masks_row, text="Masks:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+        self.masks_entry = ctk.CTkEntry(
+            masks_row, placeholder_text="Masks folder (bare *.png and/or layers/ subdir)")
         self.masks_entry.pack(side="left", fill="x", expand=True, padx=4)
-        ctk.CTkButton(row, text="...", width=BROWSE_BUTTON_WIDTH,
+        ctk.CTkButton(masks_row, text="...", width=BROWSE_BUTTON_WIDTH,
                       fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                       command=lambda: self._browse_dir_into(self.masks_entry)).pack(side="left")
 
-        row2 = ctk.CTkFrame(dsc, fg_color="transparent")
-        row2.pack(fill="x", pady=2)
-        ctk.CTkLabel(row2, text="Images:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-        self.images_entry = ctk.CTkEntry(row2, placeholder_text="Directory containing source images")
+        images_row = ctk.CTkFrame(dsc, fg_color="transparent")
+        images_row.pack(fill="x", pady=2)
+        ctk.CTkLabel(images_row, text="Images:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+        self.images_entry = ctk.CTkEntry(images_row, placeholder_text="Directory containing source images")
         self.images_entry.pack(side="left", fill="x", expand=True, padx=4)
-        ctk.CTkButton(row2, text="...", width=BROWSE_BUTTON_WIDTH,
+        ctk.CTkButton(images_row, text="...", width=BROWSE_BUTTON_WIDTH,
                       fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                       command=lambda: self._browse_dir_into(self.images_entry)).pack(side="left")
 
         btn_row = ctk.CTkFrame(dsc, fg_color="transparent")
         btn_row.pack(fill="x", pady=(2, 0))
-        ctk.CTkButton(btn_row, text="Load Masks", width=110,
+        ctk.CTkButton(btn_row, text="Load", width=110,
                       fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                       font=ctk.CTkFont(size=12),
                       command=self._load_review).pack(side="left", padx=(0, 8))
@@ -2877,6 +3098,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                       fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
                       font=ctk.CTkFont(size=12),
                       command=self._auto_detect_review_paths).pack(side="left")
+
+        # Layer list — packed only when there are >1 layers (i.e. base + named).
+        # When only the bare-root layer exists, this frame stays hidden so the
+        # UI looks like the old single-layer review.
+        self._layer_list_frame = ctk.CTkFrame(dsc, fg_color="transparent")
 
         # ── Filter & Sort ──
         fs = _Section(container, "Filter & Sort")
@@ -2888,13 +3114,13 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         ctk.CTkLabel(fs_row, text="Sort:").pack(side="left", padx=(0, 2))
         self.sort_var = ctk.StringVar(value="Filename")
         ctk.CTkOptionMenu(fs_row, variable=self.sort_var,
-                          values=["Filename", "Confidence", "Quality", "Area %"],
+                          values=["Filename", "Confidence", "Quality", "Area %", "Modified"],
                           command=lambda _: self._on_filter_change(), width=110).pack(side="left", padx=2)
 
         ctk.CTkLabel(fs_row, text="Filter:").pack(side="left", padx=(8, 2))
         self.filter_var = ctk.StringVar(value="All")
         ctk.CTkSegmentedButton(
-            fs_row, values=["All", "Needs Review", "Poor", "Unreviewed"],
+            fs_row, values=["All", "Unreviewed", "Reviewed"],
             variable=self.filter_var, command=lambda _: self._on_filter_change()
         ).pack(side="left", padx=2)
 
@@ -2918,57 +3144,585 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         cm.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         cmc = cm.content
 
+        # Two-row 2-column grid: stats label / Edit button on the left,
+        # checkbox / Merge button on the right. Right column appears only when
+        # >1 layer is loaded. _load_review toggles column 1's weight so
+        # single-layer mode gives column 0 the full row instead of half.
+        self._stats_row = ctk.CTkFrame(cmc, fg_color="transparent")
+        self._stats_row.pack(fill="x", padx=4, pady=2)
+        self._stats_row.grid_columnconfigure(0, weight=1)
+        # Column 1 weight starts at 0 (collapses); _load_review sets to 1 in multi-layer.
+
         self._review_info_label = ctk.CTkLabel(
-            cmc, text="Load masks to begin.",
+            self._stats_row, text="Load masks to begin.",
             font=("Consolas", 11), anchor="w", justify="left",
         )
-        self._review_info_label.pack(fill="x", padx=4, pady=2)
+        self._review_info_label.grid(row=0, column=0, sticky="ew")
+        self._merge_checkbox = ctk.CTkCheckBox(
+            self._stats_row, text="Delete source layers after merge",
+            variable=self._auto_delete_merged_var, font=("Consolas", 11),
+        )
+        Tooltip(self._merge_checkbox,
+                "After merge succeeds, delete the visible named layer\n"
+                "directories. Base is kept (it holds the composite).")
+        # Not gridded initially — _load_review controls visibility.
 
-        action_row = ctk.CTkFrame(cmc, fg_color="transparent")
-        action_row.pack(fill="x", pady=(2, 0))
-        ctk.CTkButton(action_row, text="Edit (OpenCV)", command=self._on_edit,
-                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-                      font=ctk.CTkFont(size=12), width=110).pack(side="left", padx=(0, 4))
-        for text, cmd, color in [
-            ("Accept", self._on_accept, COLOR_ACTION_PRIMARY),
-            ("Reject", self._on_reject, COLOR_ACTION_DANGER),
-            ("Skip", self._on_skip, COLOR_ACTION_MUTED),
-        ]:
-            ctk.CTkButton(action_row, text=text, command=cmd, fg_color=color,
-                          font=ctk.CTkFont(size=12),
-                          width=75).pack(side="left", padx=3)
+        self._action_row = ctk.CTkFrame(cmc, fg_color="transparent")
+        self._action_row.pack(fill="x", pady=(2, 0))
+        self._action_row.grid_columnconfigure(0, weight=1)
+        # Column 1 weight starts at 0; _load_review sets to 1 in multi-layer.
+
+        ctk.CTkButton(
+            self._action_row, text="Edit (OpenCV)", command=self._on_edit,
+            fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+            font=ctk.CTkFont(size=12), height=30,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        self._merge_btn = ctk.CTkButton(
+            self._action_row, text="Merge Visible Layers",
+            fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
+            font=ctk.CTkFont(size=12, weight="bold"), height=30,
+            command=self._merge_layers,
+        )
+        # Not gridded initially — _load_review controls visibility.
 
         # ── Batch Actions ──
         ba = _Section(container, "Batch")
         ba.grid(row=4, column=0, sticky="ew", pady=(0, 6))
         bac = ba.content
 
-        ctk.CTkButton(bac, text="Accept All Good", command=self._on_accept_all_good,
-                      fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
-                      font=ctk.CTkFont(size=12), width=140).pack(side="left", padx=4, pady=2)
-        ctk.CTkButton(bac, text="Hide Done", command=self._on_hide_done,
+        ctk.CTkButton(bac, text="Hide Reviewed", command=self._on_hide_reviewed,
                       fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
-                      font=ctk.CTkFont(size=12), width=100).pack(side="left", padx=4, pady=2)
+                      font=ctk.CTkFont(size=12), width=120).pack(side="left", padx=4, pady=2)
 
         self._review_summary_label = ctk.CTkLabel(
             bac, text="", font=("Consolas", 10), text_color="#9ca3af",
         )
         self._review_summary_label.pack(side="left", padx=8, pady=2)
 
+    # ── layered review helpers ──
+
+    def _discover_layers(self, masks_path: Path):
+        """Populate self._layer_dirs from a masks folder root.
+
+        Layer ordering: ``base`` (bare root *.png) first if present, then named
+        subdirs from ``masks_path/layers/`` in sorted order. Empty subdirs are
+        skipped. Returns the dict for callers that want to introspect.
+        """
+        self._layer_dirs.clear()
+        # Base layer: bare PNGs at the masks folder root. Always first when present.
+        if any(masks_path.glob("*.png")):
+            self._layer_dirs["base"] = masks_path
+        # Named layers: <masks_path>/layers/<name>/*.png
+        layers_root = masks_path / "layers"
+        if layers_root.exists():
+            for d in sorted(layers_root.iterdir()):
+                if d.is_dir() and any(d.glob("*.png")):
+                    self._layer_dirs[d.name] = d
+        return self._layer_dirs
+
+    def _discover_layer_pairs(self, masks_path: Path, images_dir: Path):
+        """Build _review_pairs as the union of stems across all known layers."""
+        all_stems = set()
+        for layer_dir in self._layer_dirs.values():
+            for f in layer_dir.glob("*.png"):
+                all_stems.add(f.stem)
+
+        # Index image dir by stem once
+        image_by_stem: Dict[str, Path] = {}
+        for ext in ("*.jpg", "*.png", "*.jpeg", "*.tif", "*.tiff"):
+            for f in images_dir.glob(ext):
+                image_by_stem.setdefault(f.stem, f)
+
+        self._review_pairs = []
+        for stem in sorted(all_stems):
+            img = image_by_stem.get(stem)
+            if img is None:
+                continue
+            layer_masks = {
+                name: (d / f"{stem}.png")
+                for name, d in self._layer_dirs.items()
+                if (d / f"{stem}.png").exists()
+            }
+            self._review_pairs.append({
+                "stem": stem,
+                "image_path": img,
+                "mask_path": None,    # filled by _sync_active_layer_paths
+                "layer_masks": layer_masks,
+            })
+
+    def _sync_active_layer_paths(self):
+        """Point each pair's mask_path at the active layer's mask file (or None)."""
+        active = self._active_layer_var.get()
+        if not active:
+            return
+        for pair in self._review_pairs:
+            pair["mask_path"] = pair.get("layer_masks", {}).get(active)
+
+    def _rebuild_layer_list(self):
+        """Populate the layer list with a header row + one row per discovered layer.
+
+        Column layout (mirrored between header and rows):
+            [radio][swatch][name fills →][visible cb][count][× delete]
+        """
+        # Cancel any pending delete-confirm — its button is about to be destroyed
+        if self._delete_pending_after_id is not None:
+            try:
+                self.after_cancel(self._delete_pending_after_id)
+            except Exception:
+                pass
+            self._delete_pending_after_id = None
+        self._delete_pending_layer = None
+        self._layer_delete_btns.clear()
+
+        for w in self._layer_list_frame.winfo_children():
+            w.destroy()
+        if not self._layer_dirs:
+            return
+
+        # Header: column labels align to the row below.
+        # "active" sits above the radio column (which layer the action buttons
+        # — Edit / Save / Delete / Skip — operate on, and which drives the
+        # filter bar). "visible" sits above the visibility checkbox column.
+        header = ctk.CTkFrame(self._layer_list_frame, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 2))
+        ctk.CTkLabel(header, text="active", font=("Consolas", 10),
+                     text_color="#9ca3af", width=20).pack(side="left", padx=(2, 4))   # radio col
+        ctk.CTkLabel(header, text="", width=14).pack(side="left", padx=(0, 6))         # swatch col
+        ctk.CTkLabel(header, text="", anchor="w").pack(side="left", fill="x", expand=True)  # name col
+        ctk.CTkLabel(header, text="visible", font=("Consolas", 10),
+                     text_color="#9ca3af").pack(side="left", padx=(4, 8))              # checkbox col
+        ctk.CTkLabel(header, text="", font=("Consolas", 10), width=70).pack(side="left", padx=(0, 4))  # count col
+        ctk.CTkLabel(header, text="", width=24).pack(side="left", padx=(2, 4))         # delete col
+
+        for name, layer_dir in self._layer_dirs.items():
+            count = sum(1 for _ in layer_dir.glob("*.png"))
+            bgr = self._layer_colors[name]
+            swatch_hex = self._layer_color_to_hex(bgr)
+            row = ctk.CTkFrame(self._layer_list_frame, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            ctk.CTkRadioButton(
+                row, text="", value=name, variable=self._active_layer_var,
+                command=self._on_active_layer_change, width=20,
+            ).pack(side="left", padx=(2, 4))
+            swatch = ctk.CTkFrame(row, fg_color=swatch_hex, width=14, height=14, corner_radius=2)
+            swatch.pack(side="left", padx=(0, 6))
+            swatch.pack_propagate(False)
+            # Click swatch → open color picker (Phase 4b)
+            swatch.bind("<Button-1>", lambda e, n=name: self._on_swatch_click(n))
+            ctk.CTkLabel(row, text=name, font=("Consolas", 11), anchor="w").pack(
+                side="left", fill="x", expand=True)
+            ctk.CTkCheckBox(
+                row, text="", variable=self._layer_visible[name], width=20,
+            ).pack(side="left", padx=(4, 8))
+            ctk.CTkLabel(row, text=f"{count} masks", font=("Consolas", 10),
+                         text_color="#9ca3af", width=70, anchor="w").pack(side="left", padx=(0, 4))
+            # Per-layer delete button (two-click confirm pattern)
+            del_btn = ctk.CTkButton(
+                row, text="×", width=24, height=22,
+                fg_color="transparent", hover_color="#7f1d1d",
+                text_color="#9ca3af", font=("Consolas", 14),
+                command=lambda n=name: self._on_layer_delete_click(n),
+            )
+            del_btn.pack(side="left", padx=(2, 4))
+            self._layer_delete_btns[name] = del_btn
+
+        # Note: the merge controls (checkbox + Merge button) live in the
+        # Current Mask section, not here. _load_review handles their
+        # show/hide based on layer count.
+
+    @staticmethod
+    def _layer_color_to_hex(bgr_delta) -> str:
+        """Convert a BGR-delta tuple into a representative hex color for the swatch."""
+        b, g, r = bgr_delta
+        # Treat the delta as the saturated overlay color on a mid-gray base
+        return f"#{min(255, r + 80):02x}{min(255, g + 80):02x}{min(255, b + 80):02x}"
+
+    @staticmethod
+    def _bgr_delta_to_rgb_hex(bgr_delta) -> str:
+        """Convert a BGR-delta to a fully-saturated RGB hex (for the color picker)."""
+        b, g, r = bgr_delta
+        max_ch = max(b, g, r) or 1
+        rr = int(r * 255 / max_ch)
+        gg = int(g * 255 / max_ch)
+        bb = int(b * 255 / max_ch)
+        return f"#{rr:02x}{gg:02x}{bb:02x}"
+
+    @staticmethod
+    def _rgb_to_bgr_delta(rgb_tuple, target_intensity: int = 100):
+        """Convert a picker RGB triple to a BGR-delta scaled to target_intensity max."""
+        r, g, b = (int(rgb_tuple[0]), int(rgb_tuple[1]), int(rgb_tuple[2]))
+        max_ch = max(r, g, b) or 1
+        scale = target_intensity / max_ch
+        return (int(b * scale), int(g * scale), int(r * scale))
+
+    def _on_swatch_click(self, layer_name: str):
+        """Open a color picker for the given layer and persist the choice."""
+        from tkinter import colorchooser
+        if layer_name not in self._layer_colors:
+            return
+        initial = self._bgr_delta_to_rgb_hex(self._layer_colors[layer_name])
+        try:
+            result = colorchooser.askcolor(color=initial, title=f"Color for layer '{layer_name}'")
+        except Exception as e:
+            self.log(f"Color picker failed: {e}")
+            return
+        if result is None or result[0] is None:
+            return  # cancelled
+        self._layer_colors[layer_name] = self._rgb_to_bgr_delta(result[0])
+        self._save_layer_colors()
+        # Cascade: layer list (swatch), thumbnails, preview, editor IPC
+        self._rebuild_layer_list()
+        self._thumb_cache.clear()
+        self._rebuild_thumb_list()
+        if self._selected_stem:
+            pair = next((p for p in self._review_pairs if p["stem"] == self._selected_stem), None)
+            if pair is not None:
+                self._show_review_overlay(pair)
+        # Push refresh to a running editor so it picks up the new color
+        if (self._editor_proc is not None and self._editor_proc.poll() is None
+                and self._editor_cmd_file is not None):
+            idx = self._nav_idx.get()
+            if 0 <= idx < len(self._filtered_pairs):
+                try:
+                    self._editor_cmd_file.write_text(
+                        self._build_editor_ipc_line(self._filtered_pairs[idx]),
+                        encoding="utf-8")
+                except Exception:
+                    pass
+
+    def _save_layer_colors(self):
+        """Persist the current layer colors to <masks>/.layer_colors.json."""
+        import json
+        masks_dir_str = self.masks_entry.get().strip()
+        if not masks_dir_str:
+            return
+        masks_dir = Path(masks_dir_str)
+        if not masks_dir.exists():
+            return
+        config_path = masks_dir / ".layer_colors.json"
+        data = {name: list(self._layer_colors[name])
+                for name in self._layer_dirs if name in self._layer_colors}
+        try:
+            config_path.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            self.log(f"Failed to save layer colors: {e}")
+
+    def _load_layer_colors_file(self, masks_dir) -> Dict[str, tuple]:
+        """Load persisted layer colors from <masks>/.layer_colors.json."""
+        import json
+        config_path = Path(masks_dir) / ".layer_colors.json"
+        if not config_path.exists():
+            return {}
+        try:
+            raw = json.loads(config_path.read_text())
+            return {k: tuple(v) for k, v in raw.items()
+                    if isinstance(v, list) and len(v) == 3}
+        except Exception:
+            return {}
+
+    def _on_active_layer_change(self, *_):
+        """Active layer changed: re-bind status manager, refresh paths and view."""
+        active = self._active_layer_var.get()
+        if not active or active not in self._layer_dirs:
+            return
+        self._review_status_mgr = self._layer_status_mgrs[active]
+        self._sync_active_layer_paths()
+        self._apply_filter()
+        self._rebuild_thumb_list()
+        if self._selected_stem:
+            self._update_review_info()
+            # Refresh preview so the "Mask" toggle reflects the new active layer
+            pair = next((p for p in self._review_pairs if p["stem"] == self._selected_stem), None)
+            if pair is not None:
+                self._show_review_overlay(pair)
+
+    def _on_layer_visibility_change(self, *_):
+        """Visibility toggled: invalidate cache, refresh preview, lazy-rerender thumbs."""
+        if not self._review_loaded:
+            return
+        self._thumb_cache.clear()
+        self._rebuild_thumb_list()
+        # Refresh the big preview to match the new visible-layer set
+        if self._selected_stem:
+            pair = next((p for p in self._review_pairs if p["stem"] == self._selected_stem), None)
+            if pair is not None:
+                self._show_review_overlay(pair)
+
+    # ── per-layer delete (two-click confirm) ──
+
+    def _on_layer_delete_click(self, name: str):
+        """Two-click confirm: first click arms, second click within 3s deletes."""
+        if name not in self._layer_dirs:
+            return
+        if self._delete_pending_layer == name:
+            # Confirmed → execute
+            self._cancel_delete_pending()
+            self._delete_layer(name)
+            return
+        # First click — arm the pending state, cancel any other pending
+        self._cancel_delete_pending()
+        self._delete_pending_layer = name
+        btn = self._layer_delete_btns.get(name)
+        if btn is not None:
+            try:
+                btn.configure(text="confirm?", fg_color=COLOR_ACTION_DANGER,
+                              text_color="#ffffff", width=70)
+            except Exception:
+                pass
+        self._delete_pending_after_id = self.after(3000, self._cancel_delete_pending)
+
+    def _cancel_delete_pending(self):
+        """Revert the armed delete button (timer expiry, click on different layer, etc.)."""
+        if self._delete_pending_after_id is not None:
+            try:
+                self.after_cancel(self._delete_pending_after_id)
+            except Exception:
+                pass
+            self._delete_pending_after_id = None
+        if self._delete_pending_layer:
+            btn = self._layer_delete_btns.get(self._delete_pending_layer)
+            if btn is not None:
+                try:
+                    btn.configure(text="×", fg_color="transparent",
+                                  text_color="#9ca3af", width=24)
+                except Exception:
+                    pass
+        self._delete_pending_layer = None
+
+    def _delete_layer(self, name: str):
+        """Delete a layer's files from disk, then reload to reflect the change.
+
+        - Named layer: remove ``<masks>/layers/<name>/`` recursively.
+        - Base layer:  remove only ``<masks>/*.png`` (the bare-root masks) and
+          the root ``review_status.json``. Subdirs (``layers/``, ``review/``,
+          ``images/``) are preserved. If named layers exist, log a warning
+          since the user may be wiping their composite output.
+        """
+        import shutil
+
+        if name not in self._layer_dirs:
+            return
+        masks_path_str = self.masks_entry.get().strip()
+        if not masks_path_str:
+            self.log("Cannot delete: masks folder is unset.")
+            return
+        masks_path = Path(masks_path_str)
+
+        if name == "base":
+            bare_files = list(masks_path.glob("*.png"))
+            named_count = sum(1 for n in self._layer_dirs if n != "base")
+            if named_count > 0:
+                self.log(f"Warning: deleting base ({len(bare_files)} masks) while "
+                         f"{named_count} named layer(s) still exist. The composite "
+                         f"output will be gone — re-merge to regenerate.")
+            failures = 0
+            for f in bare_files:
+                try:
+                    f.unlink()
+                except Exception as e:
+                    failures += 1
+                    self.log(f"  failed to delete {f.name}: {e}")
+            # Drop the root review_status.json since base is gone
+            status_file = masks_path / "review_status.json"
+            if status_file.exists():
+                try:
+                    status_file.unlink()
+                except Exception:
+                    pass
+            removed = len(bare_files) - failures
+            self.log(f"Deleted layer 'base' — {removed} mask file(s) removed.")
+        else:
+            layer_dir = self._layer_dirs[name]
+            mask_count = sum(1 for _ in layer_dir.glob("*.png"))
+            try:
+                shutil.rmtree(str(layer_dir))
+            except Exception as e:
+                self.log(f"Failed to delete layer '{name}': {e}")
+                return
+            self.log(f"Deleted layer '{name}' — {mask_count} mask file(s) removed.")
+
+        # Reload to refresh the layer list. Preserve user state where possible.
+        saved_active = self._active_layer_var.get()
+        saved_visibility = {n: v.get() for n, v in self._layer_visible.items()}
+        self._load_review()
+        for n, was_visible in saved_visibility.items():
+            if n in self._layer_visible and not was_visible:
+                self._layer_visible[n].set(False)
+        if saved_active in self._layer_dirs and saved_active != name:
+            self._active_layer_var.set(saved_active)
+            self._on_active_layer_change()
+
+    def _merge_layers(self):
+        """Kick off a background-threaded merge so the UI stays responsive.
+
+        The merge writes the OR composite of every visible layer to the masks
+        folder root (overwriting ``base`` if visible). Per-layer directories
+        under ``layers/<name>/`` are untouched — they remain editable so you
+        can re-edit a layer and re-merge.
+        """
+        if not self._review_loaded or not self._layer_dirs:
+            self.log("Load a project before merging layers.")
+            return
+
+        masks_dir_str = self.masks_entry.get().strip()
+        if not masks_dir_str:
+            self.log("Masks folder is unset.")
+            return
+        masks_dir = Path(masks_dir_str)
+
+        visible = {n: d for n, d in self._layer_dirs.items()
+                   if self._layer_visible.get(n) and self._layer_visible[n].get()}
+        if not visible:
+            self.log("No visible layers to merge.")
+            return
+
+        # Disable the button + flip text so the user knows it's running. A
+        # background thread does the I/O so the console keeps polling.
+        try:
+            self._merge_btn.configure(state="disabled", text="Merging...")
+        except Exception:
+            pass
+        # Snapshot UI state for restoration after reload (we're going to call
+        # _load_review which resets visibility/active).
+        saved_active = self._active_layer_var.get()
+        saved_visibility = {n: v.get() for n, v in self._layer_visible.items()}
+        threading.Thread(
+            target=self._merge_layers_worker,
+            args=(masks_dir, visible, saved_active, saved_visibility),
+            daemon=True,
+        ).start()
+
+    def _merge_layers_worker(self, masks_dir: Path, visible: dict,
+                             saved_active: str, saved_visibility: dict):
+        """Worker thread: do the merge I/O and post results back to main thread."""
+        import cv2
+        import numpy as np
+
+        # Union of stems across visible layers
+        all_stems = set()
+        for layer_dir in visible.values():
+            for f in layer_dir.glob("*.png"):
+                all_stems.add(f.stem)
+        if not all_stems:
+            self.log("No mask files in the visible layers.")
+            self.after(0, self._merge_finish, 0, 0, masks_dir, saved_active, saved_visibility)
+            return
+
+        # Notify (no popout dialogs): the bare-root *.png files will be overwritten.
+        existing_files = list(masks_dir.glob("*.png"))
+        layer_summary = ", ".join(visible)
+        if existing_files:
+            self.log(f"Merging [{layer_summary}] into {masks_dir} — "
+                     f"{len(existing_files)} bare-root mask(s) will be overwritten "
+                     f"(this is the canonical composite output).")
+        else:
+            self.log(f"Merging [{layer_summary}] into {masks_dir}...")
+
+        masks_dir.mkdir(parents=True, exist_ok=True)
+        merged_count = 0
+        skipped_count = 0
+        for stem in sorted(all_stems):
+            merged = None
+            for name, layer_dir in visible.items():
+                mask_path = layer_dir / f"{stem}.png"
+                if not mask_path.exists():
+                    continue
+                raw = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                if raw is None:
+                    continue
+                layer_internal = (raw < 128).astype(np.uint8)
+                if merged is None:
+                    merged = layer_internal
+                else:
+                    if layer_internal.shape == merged.shape:
+                        merged = np.maximum(merged, layer_internal)
+                    else:
+                        self.log(f"  size mismatch on {stem}, skipping {name}")
+            if merged is not None:
+                cv2.imwrite(str(masks_dir / f"{stem}.png"), (1 - merged) * 255)
+                merged_count += 1
+            else:
+                skipped_count += 1
+
+        msg = f"Merged {merged_count} composite mask(s) → {masks_dir}"
+        if skipped_count:
+            msg += f"  ({skipped_count} skipped)"
+        self.log(msg)
+
+        # Auto-delete: consume the visible NAMED source layers if requested.
+        # Base is never auto-deleted (it's the merge target — holds the composite).
+        # Invisible layers stay (they weren't part of the merge).
+        if self._auto_delete_merged_var.get():
+            import shutil
+            deleted = []
+            for name, layer_dir in visible.items():
+                if name == "base":
+                    continue
+                try:
+                    shutil.rmtree(str(layer_dir))
+                    deleted.append(name)
+                except Exception as e:
+                    self.log(f"Auto-delete: failed to remove '{name}': {e}")
+            if deleted:
+                self.log(f"Auto-deleted source layer(s): {', '.join(deleted)}")
+                # Drop deleted layers from the snapshot so _merge_finish doesn't
+                # try to restore visibility/active for them.
+                for n in deleted:
+                    saved_visibility.pop(n, None)
+                if saved_active in deleted:
+                    saved_active = ""
+
+        self.after(0, self._merge_finish, merged_count, skipped_count,
+                   masks_dir, saved_active, saved_visibility)
+
+    def _merge_finish(self, merged_count: int, skipped_count: int,
+                      masks_dir: Path, saved_active: str, saved_visibility: dict):
+        """Main-thread cleanup after merge: reload, restore state, flash success."""
+        # Reload to reflect the new bare-root state
+        self._load_review()
+        # Restore visibility — _load_review defaults all layers to True
+        for n, was_visible in saved_visibility.items():
+            if n in self._layer_visible and not was_visible:
+                self._layer_visible[n].set(False)
+        if saved_active in self._layer_dirs:
+            self._active_layer_var.set(saved_active)
+            self._on_active_layer_change()
+
+        # Visible button feedback that survives the console scroll
+        try:
+            success_text = f"✓ Merged {merged_count} mask(s)"
+            self._merge_btn.configure(state="normal", text=success_text,
+                                      fg_color=COLOR_ACTION_PRIMARY_H)
+            # Revert to original label after 4 seconds — long enough to read,
+            # short enough not to obscure the button's normal purpose.
+            def _revert():
+                try:
+                    self._merge_btn.configure(text="Merge Visible Layers",
+                                              fg_color=COLOR_ACTION_PRIMARY)
+                except Exception:
+                    pass
+            self.after(4000, _revert)
+        except Exception:
+            pass
+
     # ── review loading ──
 
     def _auto_detect_review_paths(self):
+        """Point the Masks field at the resolved mask output directory and load.
+
+        The Output field on the Mask tab IS the masks folder, so the masks
+        directory equals out_path. Bare PNGs at the root and any layers/
+        subdirs are discovered together by the unified loader.
+        """
         out = self.output_entry.get().strip()
         if not out:
             self.log("Set an output directory on the Process tab first.")
             return
+        self.log(f"Auto-detect: scanning {out}...")
         out_path = Path(out)
 
-        masks_dir = None
-        for c in [out_path / "masks", out_path]:
-            if c.exists() and any(c.glob("*.png")):
-                masks_dir = c
-                break
+        # Resolve images directory
         images_dir = None
         for c in [out_path / "images", out_path / "frames",
                   out_path.parent / "frames", out_path.parent / "images"]:
@@ -2980,20 +3734,33 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             if inp and Path(inp).is_dir():
                 images_dir = Path(inp)
 
-        if masks_dir:
-            self.masks_entry.delete(0, "end")
-            self.masks_entry.insert(0, str(masks_dir))
-        else:
-            self.log("Could not auto-detect masks directory.")
+        # Populate fields
+        self.masks_entry.delete(0, "end")
+        self.masks_entry.insert(0, str(out_path))
         if images_dir:
             self.images_entry.delete(0, "end")
             self.images_entry.insert(0, str(images_dir))
         else:
             self.log("Could not auto-detect images directory.")
-        if masks_dir and images_dir:
+
+        # Load if both paths resolved — _load_review handles base + named layers
+        if images_dir:
             self._load_review()
 
     def _load_review(self):
+        """Unified loader: masks_path is the masks folder root.
+
+        Discovers two kinds of layers in one pass:
+          - Bare ``masks_path/*.png`` → ``base`` layer (legacy/single workflow)
+          - ``masks_path/layers/<name>/*.png`` → named layers
+
+        Only the base case (single layer) collapses to old single-mask UX:
+        the layer list stays hidden, the active layer is ``base``, and editing
+        opens the bare mask file. With multiple layers, the layer list
+        appears and overlays composite together.
+        """
+        from review_gui import LAYER_COLORS
+
         masks_dir = self.masks_entry.get().strip()
         images_dir = self.images_entry.get().strip()
 
@@ -3011,29 +3778,79 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self.log(f"Images dir not found: {images_path}")
             return
 
+        self.log(f"Loading from {masks_path}...")
         self._prefs["masks_dir"] = masks_dir
         self._prefs["images_dir"] = images_dir
         self._save_prefs()
 
         try:
             (self._load_overlay_thumbnail, self._compute_mask_area_percent,
-             self._quality_colors, self._status_colors,
-             ReviewStatusManager, _) = _import_review()
+             self._review_colors, ReviewStatusManager, _) = _import_review()
 
-            self._review_status_mgr = ReviewStatusManager(masks_path)
+            # Discover layers (base + named)
+            self._discover_layers(masks_path)
+            if not self._layer_dirs:
+                self.log(f"No masks found in {masks_path}.")
+                return
+
+            # Reset per-layer state and instantiate one ReviewStatusManager per layer
+            self._layer_colors.clear()
+            self._layer_visible.clear()
+            self._layer_status_mgrs.clear()
+            saved_colors = self._load_layer_colors_file(masks_path)
+            for i, name in enumerate(self._layer_dirs):
+                # Persisted custom color overrides the palette default
+                self._layer_colors[name] = saved_colors.get(
+                    name, LAYER_COLORS[i % len(LAYER_COLORS)])
+                self._layer_visible[name] = ctk.BooleanVar(value=True)
+                self._layer_visible[name].trace_add("write", self._on_layer_visibility_change)
+                self._layer_status_mgrs[name] = ReviewStatusManager(self._layer_dirs[name])
+
+            # Show layer list + merge controls only when there are multiple
+            # layers — keeps the legacy single-mask layout clean for users
+            # with no named layers.
+            multi = len(self._layer_dirs) > 1
+            if multi:
+                self._layer_list_frame.pack(fill="x", pady=(4, 0))
+                self._rebuild_layer_list()
+            else:
+                self._layer_list_frame.pack_forget()
+            # Merge controls live in the Current Mask section: checkbox
+            # right-aligned in stats row, Merge button right-aligned in action
+            # row, both filling column 1. Toggling column 1's weight is what
+            # collapses the right side cleanly when single-layer.
+            if hasattr(self, "_stats_row") and hasattr(self, "_merge_checkbox"):
+                if multi:
+                    self._stats_row.grid_columnconfigure(1, weight=1)
+                    self._merge_checkbox.grid(row=0, column=1, sticky="e", padx=(8, 0))
+                else:
+                    self._merge_checkbox.grid_forget()
+                    self._stats_row.grid_columnconfigure(1, weight=0)
+            if hasattr(self, "_action_row") and hasattr(self, "_merge_btn"):
+                if multi:
+                    self._action_row.grid_columnconfigure(1, weight=1)
+                    self._merge_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+                else:
+                    self._merge_btn.grid_forget()
+                    self._action_row.grid_columnconfigure(1, weight=0)
+
+            # Build pairs as union of stems across layers, then bind to active layer
             self._review_pairs = []
-            self._discover_pairs(masks_path, images_path)
+            self._discover_layer_pairs(masks_path, images_path)
+            first_layer = next(iter(self._layer_dirs))
+            self._active_layer_var.set(first_layer)
+            self._review_status_mgr = self._layer_status_mgrs[first_layer]
+            self._sync_active_layer_paths()
+
             self._review_loaded = True
             self._selected_stem = None
-
-            self.log(f"Loaded {len(self._review_pairs)} mask/image pairs")
-
-            # Compute area % in background to avoid lockup on large sets
-            threading.Thread(target=self._compute_areas_bg, daemon=True).start()
-
-            # Load thumbnails in background (clear old cache + widgets)
             self._thumb_cache.clear()
             self._thumb_widgets.clear()
+            self._apply_filter()
+            self._rebuild_thumb_list()
+
+            # Compute areas + load thumbnails in background
+            threading.Thread(target=self._compute_areas_bg, daemon=True).start()
             threading.Thread(target=self._load_thumbnails_bg, daemon=True).start()
 
             # Set zoom to 100% = fit to panel width
@@ -3044,52 +3861,72 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             if self._preview_mode == "review":
                 self._load_review_nav_list()
 
+            layer_summary = ", ".join(self._layer_dirs.keys())
+            self.log(f"Loaded {len(self._layer_dirs)} layer(s) [{layer_summary}], "
+                     f"{len(self._review_pairs)} image pairs")
+
         except Exception as e:
             self.log(f"Failed to load review: {e}")
             import traceback
             self.log(traceback.format_exc())
 
     def _compute_areas_bg(self):
-        """Compute mask area percentages in background thread."""
+        """Compute mask area percentages for the active layer (background thread)."""
+        if self._review_status_mgr is None:
+            return
         for pair in self._review_pairs:
+            mask_path = pair.get("mask_path")
+            if mask_path is None:
+                continue
             ms = self._review_status_mgr.get(pair["stem"])
             if ms.area_percent == 0.0:
-                ms.area_percent = self._compute_mask_area_percent(pair["mask_path"])
+                ms.area_percent = self._compute_mask_area_percent(mask_path)
         self._review_status_mgr.save()
 
     # ── thumbnails ──
 
+    def _compose_layer_thumb(self, pair, size: int = 300):
+        """Composite all visible layers of a pair into a single PIL thumbnail."""
+        try:
+            from review_gui import load_multi_layer_thumbnail
+        except ImportError:
+            return None
+        layer_masks = [
+            (pair["layer_masks"][name], self._layer_colors[name])
+            for name in self._layer_dirs
+            if self._layer_visible.get(name) and self._layer_visible[name].get()
+            and name in pair.get("layer_masks", {})
+        ]
+        if not layer_masks:
+            return None
+        return load_multi_layer_thumbnail(
+            pair["image_path"], layer_masks, size=size, pad_to_square=False)
+
     def _load_thumbnails_bg(self):
-        """Load overlay thumbnails for the first visible batch, then on scroll."""
-        THUMB_SZ = 300
-        # Pre-load first ~40 thumbnails (visible + buffer) to fill screen
+        """Load thumbnails for the first visible batch (layer-composite-aware)."""
         pairs = list(self._filtered_pairs) if self._filtered_pairs else list(self._review_pairs)
-        for i, pair in enumerate(pairs[:40]):
+        for pair in pairs[:40]:
             try:
-                pil = self._load_overlay_thumbnail(
-                    pair["image_path"], pair["mask_path"], size=THUMB_SZ,
-                    pad_to_square=False)
+                pil = self._compose_layer_thumb(pair)
             except Exception:
                 pil = None
             if pil is not None:
-                self._thumb_cache[pair["stem"]] = pil  # PIL.Image
+                self._thumb_cache[pair["stem"]] = pil
         self.after(0, self._rebuild_thumb_list)
 
     def _load_thumb_for_stem(self, stem):
-        """Load a single thumbnail PIL image into cache (background thread)."""
+        """Load a single thumbnail (background thread, layer-composite-aware)."""
         if stem in self._thumb_cache:
             return
         pair = next((p for p in self._review_pairs if p["stem"] == stem), None)
         if not pair:
             return
         try:
-            pil = self._load_overlay_thumbnail(
-                pair["image_path"], pair["mask_path"], size=300,
-                pad_to_square=False)
+            pil = self._compose_layer_thumb(pair)
         except Exception:
             pil = None
         if pil is not None:
-            self._thumb_cache[stem] = pil  # PIL.Image
+            self._thumb_cache[stem] = pil
 
     def _create_thumb_cell(self, stem, grid_col):
         """Create a single thumbnail cell in a 2-column row."""
@@ -3101,12 +3938,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self._current_thumb_row.grid_columnconfigure(1, weight=1)
 
         ms = self._review_status_mgr.get(stem) if self._review_status_mgr else None
-        qc = getattr(self, '_quality_colors', {})
-        sc = getattr(self, '_status_colors', {})
+        rc = getattr(self, '_review_colors', {})
 
         border_color = "#6b7280"
         if ms:
-            border_color = sc.get(ms.status, qc.get(ms.quality, "#6b7280"))
+            border_color = rc.get(ms.status, "#6b7280")
 
         cell = ctk.CTkFrame(self._current_thumb_row, border_width=2,
                             border_color=border_color, corner_radius=2)
@@ -3139,12 +3975,12 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Status line — only show if meaningful data exists
         if ms:
             parts = []
-            if ms.quality and ms.quality != "unknown":
-                parts.append(ms.quality)
+            if ms.status == "reviewed":
+                parts.append("✓")
             if ms.confidence > 0:
                 parts.append(f"{ms.confidence:.0%}")
-            if ms.status and ms.status != "pending":
-                parts.append(ms.status)
+            if ms.last_edit_modified is True:
+                parts.append("edited")
             if parts:
                 ctk.CTkLabel(cell, text="  ".join(parts),
                              font=("Consolas", 8), text_color="#9ca3af",
@@ -3170,11 +4006,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                         w.configure(border_color="#3b82f6")
                     else:
                         ms = self._review_status_mgr.get(s) if self._review_status_mgr else None
-                        qc = getattr(self, '_quality_colors', {})
-                        sc = getattr(self, '_status_colors', {})
+                        rc = getattr(self, '_review_colors', {})
                         bc = "#6b7280"
                         if ms:
-                            bc = sc.get(ms.status, qc.get(ms.quality, "#6b7280"))
+                            bc = rc.get(ms.status, "#6b7280")
                         w.configure(border_color=bc)
                 except Exception:
                     pass
@@ -3302,12 +4137,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         pairs = list(self._review_pairs)
         filt = self.filter_var.get()
-        if filt == "Needs Review":
-            pairs = [p for p in pairs if self._review_status_mgr.get(p["stem"]).quality in ("review", "poor")]
-        elif filt == "Poor":
-            pairs = [p for p in pairs if self._review_status_mgr.get(p["stem"]).quality == "poor"]
-        elif filt == "Unreviewed":
-            pairs = [p for p in pairs if self._review_status_mgr.get(p["stem"]).status == "pending"]
+        if filt == "Unreviewed":
+            pairs = [p for p in pairs if self._review_status_mgr.get(p["stem"]).status == "unreviewed"]
+        elif filt == "Reviewed":
+            pairs = [p for p in pairs if self._review_status_mgr.get(p["stem"]).status == "reviewed"]
 
         sort_key = self.sort_var.get()
         if sort_key == "Confidence":
@@ -3317,12 +4150,48 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             pairs.sort(key=lambda p: order.get(self._review_status_mgr.get(p["stem"]).quality, -1))
         elif sort_key == "Area %":
             pairs.sort(key=lambda p: self._review_status_mgr.get(p["stem"]).area_percent, reverse=True)
+        elif sort_key == "Modified":
+            order = {True: 0, False: 1, None: 2}
+            pairs.sort(key=lambda p: order.get(self._review_status_mgr.get(p["stem"]).last_edit_modified, 2))
         else:
             pairs.sort(key=lambda p: p["stem"])
 
         self._filtered_pairs = pairs
 
     # ── actions ──
+
+    def _build_editor_ipc_line(self, pair) -> str:
+        """Build the pipe-delimited IPC line for the editor subprocess.
+
+        Single mode: ``image|mask|stem``
+        Layered mode: ``image|mask|stem|active_color=B,G,R|bg=path:B,G,R|...``
+
+        The bg path:color separator is the LAST ``:`` to coexist with Windows
+        drive letters in absolute paths.
+        """
+        # Layered IPC format:
+        #   image_path|stem|active_idx=N|layer=name^path^B,G,R|layer=...
+        # ``^`` is the inner separator (illegal in Windows filenames, so it
+        # never collides with paths). Includes ALL layers known for this pair
+        # so the editor can switch between them via number keys.
+        active = self._active_layer_var.get()
+        layer_masks = pair.get("layer_masks", {})
+        # Build ordered list matching self._layer_dirs ordering, including only
+        # layers that have a mask file for this image (others are skipped —
+        # the editor's number-key indices align with this filtered list).
+        layers_for_pair = [(name, layer_masks[name]) for name in self._layer_dirs
+                           if name in layer_masks]
+        active_idx = 0
+        for i, (name, _) in enumerate(layers_for_pair):
+            if name == active:
+                active_idx = i
+                break
+
+        parts = [str(pair['image_path']), pair['stem'], f"active_idx={active_idx}"]
+        for name, layer_path in layers_for_pair:
+            b, g, r = self._layer_colors[name]
+            parts.append(f"layer={name}^{layer_path}^{b},{g},{r}")
+        return "|".join(parts) + "\n"
 
     def _on_edit(self):
         if not self._review_loaded or not self._filtered_pairs:
@@ -3331,13 +4200,16 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         if idx >= len(self._filtered_pairs):
             return
         pair = self._filtered_pairs[idx]
+        if pair.get("mask_path") is None:
+            self.log(f"No mask file for {pair['stem']} in active layer.")
+            return
+
+        ipc_line = self._build_editor_ipc_line(pair)
 
         # If editor subprocess already running, send new image via cmd file
         if self._editor_proc is not None and self._editor_proc.poll() is None:
             try:
-                self._editor_cmd_file.write_text(
-                    f"{pair['image_path']}|{pair['mask_path']}|{pair['stem']}\n",
-                    encoding="utf-8")
+                self._editor_cmd_file.write_text(ipc_line, encoding="utf-8")
             except Exception as e:
                 self.log(f"Editor send failed: {e}")
             return
@@ -3347,7 +4219,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         tmp_dir = Path(tempfile.gettempdir())
         self._editor_cmd_file = tmp_dir / "reconstruction_zone_editor_cmd.txt"
         self._editor_signal_file = tmp_dir / "reconstruction_zone_editor_signal.txt"
-        self._editor_cmd_file.write_text("", encoding="utf-8")
+        # Pre-load the IPC line so the editor sees layered specs on its first poll.
+        # The signal file is cleared.
+        self._editor_cmd_file.write_text(ipc_line, encoding="utf-8")
         self._editor_signal_file.write_text("", encoding="utf-8")
 
         # Find review_masks.py
@@ -3398,6 +4272,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 elif line.startswith("saved_unchanged|"):
                     mask_path = Path(line.split("|", 1)[1])
                     self._on_editor_save(mask_path, modified=False)
+                elif line.startswith("layer_saved|"):
+                    # Auto-save during in-editor layer switch — update status
+                    # for the saved layer but do NOT advance to next image.
+                    mask_path = Path(line.split("|", 1)[1])
+                    self._on_layer_save(mask_path)
                 elif line.startswith("saved|"):
                     # Legacy fallback
                     mask_path = Path(line.split("|", 1)[1])
@@ -3405,17 +4284,48 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         except Exception:
             pass
 
-    def _on_editor_save(self, mask_path, modified=True):
-        """Called on main thread after editor saves a mask. Advances to next image."""
+    def _layer_for_mask_path(self, mask_path: Path) -> Optional[str]:
+        """Return the layer name a mask file belongs to (e.g. 'base', 'shadows')."""
+        for name, layer_dir in self._layer_dirs.items():
+            try:
+                mask_path.relative_to(layer_dir)
+                return name
+            except ValueError:
+                continue
+        return None
+
+    def _on_layer_save(self, mask_path):
+        """Editor auto-saved a layer mid-switch. Update status without advancing."""
         mask_path = Path(mask_path)
-        stem = next((p["stem"] for p in self._review_pairs
-                     if p["mask_path"] == mask_path), None)
-        if stem and self._review_status_mgr:
-            status = "edited" if modified else "accepted"
-            self._review_status_mgr.record_action(stem, status)
+        layer_name = self._layer_for_mask_path(mask_path)
+        if layer_name is None:
+            return
+        stem = mask_path.stem
+        mgr = self._layer_status_mgrs.get(layer_name)
+        if mgr is not None:
+            mgr.record_action(stem, "reviewed", modified=True)
+        # Refresh thumbnail for this stem (pixels on disk changed)
+        self._thumb_cache.pop(stem, None)
+        self._rebuild_thumb_list()
+        # Refresh preview if this is the currently selected pair
+        if stem == self._selected_stem:
+            pair = next((p for p in self._review_pairs if p["stem"] == stem), None)
+            if pair is not None:
+                self._show_review_overlay(pair)
+            self._update_review_info()
+
+    def _on_editor_save(self, mask_path, modified=True):
+        """Editor saved active layer (s key). Advance to next image."""
+        mask_path = Path(mask_path)
+        # Derive layer + stem from the path so we can update the right status manager
+        # even if the editor saved a non-active layer (shouldn't happen for `s`, but safe).
+        layer_name = self._layer_for_mask_path(mask_path)
+        stem = mask_path.stem
+        mgr = self._layer_status_mgrs.get(layer_name) if layer_name else self._review_status_mgr
+        if stem and mgr is not None:
+            mgr.record_action(stem, "reviewed", modified=modified)
         # Invalidate thumb cache so it reloads on next rebuild
-        if stem and stem in self._thumb_cache:
-            del self._thumb_cache[stem]
+        self._thumb_cache.pop(stem, None)
 
         # Advance navigator to next image and push it to the editor
         idx = self._nav_idx.get()
@@ -3424,11 +4334,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self._nav_idx.set(next_idx)
             self._on_nav_change(next_idx)
             next_pair = self._filtered_pairs[next_idx]
-            # Push next image to editor subprocess
-            if self._editor_cmd_file is not None:
+            # Push next image to editor subprocess (with layered specs)
+            if self._editor_cmd_file is not None and next_pair.get("mask_path"):
                 try:
                     self._editor_cmd_file.write_text(
-                        f"{next_pair['image_path']}|{next_pair['mask_path']}|{next_pair['stem']}\n",
+                        self._build_editor_ipc_line(next_pair),
                         encoding="utf-8")
                 except Exception:
                     pass
@@ -3455,59 +4365,23 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             self._load_review_nav_list()
             self._rebuild_thumb_list()
 
-    def _on_accept(self):
-        if self._selected_stem and self._review_status_mgr:
-            self._review_status_mgr.record_action(self._selected_stem, "accepted")
-            self._advance()
-
-    def _on_reject(self):
-        if self._selected_stem and self._review_status_mgr:
-            self._review_status_mgr.record_action(self._selected_stem, "rejected")
-            self._advance()
-
-    def _on_skip(self):
-        if self._selected_stem and self._review_status_mgr:
-            self._review_status_mgr.record_action(self._selected_stem, "skipped")
-            self._advance()
-
-    def _on_hide_done(self):
-        """Filter out accepted and edited masks from the thumbnail grid."""
+    def _on_hide_reviewed(self):
+        """Switch to Unreviewed filter to hide reviewed masks."""
         if not self._review_loaded:
             return
-        self._filtered_pairs = [
-            p for p in self._filtered_pairs
-            if self._review_status_mgr.get(p["stem"]).status not in ("accepted", "edited")
-        ]
-        self._rebuild_thumb_list()
-        if self._filtered_pairs:
-            self._nav_idx.set(0)
-            self._on_nav_change(0)
-        self._update_review_info()
-        done = len(self._review_pairs) - len(self._filtered_pairs)
-        self.log(f"Hidden {done} accepted/edited — {len(self._filtered_pairs)} remaining")
-
-    def _on_accept_all_good(self):
-        if not self._review_loaded:
-            return
-        count = 0
-        for pair in self._review_pairs:
-            ms = self._review_status_mgr.get(pair["stem"])
-            if ms.status == "pending" and ms.quality in ("good", "excellent"):
-                self._review_status_mgr.record_action(pair["stem"], "accepted")
-                count += 1
-        self.log(f"Accepted {count} good/excellent masks")
-        self._refresh_review()
+        self.filter_var.set("Unreviewed")
+        self._on_filter_change()
 
     def _advance(self):
-        """Move navigator to next pending mask."""
+        """Move navigator to next unreviewed mask."""
         idx = self._nav_idx.get()
         for i in range(idx + 1, len(self._filtered_pairs)):
-            if self._review_status_mgr.get(self._filtered_pairs[i]["stem"]).status == "pending":
+            if self._review_status_mgr.get(self._filtered_pairs[i]["stem"]).status == "unreviewed":
                 self._nav_idx.set(i)
                 self._on_nav_change(i)
                 self._update_review_info()
                 return
-        # No more pending — stay on current, just refresh info
+        # No more unreviewed — stay on current, just refresh info
         self._update_review_info()
 
 

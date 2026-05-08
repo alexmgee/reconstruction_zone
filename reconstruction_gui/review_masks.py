@@ -14,6 +14,7 @@ import sys
 import cv2
 import numpy as np
 from pathlib import Path
+from typing import Dict, List, Tuple, Optional
 import argparse
 import logging
 
@@ -55,6 +56,51 @@ class MaskReviewer:
         # Window position persistence (prevents shift on save/next)
         self._last_window_pos = None
         self._custom_controls = None  # Optional override for help overlay controls
+        # Layered review: read-only colored overlays for non-active layers.
+        # Each entry: (mask_internal_array, (b_delta, g_delta, r_delta)).
+        # Internal scale matches self.current_mask (0/1 uint8 at display scale).
+        # Derived from _layer_table on every active-layer switch.
+        self._background_layers: List[Tuple[np.ndarray, Tuple[int, int, int]]] = []
+        # Active mask BGR channel multipliers (0–255) for the overlay tint.
+        # Default red preserves single-mode appearance.
+        self._active_color: Tuple[int, int, int] = (0, 0, 200)
+        # Multi-layer editor state. Each entry is a dict:
+        #   {"name", "path", "color" (BGR delta), "mask" (display-scale uint8 0/1),
+        #    "original", "history", "modified"}
+        # When >0 entries, current_mask/original_mask/history alias the active entry's arrays.
+        self._layer_table: List[Dict] = []
+        self._active_layer_idx: int = 0
+        # Original (pre-scale) image dimensions, captured by _load_image_only.
+        # Used to upscale masks back to source resolution on save.
+        self._orig_dims: Tuple[int, int] = (0, 0)
+
+    def _set_active_color(self, bgr: Tuple[int, int, int]):
+        """Set the BGR multiplier used to render the active (editable) mask overlay."""
+        self._active_color = (max(0, min(255, int(bgr[0]))),
+                              max(0, min(255, int(bgr[1]))),
+                              max(0, min(255, int(bgr[2]))))
+
+    def _load_background_layers(self, specs):
+        """Load read-only background layer masks at the current display scale.
+
+        ``specs`` is a list of ``(path, (b_delta, g_delta, r_delta))`` tuples.
+        Pass an empty list to clear background layers (single-mode usage).
+        """
+        self._background_layers = []
+        if not specs or self.current_image is None:
+            return
+        target_h, target_w = self.current_image.shape[:2]
+        for path, color in specs:
+            try:
+                raw = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            except Exception:
+                continue
+            if raw is None:
+                continue
+            if raw.shape[:2] != (target_h, target_w):
+                raw = cv2.resize(raw, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+            internal = (raw < 128).astype(np.uint8)
+            self._background_layers.append((internal, tuple(color)))
 
     def _display_to_image(self, dx, dy):
         """Convert display coordinates to image coordinates (unclamped).
@@ -389,10 +435,30 @@ class MaskReviewer:
         else:
             # Overlay mode (default)
             display = self.current_image.copy()
+
+            # Background layers (read-only, additive BGR tint) — render before
+            # the active overlay so the active mask sits visually on top.
+            for bg_mask, (bd, gd, rd) in self._background_layers:
+                if bg_mask.shape[:2] != display.shape[:2]:
+                    continue
+                masked = bg_mask > 0
+                display[masked, 0] = np.clip(display[masked, 0].astype(int) + bd, 0, 255).astype(np.uint8)
+                display[masked, 1] = np.clip(display[masked, 1].astype(int) + gd, 0, 255).astype(np.uint8)
+                display[masked, 2] = np.clip(display[masked, 2].astype(int) + rd, 0, 255).astype(np.uint8)
+
             if self.show_mask:
-                mask_overlay = np.zeros_like(display)
-                mask_overlay[:, :, 2] = self.current_mask * 200  # Red channel
-                display = cv2.addWeighted(display, 0.7, mask_overlay, 0.3, 0)
+                # Active layer uses the SAME additive BGR-delta math as the GUI
+                # thumbnails / preview pane — keeps the visual identical between
+                # studio and editor. Contour outlines (below) distinguish active
+                # from background layers.
+                ab, ag, ar = self._active_color
+                masked_active = self.current_mask > 0
+                display[masked_active, 0] = np.clip(
+                    display[masked_active, 0].astype(int) + ab, 0, 255).astype(np.uint8)
+                display[masked_active, 1] = np.clip(
+                    display[masked_active, 1].astype(int) + ag, 0, 255).astype(np.uint8)
+                display[masked_active, 2] = np.clip(
+                    display[masked_active, 2].astype(int) + ar, 0, 255).astype(np.uint8)
 
                 contours, _ = cv2.findContours(self.current_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 cv2.drawContours(display, contours, -1, (128, 255, 128), 1)
@@ -504,6 +570,7 @@ class MaskReviewer:
                 ("Scroll Wheel", "Zoom in/out"),
                 ("", ""),
                 ("s", "Save and go to next"),
+                ("1-9", "Switch active layer (auto-saves)"),
                 ("n", "Skip (don't save)"),
                 ("q", "Quit review"),
                 ("r", "Reset to original"),
@@ -529,11 +596,11 @@ class MaskReviewer:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
             y_offset += 18
     
-    def _load_and_scale(self, image_path, mask_path):
-        """Load image+mask, scale to fit screen, reset editing state.
+    def _load_image_only(self, image_path):
+        """Load image and compute display scale. Returns (orig_h, orig_w) or None.
 
-        Returns (orig_h, orig_w) of the mask for save-time upscaling,
-        or None if loading failed.
+        Splits out the image-only half of _load_and_scale so multi-layer setup
+        can populate masks separately via _apply_layered_ipc.
         """
         self.zoom_level = 1.0
         self.pan_x = 0.0
@@ -546,20 +613,9 @@ class MaskReviewer:
             logger.error(f"Failed to load image: {image_path}")
             return None
 
-        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        if mask is None:
-            logger.error(f"Failed to load mask: {mask_path}")
-            return None
-
-        orig_h, orig_w = mask.shape[:2]
-
-        # Mask convention: black (0) = foreground to remove, white (255) = keep
-        # Internal: 1 = masked/remove, 0 = keep (for red overlay display)
-        self.current_mask = (mask < 128).astype(np.uint8)
-        self.original_mask = self.current_mask.copy()
-        self.history = [self.current_mask.copy()]
-
         h, w = self.current_image.shape[:2]
+        orig_h, orig_w = h, w
+
         try:
             import ctypes
             user32 = ctypes.windll.user32
@@ -574,10 +630,144 @@ class MaskReviewer:
         if self.scale < 1.0:
             new_w, new_h = int(w * self.scale), int(h * self.scale)
             self.current_image = cv2.resize(self.current_image, (new_w, new_h))
-            self.current_mask = cv2.resize(self.current_mask, (new_w, new_h))
-            self.original_mask = cv2.resize(self.original_mask, (new_w, new_h))
 
+        self._orig_dims = (orig_h, orig_w)
         return orig_h, orig_w
+
+    def _apply_layered_ipc(self, specs: List[Tuple[str, Path, Tuple[int, int, int]]],
+                           active_idx: int = 0):
+        """Populate the layer table from a list of (name, path, (b,g,r)) specs.
+
+        Loads each layer's mask file at display scale. Layers with missing
+        files get a zeroed mask. The active layer's mask becomes the editable
+        buffer (self.current_mask).
+        """
+        if self.current_image is None:
+            return
+        target_h, target_w = self.current_image.shape[:2]
+
+        self._layer_table = []
+        for name, path, color in specs:
+            raw = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) if path.exists() else None
+            if raw is not None:
+                if raw.shape[:2] != (target_h, target_w):
+                    raw = cv2.resize(raw, (target_w, target_h),
+                                     interpolation=cv2.INTER_NEAREST)
+                mask = (raw < 128).astype(np.uint8)
+            else:
+                mask = np.zeros((target_h, target_w), dtype=np.uint8)
+            self._layer_table.append({
+                "name": name,
+                "path": Path(path),
+                "color": tuple(color),
+                "mask": mask.copy(),
+                "original": mask.copy(),
+                "history": [mask.copy()],
+                "modified": False,
+            })
+
+        if self._layer_table:
+            self._active_layer_idx = max(0, min(active_idx, len(self._layer_table) - 1))
+        else:
+            self._active_layer_idx = 0
+        self._sync_active_to_buffers()
+
+    def _sync_active_to_buffers(self):
+        """Make self.current_mask/etc. point at the active layer's arrays."""
+        if not self._layer_table:
+            return
+        active = self._layer_table[self._active_layer_idx]
+        self.current_mask = active["mask"]
+        self.original_mask = active["original"]
+        self.history = active["history"]
+        self._current_mask_path = active["path"]
+        # Active color uses the same BGR delta as background layers — matches the
+        # GUI thumbnail/preview rendering exactly. The active layer is distinguished
+        # visually by its contour outline (drawn separately in _create_display).
+        self._set_active_color(active["color"])
+        # Background = all OTHER layers (read-only colored tints)
+        self._background_layers = [
+            (entry["mask"], entry["color"])
+            for i, entry in enumerate(self._layer_table)
+            if i != self._active_layer_idx
+        ]
+
+    def _save_active_to_table(self):
+        """Snapshot self.current_mask back into the active layer's table entry.
+
+        Idempotent. Called before any layer switch / save so the table
+        reflects the latest in-memory edits even after `r` (reset) or `u`
+        (undo) reassigned self.current_mask to a new array.
+        """
+        if not self._layer_table:
+            return
+        active = self._layer_table[self._active_layer_idx]
+        active["mask"] = self.current_mask
+        active["original"] = self.original_mask
+        active["history"] = self.history
+        if not np.array_equal(active["mask"], active["original"]):
+            active["modified"] = True
+
+    def _write_layer_to_disk(self, layer_entry) -> bool:
+        """Write a layer's mask to its path, upscaled to original dimensions.
+
+        Returns True if write succeeded, False otherwise. Updates the entry's
+        ``original`` to match what was just saved so subsequent edits compare
+        against the saved state.
+        """
+        final_mask = layer_entry["mask"]
+        orig_h, orig_w = self._orig_dims
+        if final_mask.shape != (orig_h, orig_w):
+            final_mask = cv2.resize(final_mask, (orig_w, orig_h),
+                                    interpolation=cv2.INTER_NEAREST)
+        try:
+            cv2.imwrite(str(layer_entry["path"]), (1 - final_mask) * 255)
+            layer_entry["original"] = layer_entry["mask"].copy()
+            layer_entry["modified"] = False
+            return True
+        except Exception as e:
+            logger.error(f"Save failed for layer '{layer_entry['name']}': {e}")
+            return False
+
+    def _switch_active_layer(self, new_idx: int):
+        """Switch which layer is being edited. Auto-saves the previous if modified.
+
+        Returns the previously-active layer entry if it was just saved to
+        disk (so the caller can emit an IPC signal), else None.
+        """
+        if not self._layer_table or new_idx == self._active_layer_idx:
+            return None
+        if new_idx < 0 or new_idx >= len(self._layer_table):
+            return None
+
+        # Snapshot pending edits
+        self._save_active_to_table()
+
+        prev = self._layer_table[self._active_layer_idx]
+        saved_entry = None
+        if prev["modified"]:
+            if self._write_layer_to_disk(prev):
+                saved_entry = prev
+                logger.info(f"Auto-saved layer '{prev['name']}' on switch")
+
+        self._active_layer_idx = new_idx
+        self._sync_active_to_buffers()
+        return saved_entry
+
+    def _load_and_scale(self, image_path, mask_path):
+        """Backward-compat single-layer loader (used by standalone CLI mode).
+
+        Builds a one-entry layer table internally so the rest of the editor
+        always works against the same data structure.
+        """
+        dims = self._load_image_only(image_path)
+        if dims is None:
+            return None
+        self._apply_layered_ipc(
+            [("base", Path(mask_path), (0, 0, 100))],
+            active_idx=0,
+        )
+        return dims
 
     def _save_window_pos(self, window_name):
         """Save window position before destroying it."""
@@ -1124,34 +1314,58 @@ def edit_session_subprocess():
         cv2.moveWindow(window_name, *reviewer._last_window_pos)
     cv2.setMouseCallback(window_name, reviewer._mouse_callback)
 
-    # Clear cmd file so we only read fresh commands
-    args.cmd_file.write_text("", encoding="utf-8")
+    # NOTE: Do NOT clear cmd_file here. The studio writes a layered-IPC line
+    # to cmd_file *before* launching this subprocess so the very first poll
+    # iteration can pick up active_color and background layer specs without
+    # racing with an erase. The poll loop clears after a successful read.
 
     logger.info(f"Edit session started: {args.image_path.name}")
 
     while True:
-        # Poll cmd file for new image commands from studio
+        # Poll cmd file for new image commands from studio.
+        # Layered IPC format:
+        #   image_path|stem|active_idx=N|layer=name^path^B,G,R|layer=...
+        # Layer specs use ``^`` as the inner separator since Windows paths
+        # legitimately contain ``:`` (drive letters).
         try:
             content = args.cmd_file.read_text(encoding="utf-8").strip()
             if content:
                 args.cmd_file.write_text("", encoding="utf-8")
-                # Take the last command if multiple were written
                 line = content.strip().splitlines()[-1]
                 parts = line.split("|")
                 if len(parts) >= 3:
-                    new_img, new_mask, new_stem = Path(parts[0]), Path(parts[1]), parts[2]
-                    d = reviewer._load_and_scale(new_img, new_mask)
-                    if d is not None:
-                        orig_h, orig_w = d
-                        reviewer._current_mask_path = new_mask
-                        reviewer._save_flash = 0
-                        try:
-                            cv2.setWindowTitle(window_name, f"Edit: {new_stem}")
-                        except Exception:
-                            pass
-                        cv2.resizeWindow(window_name, reviewer.current_image.shape[1],
-                                         reviewer.current_image.shape[0] + 30)
-                        logger.info(f"Loaded: {new_stem}")
+                    new_img = Path(parts[0])
+                    new_stem = parts[1]
+                    active_idx = 0
+                    layer_specs = []
+                    for extra in parts[2:]:
+                        if extra.startswith("active_idx="):
+                            try:
+                                active_idx = int(extra[len("active_idx="):])
+                            except (ValueError, TypeError):
+                                pass
+                        elif extra.startswith("layer="):
+                            spec = extra[len("layer="):]
+                            try:
+                                name, path_str, color_str = spec.split("^", 2)
+                                b, g, r = (int(x) for x in color_str.split(","))
+                                layer_specs.append((name, Path(path_str), (b, g, r)))
+                            except (ValueError, TypeError):
+                                pass
+                    if layer_specs:
+                        d = reviewer._load_image_only(new_img)
+                        if d is not None:
+                            orig_h, orig_w = d
+                            reviewer._apply_layered_ipc(layer_specs, active_idx)
+                            reviewer._save_flash = 0
+                            try:
+                                cv2.setWindowTitle(window_name, f"Edit: {new_stem}")
+                            except Exception:
+                                pass
+                            cv2.resizeWindow(window_name, reviewer.current_image.shape[1],
+                                             reviewer.current_image.shape[0] + 30)
+                            logger.info(f"Loaded: {new_stem} ({len(layer_specs)} layers, "
+                                        f"active={layer_specs[active_idx][0] if active_idx < len(layer_specs) else '?'})")
         except Exception:
             pass
 
@@ -1170,21 +1384,45 @@ def edit_session_subprocess():
             key += 32
 
         if key == ord('s'):
-            if reviewer.scale < 1.0:
-                final_mask = cv2.resize(reviewer.current_mask, (orig_w, orig_h))
+            # Save the active layer to disk and signal "go to next image"
+            reviewer._save_active_to_table()
+            changed = False
+            if reviewer._layer_table:
+                active_entry = reviewer._layer_table[reviewer._active_layer_idx]
+                changed = not np.array_equal(active_entry["mask"], active_entry["original"])
+                reviewer._write_layer_to_disk(active_entry)
+                # Re-sync (original_mask is now updated to match the saved state)
+                reviewer._sync_active_to_buffers()
+                save_path = active_entry["path"]
             else:
-                final_mask = reviewer.current_mask
-            cv2.imwrite(str(reviewer._current_mask_path), (1 - final_mask) * 255)
-            logger.info(f"Saved: {Path(reviewer._current_mask_path).name}")
+                # Defensive fallback — shouldn't hit in practice
+                if reviewer.scale < 1.0:
+                    final_mask = cv2.resize(reviewer.current_mask, (orig_w, orig_h))
+                else:
+                    final_mask = reviewer.current_mask
+                cv2.imwrite(str(reviewer._current_mask_path), (1 - final_mask) * 255)
+                save_path = reviewer._current_mask_path
+            logger.info(f"Saved: {Path(save_path).name}")
             reviewer._save_flash = 45
-            # Signal save to studio — distinguish modified vs unchanged
-            changed = not np.array_equal(reviewer.current_mask, reviewer.original_mask)
             tag = "saved_modified" if changed else "saved_unchanged"
             try:
                 with open(args.signal_file, "a", encoding="utf-8") as f:
-                    f.write(f"{tag}|{reviewer._current_mask_path}\n")
+                    f.write(f"{tag}|{save_path}\n")
             except Exception:
                 pass
+        elif ord('1') <= key <= ord('9'):
+            # Number key → switch active layer (1=first, 2=second, …, 9=ninth)
+            target_idx = key - ord('1')
+            if reviewer._layer_table and target_idx < len(reviewer._layer_table):
+                saved_entry = reviewer._switch_active_layer(target_idx)
+                # If auto-save fired, signal the studio so review_status.json updates
+                # *without* advancing to the next image.
+                if saved_entry is not None:
+                    try:
+                        with open(args.signal_file, "a", encoding="utf-8") as f:
+                            f.write(f"layer_saved|{saved_entry['path']}\n")
+                    except Exception:
+                        pass
         elif key == ord('q'):
             break
         elif key == ord('r'):

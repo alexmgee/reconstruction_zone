@@ -1,6 +1,6 @@
 """Shared fixtures for Reconstruction Zone tests."""
 
-import tempfile
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -8,9 +8,11 @@ import pytest
 
 
 @pytest.fixture
-def tmp_dir(tmp_path):
-    """Provide a temporary directory that auto-cleans."""
-    return tmp_path
+def tmp_dir(request):
+    """Provide a writable temporary directory for sandboxed Windows test runs."""
+    path = Path("test_tmp") / "pytest_tmp_dir" / f"{request.node.name}_{uuid.uuid4().hex}"
+    path.mkdir(parents=True, exist_ok=False)
+    return path
 
 
 @pytest.fixture

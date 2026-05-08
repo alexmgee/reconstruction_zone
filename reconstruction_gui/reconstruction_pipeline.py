@@ -203,54 +203,19 @@ class MaskConfig:
     fisheye_circle_mask: bool = True   # Auto-mask corners + periphery of fisheye images
     fisheye_margin_percent: float = 0.0  # % of circle radius to trim inward (0=corners only)
     
-    # Shadow detection
-    detect_shadows: bool = False  # Run shadow detection after person masking
-    shadow_config: Optional[Dict] = None  # Serialized ShadowConfig dict for advanced detection
-    # When detect_shadows=True and shadow_config is None: use brightness heuristic (backward compat)
-    # When detect_shadows=True and shadow_config is set: use full shadow pipeline
-
-    # SAM mask refinement
-    sam_refine: bool = False  # Refine coarse masks with SAM predictor (SAMRefiner-inspired)
-    sam_refine_config: Optional[Dict] = None  # Serialized SAMRefinementConfig dict
-
-    # Alpha matting (converts binary masks to soft alpha mattes)
-    matting: bool = False  # Run ViTMatte alpha matting as final step
-    matting_config: Optional[Dict] = None  # Serialized MattingConfig dict
-
     # Cubemap seam fix
     cubemap_overlap: float = 0.0  # Overlap degrees for cubemap faces (0=off, 10=recommended)
 
     # Static mask overlays (user-authored persistent masks applied to every frame)
     static_mask_paths: List[str] = field(default_factory=list)
 
-    # VOS temporal propagation (replaces sliding-window averaging)
-    vos_propagation: bool = False  # Use VOS for temporal consistency instead of averaging
-    vos_config: Optional[Dict] = None  # Serialized VOSConfig dict
-    vos_keyframe_interval: int = 5  # Detect every N frames, propagate between
-
-    # Ensemble detection (multiple models fused with Weighted Masks Fusion)
-    ensemble: bool = False  # Run multiple models and fuse results
-    ensemble_models: List[str] = field(default_factory=lambda: ["yolo26", "rfdetr"])
-    ensemble_weights: Optional[List[float]] = None  # Per-model weights (None = equal)
-    ensemble_iou_threshold: float = 0.5  # IoU for mask matching during fusion
-
     # RF-DETR-Seg settings
     rfdetr_model_size: str = "small"  # nano/small/medium/large
 
-    # SAM 3 unified video pipeline (replaces YOLO+SAM2+tracker chain)
-    sam3_unified: bool = False  # Use SAM 3.1 video predictor for video sequences
-    sam3_video_config: Optional[Dict] = None  # Serialized SAM3VideoConfig dict
 
-    # COLMAP geometric validation (post-mask consistency check)
-    colmap_validate: bool = False  # Validate masks against COLMAP sparse reconstruction
-    colmap_dir: str = ""  # Path to COLMAP sparse reconstruction dir
-    colmap_config: Optional[Dict] = None  # Serialized ValidationConfig dict
-
-    # Advanced workflows
-    edge_injection: bool = False  # Inject high-freq edges for thin structures (wires, antennas)
-    edge_canny_low: int = 50     # Canny lower threshold
-    edge_canny_high: int = 150   # Canny upper threshold
-    edge_dilate_px: int = 2      # Dilate injected edges by N pixels
+    # SAM3 temporal tracking (new integrated mode — tracking + full post-processing)
+    temporal_tracking: bool = False  # Use SAM3 video predictor for detection, then run full pipeline
+    temporal_prompt_frame: int = 0   # Frame index on which to apply text prompts
 
     multi_label: bool = False    # Export per-class segmentation maps (class IDs as pixel values)
 
@@ -295,31 +260,9 @@ class MaskConfig:
             'nadir_mask_percent': self.nadir_mask_percent,
             'fisheye_circle_mask': self.fisheye_circle_mask,
             'fisheye_margin_percent': self.fisheye_margin_percent,
-            'detect_shadows': self.detect_shadows,
-            'shadow_config': self.shadow_config,
-            'sam_refine': self.sam_refine,
-            'sam_refine_config': self.sam_refine_config,
-            'matting': self.matting,
-            'matting_config': self.matting_config,
             'cubemap_overlap': self.cubemap_overlap,
             'static_mask_paths': self.static_mask_paths,
-            'vos_propagation': self.vos_propagation,
-            'vos_config': self.vos_config,
-            'vos_keyframe_interval': self.vos_keyframe_interval,
-            'ensemble': self.ensemble,
-            'ensemble_models': self.ensemble_models,
-            'ensemble_weights': self.ensemble_weights,
-            'ensemble_iou_threshold': self.ensemble_iou_threshold,
             'rfdetr_model_size': self.rfdetr_model_size,
-            'sam3_unified': self.sam3_unified,
-            'sam3_video_config': self.sam3_video_config,
-            'colmap_validate': self.colmap_validate,
-            'colmap_dir': self.colmap_dir,
-            'colmap_config': self.colmap_config,
-            'edge_injection': self.edge_injection,
-            'edge_canny_low': self.edge_canny_low,
-            'edge_canny_high': self.edge_canny_high,
-            'edge_dilate_px': self.edge_dilate_px,
             'multi_label': self.multi_label,
             'inpaint_masked': self.inpaint_masked,
             'inpaint_method': self.inpaint_method,
@@ -750,7 +693,7 @@ class SAM3Segmenter(BaseSegmenter):
             )
 
         logger.info("Loading SAM3 image model (848M params)")
-        self.model = build_sam3_image_model()
+        self.model = build_sam3_image_model(enable_inst_interactivity=True)
 
         if self.device == 'cuda' and torch.cuda.is_available():
             self.model = self.model.cuda()
@@ -1499,6 +1442,29 @@ class CubemapProjection:
             return (y < 0) & (ay >= ax) & (ay >= az)
 
 
+def resolve_segmentation_model() -> SegmentationModel:
+    """Pick the best available segmentation model from module-level HAS_* flags.
+
+    Pure (no instance state). Used by the GUI cache to normalize an
+    ``auto_select_model=True`` request into a concrete enum *before* keying
+    the cache, so ``("auto", True)`` and ``("SAM3", False)`` resolve to the
+    same cached pipeline when SAM3 is auto-resolvable.
+    """
+    if HAS_SAM3:
+        return SegmentationModel.SAM3
+    elif HAS_RFDETR:
+        logger.info("SAM3 not available, using RF-DETR-Seg")
+        return SegmentationModel.RFDETR
+    elif HAS_YOLO:
+        logger.info("SAM3/RF-DETR not available, using YOLO26")
+        return SegmentationModel.YOLO26
+    elif HAS_FASTSAM:
+        logger.warning("SAM3/RF-DETR/YOLO26 not available, using FastSAM")
+        return SegmentationModel.FASTSAM
+    else:
+        raise RuntimeError("No segmentation models available")
+
+
 class MaskingPipeline:
     """Main masking pipeline orchestrator."""
     
@@ -1523,163 +1489,34 @@ class MaskingPipeline:
         self.segmenter.initialize()
         
         self.temporal_consistency = None
-        if self.config.use_temporal_consistency and not self.config.vos_propagation:
+        if self.config.use_temporal_consistency:
             self.temporal_consistency = TemporalConsistency(
                 self.config.temporal_window
             )
-
-        # VOS temporal propagation (optional, replaces sliding-window averaging)
-        self.vos_propagator = None
         self._frame_counter = 0
-        if self.config.vos_propagation:
-            try:
-                from vos_propagation import VOSPropagator, VOSConfig
-                if self.config.vos_config:
-                    vos_cfg = VOSConfig.from_dict(self.config.vos_config)
-                else:
-                    vos_cfg = VOSConfig()
-                vos_cfg.device = self.config.device
-                vos_cfg.keyframe_interval = self.config.vos_keyframe_interval
-                self.vos_propagator = VOSPropagator(vos_cfg)
-                self.vos_propagator.initialize()
-                logger.info(f"VOS propagation: keyframe every {vos_cfg.keyframe_interval} frames")
-            except ImportError as e:
-                logger.warning(f"VOS propagation unavailable ({e}), using temporal averaging")
-                self.vos_propagator = None
-                # Fall back to temporal consistency
-                if self.config.use_temporal_consistency:
-                    self.temporal_consistency = TemporalConsistency(
-                        self.config.temporal_window
-                    )
-            except Exception as e:
-                logger.error(f"VOS propagation init failed: {e}")
-                self.vos_propagator = None
-
-        # Shadow detection pipeline (optional, extends the brightness heuristic)
-        self.shadow_pipeline = None
-        if self.config.detect_shadows and self.config.shadow_config:
-            try:
-                from shadow_detection import ShadowPipeline, ShadowConfig
-                shadow_cfg = ShadowConfig.from_dict(self.config.shadow_config)
-                shadow_cfg.device = self.config.device
-                self.shadow_pipeline = ShadowPipeline(shadow_cfg)
-                self.shadow_pipeline.initialize()
-                logger.info(f"Shadow pipeline: {shadow_cfg.primary_detector.value}")
-            except ImportError as e:
-                logger.warning(f"Shadow pipeline unavailable ({e}), using heuristic")
-                self.shadow_pipeline = None
-            except FileNotFoundError as e:
-                logger.warning(f"Shadow weights not found ({e}), using heuristic")
-                self.shadow_pipeline = None
-            except Exception as e:
-                logger.error(f"Shadow pipeline init failed: {e}")
-                self.shadow_pipeline = None
-
-        # SAM mask refinement (optional, refines coarse masks before temporal consistency)
-        self.sam_refiner = None
-        if self.config.sam_refine:
-            try:
-                from sam_refinement import SAMMaskRefiner, SAMRefinementConfig
-                if self.config.sam_refine_config:
-                    sam_cfg = SAMRefinementConfig.from_dict(self.config.sam_refine_config)
-                else:
-                    sam_cfg = SAMRefinementConfig()
-                sam_cfg.device = self.config.device
-                self.sam_refiner = SAMMaskRefiner(sam_cfg)
-                self.sam_refiner.initialize()
-                logger.info(f"SAM refinement: {sam_cfg.sam_model_type}")
-            except ImportError as e:
-                logger.warning(f"SAM refinement unavailable ({e})")
-                self.sam_refiner = None
-            except FileNotFoundError as e:
-                logger.warning(f"SAM weights not found ({e})")
-                self.sam_refiner = None
-            except Exception as e:
-                logger.error(f"SAM refinement init failed: {e}")
-                self.sam_refiner = None
-
-        # Alpha matting (optional, converts binary masks to soft alpha mattes)
-        self.matting_refiner = None
-        if self.config.matting:
-            try:
-                from matting import MattingRefiner, MattingConfig
-                if self.config.matting_config:
-                    mat_cfg = MattingConfig.from_dict(self.config.matting_config)
-                else:
-                    mat_cfg = MattingConfig()
-                mat_cfg.device = self.config.device
-                self.matting_refiner = MattingRefiner(mat_cfg)
-                self.matting_refiner.initialize()
-                logger.info(f"Alpha matting: {mat_cfg.get_model_name()}")
-            except ImportError as e:
-                logger.warning(f"Alpha matting unavailable ({e})")
-                self.matting_refiner = None
-            except Exception as e:
-                logger.error(f"Alpha matting init failed: {e}")
-                self.matting_refiner = None
-
-        # Ensemble detection (optional, runs multiple models and fuses with WMF)
-        self.ensemble_segmenters = []
-        if self.config.ensemble:
-            self._init_ensemble()
-
-        # SAM 3.1 unified video pipeline (optional, replaces full detection chain)
-        self.sam3_video_pipeline = None
-        if self.config.sam3_unified:
-            try:
-                from sam3_pipeline import SAM3VideoPipeline, SAM3VideoConfig
-                if self.config.sam3_video_config:
-                    s3v_cfg = SAM3VideoConfig.from_dict(self.config.sam3_video_config)
-                else:
-                    s3v_cfg = SAM3VideoConfig()
-                s3v_cfg.device = self.config.device
-                # Merge remove_prompts into SAM3 video prompts
-                if self.config.remove_prompts:
-                    s3v_cfg.prompts = self.config.remove_prompts
-                self.sam3_video_pipeline = SAM3VideoPipeline(s3v_cfg)
-                self.sam3_video_pipeline.initialize()
-                logger.info("SAM 3.1 unified video pipeline loaded")
-            except ImportError as e:
-                logger.warning(f"SAM 3.1 video pipeline unavailable ({e})")
-                self.sam3_video_pipeline = None
-            except Exception as e:
-                logger.error(f"SAM 3.1 video pipeline init failed: {e}")
-                self.sam3_video_pipeline = None
-
-        # COLMAP geometric validation (optional, post-mask consistency check)
-        self.geometric_validator = None
-        if self.config.colmap_validate and self.config.colmap_dir:
-            try:
-                from colmap_validation import GeometricValidator, ValidationConfig
-                if self.config.colmap_config:
-                    val_cfg = ValidationConfig.from_dict(self.config.colmap_config)
-                else:
-                    val_cfg = ValidationConfig()
-                val_cfg.colmap_dir = self.config.colmap_dir
-                self.geometric_validator = GeometricValidator(val_cfg)
-                self.geometric_validator.load_reconstruction()
-                logger.info(f"COLMAP validation loaded from {self.config.colmap_dir}")
-            except ImportError as e:
-                logger.warning(f"COLMAP validation unavailable ({e})")
-                self.geometric_validator = None
-            except FileNotFoundError as e:
-                logger.warning(f"COLMAP reconstruction not found ({e})")
-                self.geometric_validator = None
-            except Exception as e:
-                logger.error(f"COLMAP validation init failed: {e}")
-                self.geometric_validator = None
 
         # torch.compile acceleration (optional, ~20-50% faster GPU inference)
         if self.config.torch_compile:
             self._apply_torch_compile()
 
-        ensemble_str = f", ensemble={len(self.ensemble_segmenters)} models" if self.ensemble_segmenters else ""
-        logger.info(f"Initialized masking pipeline with {self.config.model.value}{ensemble_str}")
+        logger.info(f"Initialized masking pipeline with {self.config.model.value}")
+
+    def get_sam3_click_handles(self):
+        """Return (model, processor) for click-PVS sessions.
+
+        Raises RuntimeError if the active segmenter is not SAM3.
+        """
+        seg = self.segmenter
+        if not isinstance(seg, SAM3Segmenter):
+            raise RuntimeError(
+                f"Click-PVS requires SAM3 segmenter, got {type(seg).__name__}"
+            )
+        return seg.model, seg.processor
 
     def _apply_torch_compile(self):
         """Apply torch.compile() to all loaded models for faster GPU inference.
 
-        Compiles segmenter, SAM refiner, and matting model encoders/models.
+        Compiles segmenter model encoder.
         Requires PyTorch 2.0+ and CUDA. Skips gracefully if unavailable.
         First inference after compilation is slow (warmup); subsequent calls
         are 20-50% faster.
@@ -1713,45 +1550,13 @@ class MaskingPipeline:
             except Exception as e:
                 logger.warning(f"torch.compile failed for segmenter: {e}")
 
-        # Compile SAM refiner encoder
-        if self.sam_refiner is not None:
-            try:
-                predictor = getattr(self.sam_refiner, 'predictor', None)
-                if predictor and hasattr(predictor, 'model'):
-                    predictor.model.image_encoder = torch.compile(
-                        predictor.model.image_encoder, **compile_kwargs
-                    )
-                    logger.info("torch.compile applied to SAM refiner")
-            except Exception as e:
-                logger.warning(f"torch.compile failed for SAM refiner: {e}")
-
-        # Compile matting model
-        if self.matting_refiner is not None:
-            try:
-                mat_model = getattr(self.matting_refiner, 'model', None)
-                if mat_model is not None:
-                    self.matting_refiner.model = torch.compile(
-                        mat_model, **compile_kwargs
-                    )
-                    logger.info("torch.compile applied to matting model")
-            except Exception as e:
-                logger.warning(f"torch.compile failed for matting model: {e}")
-
     def _auto_select_model(self) -> SegmentationModel:
-        """Automatically select best available model."""
-        if HAS_SAM3:
-            return SegmentationModel.SAM3
-        elif HAS_RFDETR:
-            logger.info("SAM3 not available, using RF-DETR-Seg")
-            return SegmentationModel.RFDETR
-        elif HAS_YOLO:
-            logger.info("SAM3/RF-DETR not available, using YOLO26")
-            return SegmentationModel.YOLO26
-        elif HAS_FASTSAM:
-            logger.warning("SAM3/RF-DETR/YOLO26 not available, using FastSAM")
-            return SegmentationModel.FASTSAM
-        else:
-            raise RuntimeError("No segmentation models available")
+        """Automatically select best available model.
+
+        Delegates to module-level ``resolve_segmentation_model()`` so the GUI
+        cache can call the same logic without needing an instance.
+        """
+        return resolve_segmentation_model()
 
     def _create_segmenter(self) -> BaseSegmenter:
         """Create appropriate segmenter based on config."""
@@ -1766,220 +1571,259 @@ class MaskingPipeline:
         else:
             raise NotImplementedError(f"Model {self.config.model} not implemented")
 
-    def _create_segmenter_by_name(self, name: str) -> Optional[BaseSegmenter]:
-        """Create a segmenter by string name. Returns None if unavailable."""
-        segmenter_map = {
-            'yolo26': (HAS_YOLO, YOLO26Segmenter),
-            'rfdetr': (HAS_RFDETR, RFDETRSegmenter),
-            'fastsam': (HAS_FASTSAM, FastSAMSegmenter),
-            'sam3': (HAS_SAM3, SAM3Segmenter),
-        }
-        entry = segmenter_map.get(name)
-        if entry is None:
-            logger.warning(f"Unknown ensemble model: {name}")
-            return None
-        available, cls = entry
-        if not available:
-            logger.warning(f"Ensemble model {name} not installed, skipping")
-            return None
-        try:
-            seg = cls(self.config)
-            seg.initialize()
-            return seg
-        except Exception as e:
-            logger.warning(f"Ensemble model {name} init failed: {e}")
-            return None
-
-    def _init_ensemble(self):
-        """Initialize ensemble segmenters from config."""
-        self.ensemble_segmenters = []
-        for name in self.config.ensemble_models:
-            seg = self._create_segmenter_by_name(name)
-            if seg is not None:
-                self.ensemble_segmenters.append(seg)
-                logger.info(f"Ensemble member loaded: {name}")
-        if len(self.ensemble_segmenters) < 2:
-            logger.warning(
-                f"Ensemble needs ≥2 models, got {len(self.ensemble_segmenters)}. "
-                f"Falling back to single-model mode."
-            )
-            self.ensemble_segmenters = []
-
     def _segment(
         self,
         image: np.ndarray,
         prompts: Optional[Dict[str, Any]],
         geometry: ImageGeometry
     ) -> List[MaskResult]:
-        """Segment image using single model or ensemble."""
+        """Segment image using the configured model."""
         if self.config.multi_pass_prompts and isinstance(self.segmenter, SAM3Segmenter):
             return self.segmenter._run_multi_pass(
                 image, self.config.multi_pass_prompts, geometry
             )
-        if self.ensemble_segmenters:
-            return self._ensemble_segment(image, prompts, geometry)
         return self.segmenter.segment_image(image, prompts, geometry)
 
-    def _ensemble_segment(
+    # ── SAM3 temporal tracking ────────────────────────────────────────
+
+    def _start_tracking_session(
         self,
-        image: np.ndarray,
-        prompts: Optional[Dict[str, Any]],
-        geometry: ImageGeometry
-    ) -> List[MaskResult]:
-        """Run multiple segmenters and fuse with Weighted Masks Fusion."""
-        all_tagged = []  # (model_index, MaskResult) pairs
+        frame_paths: List[Path],
+    ) -> Optional[Dict[int, np.ndarray]]:
+        """Run SAM3 video predictor over frames and return per-frame masks.
 
-        for idx, segmenter in enumerate(self.ensemble_segmenters):
-            try:
-                results = segmenter.segment_image(image, prompts, geometry)
-                for r in results:
-                    r.metadata['ensemble_model_idx'] = idx
-                all_tagged.extend((idx, r) for r in results)
-            except Exception as e:
-                logger.warning(f"Ensemble model {idx} failed: {e}")
+        Loads all frames, starts a SAM 3.1 multiplex video session, applies
+        text prompts on the configured keyframe, propagates forward (and
+        backward if keyframe > 0), and returns a dict mapping frame index
+        to a combined binary mask (0/1 uint8, H x W).
 
-        if not all_tagged:
-            return []
-
-        return self._fuse_mask_results(all_tagged)
-
-    def _fuse_mask_results(
-        self, tagged_results: List[Tuple[int, MaskResult]]
-    ) -> List[MaskResult]:
-        """Fuse mask results from multiple models using Weighted Masks Fusion.
-
-        Groups overlapping detections by mask IoU, then creates
-        weighted-average masks for each group. Model weights scale each
-        model's contribution. Unmatched detections are kept as-is.
+        Returns None if SAM3 video predictor is unavailable or the session
+        fails. Callers should fall back to per-frame detection.
         """
-        weights = self.config.ensemble_weights
-        if weights is None:
-            weights = [1.0] * len(self.ensemble_segmenters)
-        iou_thr = self.config.ensemble_iou_threshold
+        try:
+            from sam3.model_builder import build_sam3_multiplex_video_predictor
+        except ImportError:
+            logger.warning("SAM3 video predictor not available — temporal tracking disabled")
+            return None
 
-        results = [r for _, r in tagged_results]
-        model_indices = [idx for idx, _ in tagged_results]
+        from PIL import Image as PILImage
 
-        n = len(results)
-        if n == 0:
-            return []
+        n_frames = len(frame_paths)
+        if n_frames == 0:
+            return {}
 
-        # Cluster detections by mask IoU
-        used = [False] * n
-        clusters = []
-        for i in range(n):
-            if used[i]:
+        logger.info(f"Temporal tracking: loading {n_frames} frames for SAM3 video session")
+
+        # ── Flash Attention 3 detection + MATH fallback ──
+        fa3_available = False
+        try:
+            from flash_attn_interface import flash_attn_func  # noqa: F401
+            fa3_available = True
+        except ImportError:
+            pass
+
+        if not fa3_available:
+            try:
+                from sam3.model import decoder as _dec
+                from torch.nn.attention import sdpa_kernel, SDPBackend
+                _orig_sdpa_kernel = sdpa_kernel
+                _dec.sdpa_kernel = lambda *a, **kw: _orig_sdpa_kernel(
+                    [SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.FLASH_ATTENTION]
+                )
+                logger.info("Patched SAM 3.1 decoder for MATH attention fallback")
+            except Exception as e:
+                logger.warning(f"Could not patch decoder attention: {e}")
+
+        # ── Build predictor ──
+        try:
+            predictor = build_sam3_multiplex_video_predictor(use_fa3=fa3_available)
+        except Exception as e:
+            logger.error(f"SAM3 video predictor build failed: {e}")
+            return None
+
+        # ── Load frames as PIL ──
+        pil_images = []
+        for f in frame_paths:
+            pil_images.append(PILImage.open(f).convert("RGB"))
+
+        img_w, img_h = pil_images[0].size
+
+        # ── Start session ──
+        try:
+            response = predictor.handle_request({
+                "type": "start_session",
+                "resource_path": pil_images,
+                "offload_video_to_cpu": True,
+            })
+            session_id = response["session_id"]
+        except Exception as e:
+            logger.error(f"SAM3 video session start failed: {e}")
+            del pil_images, predictor
+            return None
+
+        # ── Add text prompts ──
+        prompt_idx = min(self.config.temporal_prompt_frame, n_frames - 1)
+        prompts = self.config.remove_prompts or ["person"]
+        combined_prompt = " . ".join(prompts)
+        try:
+            predictor.handle_request({
+                "type": "add_prompt",
+                "session_id": session_id,
+                "frame_index": prompt_idx,
+                "text": combined_prompt,
+            })
+            logger.info(f"Temporal tracking: prompt '{combined_prompt}' on frame {prompt_idx}")
+        except Exception as e:
+            logger.warning(f"Temporal tracking: prompt failed: {e}")
+
+        # ── Propagate forward ──
+        outputs_per_frame: Dict[int, Any] = {}
+        try:
+            for resp in predictor.handle_stream_request({
+                "type": "propagate_in_video",
+                "session_id": session_id,
+                "propagation_direction": "forward",
+            }):
+                outputs_per_frame[resp["frame_index"]] = resp["outputs"]
+        except Exception as e:
+            logger.error(f"Temporal tracking: forward propagation failed: {e}")
+
+        # ── Propagate backward (if keyframe is not frame 0) ──
+        if prompt_idx > 0:
+            try:
+                for resp in predictor.handle_stream_request({
+                    "type": "propagate_in_video",
+                    "session_id": session_id,
+                    "propagation_direction": "backward",
+                }):
+                    # Only fill frames not already covered by forward pass
+                    fidx = resp["frame_index"]
+                    if fidx not in outputs_per_frame:
+                        outputs_per_frame[fidx] = resp["outputs"]
+            except Exception as e:
+                logger.warning(f"Temporal tracking: backward propagation failed: {e}")
+
+        # ── Close session and release resources ──
+        try:
+            predictor.handle_request({
+                "type": "close_session",
+                "session_id": session_id,
+            })
+        except Exception:
+            pass
+        del pil_images, predictor
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # ── Convert outputs to 0/1 uint8 masks ──
+        tracked_masks: Dict[int, np.ndarray] = {}
+        for frame_idx in range(n_frames):
+            frame_out = outputs_per_frame.get(frame_idx)
+            if frame_out is None:
+                tracked_masks[frame_idx] = np.zeros((img_h, img_w), dtype=np.uint8)
                 continue
-            cluster = [i]
-            used[i] = True
-            for j in range(i + 1, n):
-                if used[j]:
-                    continue
-                iou = self._mask_iou(results[i].mask, results[j].mask)
-                if iou > iou_thr:
-                    cluster.append(j)
-                    used[j] = True
-            clusters.append(cluster)
 
-        # Fuse each cluster
-        fused = []
-        for cluster in clusters:
-            if len(cluster) == 1:
-                fused.append(results[cluster[0]])
+            binary_masks = frame_out.get("out_binary_masks")
+            if binary_masks is not None and len(binary_masks) > 0:
+                # (N, H, W) bool → combined 0/1 uint8
+                combined = np.any(binary_masks, axis=0).astype(np.uint8)
             else:
-                # Weighted average of masks from different models
-                h, w = results[cluster[0]].mask.shape[:2]
-                mask_acc = np.zeros((h, w), dtype=np.float32)
-                total_weight = 0.0
-                confidences = []
-                models_used = set()
+                combined = np.zeros((img_h, img_w), dtype=np.uint8)
 
-                for idx in cluster:
-                    midx = model_indices[idx]
-                    model_w = weights[midx] if midx < len(weights) else 1.0
-                    conf = results[idx].confidence
-                    w_combined = model_w * conf
+            # Resize if SAM3 output resolution differs from original
+            if combined.shape[:2] != (img_h, img_w):
+                combined = cv2.resize(combined, (img_w, img_h),
+                                      interpolation=cv2.INTER_NEAREST)
+            tracked_masks[frame_idx] = combined
 
-                    mask_acc += results[idx].mask.astype(np.float32) * w_combined
-                    total_weight += w_combined
-                    confidences.append(conf)
-                    models_used.add(results[idx].metadata.get('model', 'unknown'))
+        det_count = sum(1 for m in tracked_masks.values() if np.any(m))
+        logger.info(f"Temporal tracking: {det_count}/{n_frames} frames with detections")
 
-                if total_weight > 0:
-                    mask_acc /= total_weight
+        # ── Keep prompts: subtract protected objects per frame ──
+        if self.config.keep_prompts and isinstance(self.segmenter, SAM3Segmenter):
+            logger.info(f"Temporal tracking: applying keep prompts frame-by-frame")
+            for frame_idx, tracked in tracked_masks.items():
+                if not np.any(tracked):
+                    continue
+                image = cv2.imread(str(frame_paths[frame_idx]))
+                if image is None:
+                    continue
+                keep_results = self.segmenter.segment_image(
+                    image,
+                    prompts={'remove': [], 'keep': self.config.keep_prompts},
+                    geometry=ImageGeometry.PINHOLE,
+                )
+                # segment_image returns masks for keep prompts via the
+                # keep subtraction logic — but here we need the raw keep
+                # masks themselves. Use remove=keep_prompts to detect them.
+                keep_mask = None
+                for r in self.segmenter.segment_image(
+                    image,
+                    prompts={'remove': self.config.keep_prompts},
+                    geometry=ImageGeometry.PINHOLE,
+                ):
+                    if keep_mask is None:
+                        keep_mask = r.mask.copy()
+                    else:
+                        keep_mask = np.maximum(keep_mask, r.mask)
+                if keep_mask is not None:
+                    tracked_masks[frame_idx] = (tracked & ~keep_mask).astype(np.uint8)
 
-                fused_mask = (mask_acc > 0.5).astype(np.uint8)
-                avg_conf = float(np.mean(confidences))
+        return tracked_masks
 
-                fused.append(MaskResult(
-                    mask=fused_mask,
-                    confidence=avg_conf,
-                    quality=self.segmenter._evaluate_mask_quality(fused_mask, avg_conf),
-                    metadata={
-                        'ensemble_fused': True,
-                        'ensemble_count': len(cluster),
-                        'models': sorted(models_used)
-                    }
-                ))
-
-        return fused
-
-    @staticmethod
-    def _mask_iou(mask1: np.ndarray, mask2: np.ndarray) -> float:
-        """Compute Intersection over Union between two binary masks."""
-        m1 = mask1 > 0
-        m2 = mask2 > 0
-        intersection = np.logical_and(m1, m2).sum()
-        union = np.logical_or(m1, m2).sum()
-        return float(intersection) / max(float(union), 1.0)
-    
     def process_image(
         self,
         image: np.ndarray,
         geometry: ImageGeometry = ImageGeometry.PINHOLE,
-        custom_prompts: Optional[Dict[str, List[str]]] = None
+        custom_prompts: Optional[Dict[str, List[str]]] = None,
+        precomputed_mask: Optional[np.ndarray] = None,
     ) -> MaskResult:
         """Process a single image and return a combined mask.
 
         For EQUIRECTANGULAR geometry with ``geometry_aware=True``, delegates
-        to ``_process_equirectangular`` (cubemap decomposition path).
+        to ``_process_equirectangular`` (cubemap decomposition path) — unless
+        a precomputed_mask is provided (e.g. from SAM3 temporal tracking),
+        in which case the tracked mask is used directly at equirect resolution.
 
         For other geometries (PINHOLE, FISHEYE, etc.):
         1. Segment — individual detections, each with lightweight postprocess
+           (or use precomputed_mask if provided, skipping detection)
         2. Combine — ``_combine_masks`` merges detections via weighted union
-        3. SAM refinement (optional) — boundary refinement on combined mask
-        4. Edge injection (optional) — preserve thin structures
-        5. VOS / temporal (optional) — propagate or smooth across frames
-        6. Shadow detection (optional) — extend mask to cover cast shadows
-        7. Final postprocess (``final=True``) — dilation + fill-holes on
+        3. Temporal smoothing — sliding-window averaging across frames
+        4. Final postprocess (``final=True``) — dilation + fill-holes on
            the combined mask at full resolution
-        8. Alpha matting (optional) — soft alpha matte as final step
+
+        Args:
+            precomputed_mask: Optional 0/1 uint8 mask from SAM3 temporal
+                tracking. When provided, skips _segment() and uses this mask
+                as the detection result. Full post-processing still applies.
 
         Mask values are 0/1 uint8 throughout.
         """
-        
+
         # For equirectangular with geometry_aware: use cubemap strategy
-        if geometry == ImageGeometry.EQUIRECTANGULAR and self.config.geometry_aware:
+        # SKIP cubemap when a precomputed tracked mask is provided — the
+        # tracker already operated on the original equirect frames and
+        # provides equirect-resolution masks directly.
+        if (geometry == ImageGeometry.EQUIRECTANGULAR
+                and self.config.geometry_aware
+                and precomputed_mask is None):
             result = self._process_equirectangular(image, custom_prompts)
             self._frame_counter += 1
             return result
 
-        # VOS propagation: skip full detection on non-keyframes
-        if self.vos_propagator is not None and not self.vos_propagator.is_keyframe():
-            try:
-                propagated = self.vos_propagator.step(image, None)
-                self._frame_counter += 1
-                return MaskResult(
-                    mask=propagated,
-                    confidence=0.8,
-                    quality=MaskQuality.GOOD,
-                    metadata={'method': 'vos_propagation', 'frame': self._frame_counter - 1}
-                )
-            except Exception as e:
-                logger.warning(f"VOS propagation failed, running detection: {e}")
-
-        # Get individual masks (ensemble or single model)
-        results = self._segment(image, custom_prompts, geometry)
+        # Detection step
+        if precomputed_mask is not None:
+            # Use tracked mask directly — skip _segment()
+            results = [MaskResult(
+                mask=precomputed_mask,
+                confidence=0.85,
+                quality=MaskQuality.GOOD,
+                metadata={'method': 'sam3_tracking', 'frame': self._frame_counter}
+            )]
+        else:
+            # Normal detection (per-frame, current behavior)
+            results = self._segment(image, custom_prompts, geometry)
 
         if not results:
             # No model masks found. Still run the final geometry-aware
@@ -1989,8 +1833,6 @@ class MaskingPipeline:
             geometry_mask = self.segmenter.postprocess_mask(
                 empty_mask, geometry, final=True
             )
-            if self.vos_propagator is not None:
-                self.vos_propagator.step(image, geometry_mask)
             self._frame_counter += 1
 
             if np.any(geometry_mask):
@@ -2018,31 +1860,8 @@ class MaskingPipeline:
         logger.info(f"  Detections: {len(results)}, coverage: {coverage:.1f}%, "
                      f"quality: {combined_mask.quality.value} (conf={combined_mask.confidence:.2f})")
 
-        # SAM refinement: refine coarse combined mask before temporal smoothing
-        if self.sam_refiner is not None and np.any(combined_mask.mask):
-            try:
-                combined_mask.mask = self.sam_refiner.refine(image, combined_mask.mask)
-                combined_mask.metadata['sam_refined'] = True
-            except Exception as e:
-                logger.warning(f"SAM refinement failed: {e}")
-
-        # Edge injection: inject high-frequency edges for thin structures
-        if self.config.edge_injection and np.any(combined_mask.mask):
-            try:
-                combined_mask.mask = self._inject_edges(image, combined_mask.mask)
-                combined_mask.metadata['edge_injected'] = True
-            except Exception as e:
-                logger.warning(f"Edge injection failed: {e}")
-
-        # VOS propagation: feed keyframe mask and get refined result
-        if self.vos_propagator is not None:
-            try:
-                combined_mask.mask = self.vos_propagator.step(image, combined_mask.mask)
-                combined_mask.metadata['vos_keyframe'] = True
-            except Exception as e:
-                logger.warning(f"VOS keyframe step failed: {e}")
-        elif self.temporal_consistency:
-            # Fall back to sliding-window averaging
+        # Temporal consistency (sliding-window averaging)
+        if self.temporal_consistency:
             self.temporal_consistency.add_frame(
                 combined_mask.mask,
                 combined_mask.confidence
@@ -2051,29 +1870,6 @@ class MaskingPipeline:
             if smoothed_mask is not None:
                 combined_mask.mask = smoothed_mask
         
-        # Shadow detection: extend person masks to include their shadows
-        if self.config.detect_shadows and np.any(combined_mask.mask):
-            if self.shadow_pipeline is not None:
-                # Pass individual detection masks for per-person shadow search
-                individual_masks = [
-                    r.mask for r in results if r.is_valid and np.any(r.mask)
-                ] if results else None
-                shadow_result = self.shadow_pipeline.run(
-                    image, combined_mask.mask, individual_masks
-                )
-                if shadow_result is not None:
-                    combined_mask.mask = np.maximum(
-                        combined_mask.mask, shadow_result.mask
-                    )
-                    combined_mask.metadata['shadow_detected'] = True
-                    combined_mask.metadata['shadow_info'] = shadow_result.metadata
-            else:
-                # Backward-compatible brightness heuristic
-                shadow_mask = self._detect_shadows(image, combined_mask.mask)
-                if shadow_mask is not None:
-                    combined_mask.mask = np.maximum(combined_mask.mask, shadow_mask)
-                    combined_mask.metadata['shadow_detected'] = True
-
         # Final postprocess on combined mask (dilation + fill holes)
         before_pct = float(np.sum(combined_mask.mask > 0) / combined_mask.mask.size * 100)
         combined_mask.mask = self.segmenter.postprocess_mask(
@@ -2084,23 +1880,6 @@ class MaskingPipeline:
             logger.info(f"  Postprocess: {before_pct:.1f}% → {after_pct:.1f}% "
                         f"(dilation={self.config.mask_dilate_px}px, fill_holes={self.config.fill_holes})")
 
-        # Alpha matting: convert binary mask to soft alpha matte (final step)
-        if self.matting_refiner is not None and np.any(combined_mask.mask):
-            try:
-                combined_mask.mask = self.matting_refiner.refine(image, combined_mask.mask)
-                combined_mask.metadata['matting_applied'] = True
-            except Exception as e:
-                logger.warning(f"Alpha matting failed: {e}")
-
-        steps_applied = []
-        if combined_mask.metadata.get('sam_refined'): steps_applied.append('SAM-refine')
-        if combined_mask.metadata.get('edge_injected'): steps_applied.append('edge-inject')
-        if combined_mask.metadata.get('vos_keyframe'): steps_applied.append('VOS-keyframe')
-        if combined_mask.metadata.get('shadow_detected'): steps_applied.append('shadow')
-        if combined_mask.metadata.get('matting_applied'): steps_applied.append('matting')
-        if steps_applied:
-            logger.info(f"  Post-steps: {', '.join(steps_applied)}")
-
         self._frame_counter += 1
         return combined_mask
 
@@ -2108,11 +1887,9 @@ class MaskingPipeline:
         """Reset state for a new video/image sequence.
 
         Call this before processing a new batch of sequential frames.
-        Resets VOS propagator and temporal consistency state.
+        Resets temporal consistency state.
         """
         self._frame_counter = 0
-        if self.vos_propagator is not None:
-            self.vos_propagator.reset()
         if self.temporal_consistency is not None:
             self.temporal_consistency = TemporalConsistency(
                 self.config.temporal_window
@@ -2138,16 +1915,10 @@ class MaskingPipeline:
            ``np.maximum`` into a single face mask.
         4. **Cubemap → equirect merge** — ``cubemap2equirect()`` reprojects
            the 6 face masks back to equirectangular space.
-        5. **SAM refinement** (optional) — refines boundaries on the merged
-           equirect mask.
-        6. **Shadow detection** (optional) — extends person masks to include
-           cast shadows.
-        7. **Final postprocessing** (``final=True``) — dilation, fill-holes
+        5. **Final postprocessing** (``final=True``) — dilation, fill-holes
            (morphological close + flood-fill), and pole expansion.  Runs
            at full equirect resolution where gaps are large enough to
            detect and bridge.
-        8. **Alpha matting** (optional) — converts binary mask to soft alpha
-           matte as the very last step.
 
         Important: Dilation and fill-holes only run during step 7, NOT on
         per-detection masks in step 2.  Per-detection postprocessing at
@@ -2209,28 +1980,6 @@ class MaskingPipeline:
             }
         )
 
-        # SAM refinement on merged equirect mask
-        if self.sam_refiner is not None and np.any(equirect_mask):
-            try:
-                result.mask = self.sam_refiner.refine(image, result.mask)
-                result.metadata['sam_refined'] = True
-            except Exception as e:
-                logger.warning(f"SAM refinement failed on equirect: {e}")
-
-        # Shadow detection
-        if self.config.detect_shadows and np.any(equirect_mask):
-            if self.shadow_pipeline is not None:
-                shadow_result = self.shadow_pipeline.run(image, equirect_mask)
-                if shadow_result is not None:
-                    result.mask = np.maximum(result.mask, shadow_result.mask)
-                    result.metadata['shadow_detected'] = True
-                    result.metadata['shadow_info'] = shadow_result.metadata
-            else:
-                shadow_mask = self._detect_shadows(image, equirect_mask)
-                if shadow_mask is not None:
-                    result.mask = np.maximum(result.mask, shadow_mask)
-                    result.metadata['shadow_detected'] = True
-
         # Final postprocess on combined equirect mask (dilation + fill holes)
         # This is needed because per-detection postprocess runs at face level
         # (1024px) where the hole may not be enclosed; at full equirect
@@ -2244,97 +1993,6 @@ class MaskingPipeline:
             logger.info(f"  Postprocess: {before_pct:.1f}% → {after_pct:.1f}% "
                         f"(dilation={self.config.mask_dilate_px}px, fill_holes={self.config.fill_holes})")
 
-        # Alpha matting on equirect result
-        if self.matting_refiner is not None and np.any(result.mask):
-            try:
-                result.mask = self.matting_refiner.refine(image, result.mask)
-                result.metadata['matting_applied'] = True
-            except Exception as e:
-                logger.warning(f"Alpha matting failed on equirect: {e}")
-
-        return result
-
-    def _detect_shadows(self, image: np.ndarray, person_mask: np.ndarray) -> Optional[np.ndarray]:
-        """Detect shadows adjacent to person masks using relative brightness.
-
-        Uses the same approach as review_masks.py brightness mode:
-        pixels significantly darker than their local neighborhood
-        that are spatially connected to the bottom of person masks.
-        """
-        h, w = image.shape[:2]
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        # Compute relative darkness
-        local_median = cv2.blur(gray, (51, 51))
-        darkness_ratio = gray.astype(np.float32) / (local_median.astype(np.float32) + 1)
-        shadow_candidates = (darkness_ratio < 0.7).astype(np.uint8)
-
-        # Morphological closing to bridge gaps
-        kernel = np.ones((7, 7), np.uint8)
-        shadow_candidates = cv2.morphologyEx(shadow_candidates, cv2.MORPH_CLOSE, kernel)
-
-        # Dilate person mask downward (tall kernel) to find shadow attachment zone
-        attach_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 40))
-        # Shift kernel origin upward so dilation extends below the mask
-        person_extended = cv2.dilate(person_mask, attach_kernel, iterations=1)
-
-        # Shadow = dark region that overlaps with the downward extension of person
-        shadow_mask = cv2.bitwise_and(shadow_candidates, person_extended)
-
-        # Remove small fragments
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(shadow_mask, connectivity=8)
-        min_shadow_area = max(100, int(np.sum(person_mask) * 0.05))  # at least 5% of person area
-        for i in range(1, num_labels):
-            if stats[i, cv2.CC_STAT_AREA] < min_shadow_area:
-                shadow_mask[labels == i] = 0
-
-        if np.sum(shadow_mask) < min_shadow_area:
-            return None
-
-        logger.info(f"Shadow detection: found {np.sum(shadow_mask)} shadow pixels")
-        return shadow_mask
-
-    def _inject_edges(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Inject high-frequency edges into mask for thin structure preservation.
-
-        Detects strong edges near the existing mask (wires, antennas, scaffolding)
-        and unions them into the mask. SAM/YOLO often miss structures thinner than
-        their token/patch resolution; Canny edges recover them.
-
-        Pipeline:
-          1. Run Canny edge detector on grayscale image
-          2. Dilate mask to create search zone around existing detections
-          3. Intersect edges with dilated mask (only keep edges near known objects)
-          4. Dilate intersected edges for robustness
-          5. Union back into original mask
-        """
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-        # Canny edge detection
-        edges = cv2.Canny(
-            gray, self.config.edge_canny_low, self.config.edge_canny_high
-        )
-
-        # Dilate existing mask to create search zone
-        search_kernel = np.ones((15, 15), np.uint8)
-        search_zone = cv2.dilate(mask, search_kernel, iterations=2)
-
-        # Intersect edges with search zone (only edges near existing mask)
-        relevant_edges = cv2.bitwise_and(edges, search_zone)
-
-        # Dilate the relevant edges for robustness
-        if self.config.edge_dilate_px > 0:
-            edge_kernel = np.ones(
-                (self.config.edge_dilate_px * 2 + 1, self.config.edge_dilate_px * 2 + 1),
-                np.uint8
-            )
-            relevant_edges = cv2.dilate(relevant_edges, edge_kernel, iterations=1)
-
-        # Union into mask
-        result = np.maximum(mask, relevant_edges)
-        n_added = int(np.sum(result > 0)) - int(np.sum(mask > 0))
-        if n_added > 0:
-            logger.debug(f"Edge injection: added {n_added} pixels for thin structures")
         return result
 
     def inpaint_masked_region(
@@ -2515,7 +2173,52 @@ class MaskingPipeline:
         # Set frame range
         end_frame = end_frame or total_frames
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        
+
+        # Pre-compute tracked masks if temporal tracking enabled
+        tracked_masks = None
+        _tracking_temp_dir = None
+        if self.config.temporal_tracking:
+            import tempfile
+            _tracking_temp_dir = Path(tempfile.mkdtemp(prefix="sam3_track_"))
+            logger.info(f"Temporal tracking: extracting frames to {_tracking_temp_dir}")
+            _track_cap = cv2.VideoCapture(str(video_path))
+            _track_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            _track_paths = []
+            _tidx = start_frame
+            while _tidx < end_frame:
+                ret, _tframe = _track_cap.read()
+                if not ret:
+                    break
+                if skip_frames > 0 and _tidx % (skip_frames + 1) != 0:
+                    _tidx += 1
+                    continue
+                _tpath = _tracking_temp_dir / f"{_tidx:06d}.jpg"
+                cv2.imwrite(str(_tpath), _tframe)
+                _track_paths.append(_tpath)
+                _tidx += 1
+            _track_cap.release()
+
+            if _track_paths:
+                tracked_masks_raw = self._start_tracking_session(_track_paths)
+                if tracked_masks_raw is not None:
+                    # Re-key from sequential index to actual frame_idx
+                    tracked_masks = {}
+                    _actual_indices = []
+                    _aidx = start_frame
+                    while _aidx < end_frame:
+                        if skip_frames == 0 or _aidx % (skip_frames + 1) == 0:
+                            _actual_indices.append(_aidx)
+                        _aidx += 1
+                    for seq_idx, actual_idx in enumerate(_actual_indices):
+                        if seq_idx in tracked_masks_raw:
+                            tracked_masks[actual_idx] = tracked_masks_raw[seq_idx]
+                else:
+                    logger.warning("Tracking session failed, falling back to per-frame detection")
+
+            # Clean up temp frames
+            import shutil
+            shutil.rmtree(_tracking_temp_dir, ignore_errors=True)
+
         # Statistics
         stats = {
             'total_frames': 0,
@@ -2524,23 +2227,24 @@ class MaskingPipeline:
             'rejected_frames': 0,
             'processing_time': 0
         }
-        
+
         frame_idx = start_frame
-        
+
         while frame_idx < end_frame:
             ret, frame = cap.read()
             if not ret:
                 break
-            
+
             # Skip frames if needed
             if skip_frames > 0 and frame_idx % (skip_frames + 1) != 0:
                 frame_idx += 1
                 continue
-            
+
             start_time = time.time()
-            
-            # Process frame
-            result = self.process_image(frame, geometry)
+
+            # Process frame — pass precomputed tracked mask if available
+            precomputed = tracked_masks.get(frame_idx) if tracked_masks is not None else None
+            result = self.process_image(frame, geometry, precomputed_mask=precomputed)
             
             stats['processing_time'] += time.time() - start_time
             stats['total_frames'] += 1
@@ -2644,6 +2348,7 @@ class MaskingPipeline:
         recursive: bool = False,
         result_callback=None,
         skip_existing: bool = False,
+        merge_existing: bool = False,
         cancel_event=None,
         mask_dir: Path = None,
         review_dir: Path = None,
@@ -2659,6 +2364,9 @@ class MaskingPipeline:
             recursive: Process recursively
             result_callback: Optional callable(stem, result) called after each image
             skip_existing: Skip images that already have a mask file
+            merge_existing: OR new detections into existing mask files instead of
+                overwriting. Mutually exclusive with skip_existing — if both are
+                True, merge wins.
             mask_dir: Override mask output directory (default: output_dir/masks)
             review_dir: Override review output directory (default: output_dir/review)
 
@@ -2712,20 +2420,30 @@ class MaskingPipeline:
             'processing_time': 0
         }
         
+        # Pre-compute tracked masks if temporal tracking enabled
+        tracked_masks = None
+        if self.config.temporal_tracking:
+            tracked_masks = self._start_tracking_session(image_files)
+            if tracked_masks is None:
+                logger.warning("Tracking session failed, falling back to per-frame detection")
+
         skipped = 0
-        for img_path in tqdm(image_files, desc="Processing images"):
+        for idx, img_path in enumerate(tqdm(image_files, desc="Processing images")):
             # Reset temporal state — directory images are independent, not
             # sequential video frames, so temporal smoothing must not bleed
             # masks from one viewpoint into another.
-            self.reset_sequence()
+            # Skip reset when temporal tracking is active (tracked masks
+            # provide continuity instead).
+            if tracked_masks is None:
+                self.reset_sequence()
 
             # Check for cancellation
             if cancel_event is not None and cancel_event.is_set():
                 logger.info("Processing stopped by user")
                 break
 
-            # Skip if mask already exists
-            if skip_existing:
+            # Skip if mask already exists (merge takes precedence if both are set)
+            if skip_existing and not merge_existing:
                 mask_name = f"{img_path.stem}.{self.config.output_format}"
                 if (mask_dir / mask_name).exists():
                     skipped += 1
@@ -2739,15 +2457,31 @@ class MaskingPipeline:
                 logger.error(f"Failed to load: {img_path}")
                 continue
 
-            # Process
-            result = self.process_image(image, geometry)
-            
+            # Process — pass precomputed tracked mask if available
+            precomputed = tracked_masks.get(idx) if tracked_masks is not None else None
+            result = self.process_image(image, geometry, precomputed_mask=precomputed)
+
             stats['processing_time'] += time.time() - start_time
-            
+
             # Save mask
             mask_name = f"{img_path.stem}.{self.config.output_format}"
             mask_path = mask_dir / mask_name
-            
+
+            # Merge with existing mask on disk (additive pass) — mutate result.mask
+            # so all downstream consumers (multi-label map, inpaint, review image)
+            # automatically see the merged value without threading a separate var.
+            if merge_existing and mask_path.exists():
+                if self.config.output_format == 'npy':
+                    existing_internal = np.load(mask_path)
+                else:
+                    existing = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                    existing_internal = (existing < 128).astype(np.uint8) if existing is not None else None
+                if existing_internal is not None:
+                    if existing_internal.shape == result.mask.shape:
+                        result.mask = np.maximum(result.mask, existing_internal)
+                    else:
+                        logger.warning(f"Merge skipped (size mismatch): {mask_name}")
+
             if self.config.output_format == 'npy':
                 np.save(mask_path, result.mask)
             else:
@@ -2803,170 +2537,6 @@ class MaskingPipeline:
             logger.info(f"  Skipped (existing): {skipped}")
 
         return stats
-
-    def validate_masks_colmap(
-        self,
-        masks_dir: str,
-        images_dir: Optional[str] = None,
-        colmap_dir: Optional[str] = None,
-        progress_callback=None
-    ) -> Optional[Dict[str, Any]]:
-        """Run COLMAP geometric validation on generated masks.
-
-        Projects 3D points from COLMAP sparse reconstruction into each
-        camera view and checks mask consistency across views.
-
-        Args:
-            masks_dir: Directory containing generated masks.
-            images_dir: Directory containing source images (for name matching).
-            colmap_dir: Override COLMAP sparse dir (uses config if None).
-            progress_callback: Optional callable(current, total) for progress.
-
-        Returns:
-            Validation report dict, or None if validator not available.
-        """
-        validator = self.geometric_validator
-        if validator is None:
-            # Try to load on-demand if colmap_dir provided
-            if colmap_dir or self.config.colmap_dir:
-                try:
-                    from colmap_validation import GeometricValidator, ValidationConfig
-                    if self.config.colmap_config:
-                        val_cfg = ValidationConfig.from_dict(self.config.colmap_config)
-                    else:
-                        val_cfg = ValidationConfig()
-                    val_cfg.colmap_dir = colmap_dir or self.config.colmap_dir
-                    validator = GeometricValidator(val_cfg)
-                    validator.load_reconstruction()
-                except Exception as e:
-                    logger.error(f"COLMAP validation failed: {e}")
-                    return None
-            else:
-                logger.warning("No COLMAP reconstruction path configured")
-                return None
-
-        report = validator.validate_masks(
-            masks_dir=masks_dir,
-            images_dir=images_dir,
-            progress_callback=progress_callback
-        )
-
-        return report.summary()
-
-    def process_directory_sam3_unified(
-        self,
-        input_dir: Path,
-        output_dir: Path,
-        progress_callback=None
-    ) -> Dict[str, Any]:
-        """Process a directory of frames using SAM 3.1 unified video pipeline.
-
-        Instead of per-frame YOLO+SAM2+tracking, this uses SAM 3.1's video
-        predictor for end-to-end detection+segmentation+tracking in one pass.
-
-        Falls back to standard per-frame processing if SAM 3.1 video is unavailable.
-
-        Args:
-            input_dir: Directory containing frame images.
-            output_dir: Directory for output masks.
-            progress_callback: Optional callable(current, total, message).
-
-        Returns:
-            Processing statistics dict.
-        """
-        if self.sam3_video_pipeline is None:
-            logger.warning("SAM 3.1 video pipeline not available, falling back to per-frame")
-            return self.process_directory(input_dir, output_dir)
-
-        return self.sam3_video_pipeline.process_frames(
-            frames_dir=str(input_dir),
-            output_dir=str(output_dir),
-            progress_callback=progress_callback
-        )
-
-    def process_video_sam3_unified(
-        self,
-        video_path: Path,
-        output_dir: Path,
-        skip_frames: int = 0,
-        mask_dir: Path = None,
-        progress_callback=None,
-    ) -> Dict[str, Any]:
-        """Process a video file using SAM 3.1 unified video pipeline.
-
-        Extracts frames from the video to a temp directory, then runs SAM 3.1's
-        multiplex video predictor for end-to-end detection+segmentation+tracking.
-
-        Falls back to standard per-frame process_video if SAM 3.1 is unavailable.
-
-        Args:
-            video_path: Path to video file.
-            output_dir: Output directory for masks.
-            skip_frames: Extract every Nth frame (0 = all frames).
-            mask_dir: Override mask output directory.
-            progress_callback: Optional callable(current, total, message).
-
-        Returns:
-            Processing statistics dict.
-        """
-        import tempfile
-
-        if self.sam3_video_pipeline is None:
-            logger.warning("SAM 3.1 video pipeline not available, falling back to per-frame")
-            return self.process_video(video_path, output_dir)
-
-        video_path = Path(video_path)
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        if mask_dir is None:
-            mask_dir = output_dir
-        mask_dir = Path(mask_dir)
-        mask_dir.mkdir(parents=True, exist_ok=True)
-
-        # Extract frames from video to a temp directory
-        temp_dir = Path(tempfile.mkdtemp(prefix="sam3_video_"))
-        try:
-            cap = cv2.VideoCapture(str(video_path))
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            logger.info(
-                f"Extracting frames from {video_path.name}: "
-                f"{total_frames} frames @ {fps:.2f} FPS"
-            )
-
-            frame_idx = 0
-            written = 0
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                if skip_frames > 0 and frame_idx % (skip_frames + 1) != 0:
-                    frame_idx += 1
-                    continue
-                out_path = temp_dir / f"{written:06d}.jpg"
-                cv2.imwrite(str(out_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                written += 1
-                frame_idx += 1
-            cap.release()
-            logger.info(f"Extracted {written} frames to {temp_dir}")
-
-            if progress_callback:
-                progress_callback(0, written, "Frames extracted, running SAM 3.1...")
-
-            # Run SAM 3.1 unified pipeline on the extracted frames
-            # Output masks into mask_dir (sam3_pipeline writes to output/masks/)
-            stats = self.sam3_video_pipeline.process_frames(
-                frames_dir=str(temp_dir),
-                output_dir=str(mask_dir),
-                progress_callback=progress_callback,
-            )
-            return stats
-        finally:
-            # Clean up extracted frames
-            import shutil
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
 
 class InteractiveMaskRefiner:
     """Interactive tool for mask refinement."""

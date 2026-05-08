@@ -51,6 +51,7 @@ reconstruction_gui/test_*.py
 
 # Temp files
 .tmp/
+test_tmp/
 
 # Environment
 .env

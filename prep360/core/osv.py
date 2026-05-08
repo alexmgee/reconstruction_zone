@@ -261,7 +261,7 @@ class OSVHandler:
     def _run_ffprobe(self, path: str) -> Dict[str, Any]:
         cmd = [
             self.ffprobe_path,
-            "-v", "quiet",
+            "-v", "error",
             "-print_format", "json",
             "-show_streams",
             "-show_format",

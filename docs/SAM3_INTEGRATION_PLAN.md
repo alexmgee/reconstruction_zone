@@ -1,7 +1,7 @@
 # SAM3 Video Tracking Integration — Detailed Implementation Plan
 
 **Date:** 2026-04-24
-**Goal:** Replace the separate Hybrid/Unified Video modes with a single pipeline that combines SAM3's temporal tracking with the full post-processing chain (cubemap decomposition, shadow detection, SAM refine, matting, quality scoring, review workflow).
+**Goal:** Add a "Tracked" mode that combines SAM3's temporal tracking with the full post-processing chain (cubemap decomposition, shadow detection, SAM refine, matting, quality scoring, review workflow). Existing Per-frame and Unified (legacy) modes are preserved for A/B comparison.
 
 ---
 
@@ -83,10 +83,11 @@ SAM3 video tracking becomes an **optional detection source** within the existing
 
 ### What changes for the user
 
-- The "SAM3 mode: [Hybrid | Unified Video]" segmented button becomes a **checkbox**: `□ Temporal tracking (SAM3 video)`
-- When checked: detection is done once (on a configurable keyframe), tracking propagates to all other frames, full post-processing runs on every frame
-- When unchecked: current Hybrid behavior (per-frame detection, no tracking)
-- All other controls remain functional regardless — geometry, post-processing, quality scoring, review workflow
+- The "SAM3 mode: [Hybrid | Unified Video]" segmented button becomes a **three-way selector**: `[Per-frame | Tracked | Unified (legacy)]`
+- **Per-frame:** Current Hybrid behavior. Per-frame detection, full post-processing. No temporal tracking.
+- **Tracked (new):** Detection on one keyframe, SAM3 video tracking propagates to all frames, full post-processing runs on every frame. Best of both worlds.
+- **Unified (legacy):** Current Unified Video behavior. Raw SAM3 video output, no post-processing. Preserved for A/B comparison.
+- All other controls remain functional in Per-frame and Tracked modes. Unified (legacy) disables them as it does today.
 
 ---
 
@@ -315,13 +316,18 @@ Then in the loop, pass `precomputed_mask=tracked_masks.get(frame_idx)` to `proce
 
 **Recommended: Option A** for large videos (temp dir), **Option B** for small frame counts. Threshold: 500 frames. The current Unified Video path already does Option A.
 
-### 4.7 process_directory_sam3_unified() and process_video_sam3_unified() — REMOVE
+### 4.7 process_directory_sam3_unified() and process_video_sam3_unified() — KEEP FOR A/B TESTING
 
-These become dead code. `process_directory()` and `process_video()` now handle temporal tracking internally.
+These methods stay intact for now so you can compare the three modes side by side:
+- **Per-frame** — current Hybrid (per-frame detection, full post-processing)
+- **Tracked** — new path (SAM3 video tracking + full post-processing)
+- **Unified (legacy)** — old path (raw SAM3 video, no post-processing)
+
+They will be removed in a future cleanup step once Tracked is validated as superior to Unified.
 
 ### 4.8 GUI changes (`reconstruction_zone.py`)
 
-**Replace** the SAM3 mode segmented button:
+**Replace** the segmented button with a three-way selector:
 ```python
 # REMOVE:
 self._sam3_mode_btn = ctk.CTkSegmentedButton(
@@ -330,40 +336,82 @@ self._sam3_mode_btn = ctk.CTkSegmentedButton(
 )
 
 # ADD:
-self.temporal_tracking_var = ctk.BooleanVar(value=False)
-_tt = ctk.CTkCheckBox(sam3_mode_row, text="Temporal tracking",
-                       variable=self.temporal_tracking_var, width=0)
-Tooltip(_tt, "Track objects across frames using SAM3 video predictor.\n"
-             "Detection runs on one keyframe, masks propagate to all others.\n"
-             "Full post-processing (shadow, refine, matting) still applies.\n"
-             "Requires SAM3. Best for video files and sequential frame sets.")
+self._sam3_mode_btn = ctk.CTkSegmentedButton(
+    sam3_mode_row, values=["Per-frame", "Tracked", "Unified (legacy)"],
+    command=self._on_sam3_mode_change,
+)
+self._sam3_mode_btn.set("Per-frame")
 ```
 
-**Remove** `_on_sam3_mode_change()` method and the disable-everything logic for Unified Video mode.
+Mode behavior:
+- **Per-frame:** `temporal_tracking=False`, `sam3_unified=False`. All controls enabled. Current Hybrid behavior.
+- **Tracked:** `temporal_tracking=True`, `sam3_unified=False`. All controls remain enabled (tracking feeds into the full pipeline). Greyed out if SAM3 unavailable.
+- **Unified (legacy):** `temporal_tracking=False`, `sam3_unified=True`. Disables Detection & Refinement and Post-Processing sections (current behavior). Kept for A/B comparison.
+
+**Update** `_on_sam3_mode_change()`:
+```python
+def _on_sam3_mode_change(self, value):
+    if value == "Per-frame":
+        self.temporal_tracking_var.set(False)
+        self.sam3_unified_var.set(False)
+        # Enable all controls
+        for frame in self._unified_disable_frames:
+            self._set_widgets_state(frame, "normal")
+        for sec in (self._detect_sec, self._post_sec):
+            self._set_widgets_state(sec.content, "normal")
+            sec.expand()
+        # Remove glow from prompts
+        for entry in (self.remove_prompts_entry, self.keep_prompts_entry):
+            entry.master.configure(fg_color="transparent")
+
+    elif value == "Tracked":
+        self.temporal_tracking_var.set(True)
+        self.sam3_unified_var.set(False)
+        # All controls stay enabled — tracking feeds into full pipeline
+        for frame in self._unified_disable_frames:
+            self._set_widgets_state(frame, "normal")
+        for sec in (self._detect_sec, self._post_sec):
+            self._set_widgets_state(sec.content, "normal")
+        # Glow on prompts — they drive the tracker
+        for entry in (self.remove_prompts_entry, self.keep_prompts_entry):
+            entry.master.configure(fg_color="#1a5276")
+
+    elif value == "Unified (legacy)":
+        self.temporal_tracking_var.set(False)
+        self.sam3_unified_var.set(True)
+        # Disable everything except prompts (existing behavior)
+        for frame in self._unified_disable_frames:
+            self._set_widgets_state(frame, "disabled")
+        for sec in (self._detect_sec, self._post_sec):
+            self._set_widgets_state(sec.content, "disabled")
+            sec.collapse()
+        for entry in (self.remove_prompts_entry, self.keep_prompts_entry):
+            entry.master.configure(fg_color="#1a5276")
+```
 
 **Update** `_build_mask_config()`:
 ```python
-# REMOVE:
-sam3_unified=self.sam3_unified_var.get(),
-# ADD:
+# ADD (keep sam3_unified too for legacy path):
 temporal_tracking=self.temporal_tracking_var.get(),
 ```
 
-**Update** `_worker()`:
+**Update** `_worker()` — add the Tracked branch:
 ```python
-# REMOVE the entire if/else branching for sam3_unified_var:
-if self.sam3_unified_var.get() and pipeline.sam3_video_pipeline is not None:
-    ...
-else:
-    ...
-
-# REPLACE with single call (temporal_tracking is in the config):
-stats = pipeline.process_directory(...)  # or process_video(...)
+if inp.is_dir():
+    if self.sam3_unified_var.get() and pipeline.sam3_video_pipeline is not None:
+        # Unified (legacy) — raw SAM3, no post-processing
+        stats = pipeline.process_directory_sam3_unified(...)
+    else:
+        # Per-frame OR Tracked — both go through process_directory()
+        # (temporal_tracking flag in config controls the difference)
+        stats = pipeline.process_directory(...)
 ```
 
-### 4.9 sam3_pipeline.py — REPURPOSE
+The key insight: Per-frame and Tracked both call `process_directory()`. The difference is entirely inside the pipeline — `config.temporal_tracking` controls whether `_start_tracking_session()` runs before the frame loop. No additional GUI branching needed.
 
-Keep the Flash Attention detection + MATH fallback patch logic. Move the session management code into a utility function or into `_start_tracking_session()` within `MaskingPipeline`. The `SAM3VideoPipeline` class itself can be removed or reduced to a session helper.
+### 4.9 sam3_pipeline.py — KEEP AS-IS
+
+The `SAM3VideoPipeline` class stays intact since the Unified (legacy) path still uses it. The new `_start_tracking_session()` method in `MaskingPipeline` will port the FA3 detection + MATH fallback logic independently (some code duplication, but keeps the paths cleanly separated for A/B testing). When the legacy path is eventually removed, `sam3_pipeline.py` can be cleaned up or deleted.
 
 ---
 
@@ -464,36 +512,45 @@ The SAM3 API supports `propagation_direction: "backward"`. The current Unified V
 - Pass precomputed_mask per frame
 - **Verify:** same as Step 3 but for video input
 
-### Step 5: Remove old Unified Video code
-- Remove `process_directory_sam3_unified()` and `process_video_sam3_unified()` from MaskingPipeline
-- Remove `sam3_video_pipeline` attribute from __init__
+### Step 5: GUI changes
+- Replace `[Hybrid | Unified Video]` segmented button with `[Per-frame | Tracked | Unified (legacy)]`
+- Update `_on_sam3_mode_change()` for three modes (Per-frame enables all, Tracked enables all + glow, Unified disables as before)
+- Add `temporal_tracking_var` to `_build_mask_config()`
+- Update `_worker()` — Tracked goes through `process_directory()`/`process_video()`, Unified (legacy) goes through `process_directory_sam3_unified()`/`process_video_sam3_unified()`
+- Grey out Tracked option when SAM3 unavailable
+
+### Step 6: A/B Testing
+- Process same dataset with all three modes, compare:
+  - **Per-frame:** baseline quality, no temporal consistency
+  - **Tracked:** temporal consistency + full post-processing (shadow, refine, dilation, quality scoring, review folder)
+  - **Unified (legacy):** temporal consistency, raw masks only
+- Specific tests:
+  - Directory of pinhole frames: all three modes
+  - Directory of equirect frames: Per-frame vs Tracked (Unified doesn't do cubemap)
+  - Video file: all three modes
+  - Keep prompts: Per-frame vs Tracked
+  - Quality scoring: verify Tracked produces review folders and quality ratings (Unified does not)
+  - Mask convention: verify Tracked saves `(1 - mask) * 255` like Per-frame (Unified saves `mask * 255`)
+
+### Step 7: Legacy cleanup (DEFERRED — after A/B validation)
+- Remove `process_directory_sam3_unified()` and `process_video_sam3_unified()`
+- Remove `sam3_video_pipeline` attribute from `__init__`
 - Remove `sam3_unified` from MaskConfig
-- Simplify SAM3VideoPipeline in sam3_pipeline.py or remove it entirely
-
-### Step 6: GUI changes
-- Replace SegmentedButton with checkbox
-- Remove `_on_sam3_mode_change()` disable logic
-- Simplify `_worker()` — remove Unified Video branching
-- Wire `temporal_tracking_var` into `_build_mask_config()`
-- Grey out checkbox when model is not sam3/auto
-
-### Step 7: Testing
-- Directory of pinhole frames with temporal_tracking=True
-- Directory of equirect frames with temporal_tracking=True
-- Video file with temporal_tracking=True
-- All three with temporal_tracking=False (regression test)
-- Keep prompts with temporal_tracking=True
-- Large sequence memory test
+- Remove "Unified (legacy)" from segmented button, simplify to checkbox or `[Per-frame | Tracked]`
+- Clean up or remove `sam3_pipeline.py`
 
 ---
 
 ## 7. Rollback Plan
 
 Every step produces a working state:
-- After Step 1: Hybrid works exactly as before (precomputed_mask always None)
-- After Step 2: New method exists but isn't called yet
-- After Step 3-4: temporal_tracking=False still works; temporal_tracking=True is the new path
-- After Step 5: Old code removed, but all functionality is preserved in the new path
-- After Step 6: GUI updated
+- After Step 1: Per-frame works exactly as before (precomputed_mask always None). Unified (legacy) untouched.
+- After Step 2: New method exists but isn't called yet. Both existing modes work.
+- After Step 3-4: `temporal_tracking=False` still works identically. `temporal_tracking=True` is the new Tracked path. Unified (legacy) untouched.
+- After Step 5: GUI shows three modes. All three work. No code removed.
+- After Step 6: A/B comparison done. No code removed yet.
+- After Step 7 (future): Legacy path removed only after validation confirms Tracked is superior.
+
+If anything breaks at any step, revert to commit `144016c` (the GUI-only commit made before pipeline work).
 
 If anything breaks, revert to the commit made before this work began (the current GUI-only commit).

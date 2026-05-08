@@ -23,7 +23,7 @@ class ActivityRecord:
     """A single completed operation."""
     id: str
     timestamp: str  # ISO format
-    operation: str  # "extract", "mask", "align", "gap_analysis", "bridge", "reframe"
+    operation: str  # "extract", "mask", "align", "reframe"
     input_path: str
     output_path: str
     status: str  # "completed", "failed", "cancelled"

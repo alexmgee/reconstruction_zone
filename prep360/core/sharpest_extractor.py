@@ -16,6 +16,8 @@ Architecture:
 """
 
 import json
+import math
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
@@ -167,6 +169,154 @@ class SharpestExtractor:
                 SharpestExtractor._gpu_ok = False
         return SharpestExtractor._gpu_ok
 
+    @staticmethod
+    def _frame_range_for_seconds(
+        fps: float,
+        total_frame_count: int,
+        start_sec: Optional[float],
+        end_sec: Optional[float],
+    ) -> Tuple[float, int, int]:
+        """Convert a user time range to an exclusive frame range."""
+        range_start_sec = max(0.0, float(start_sec or 0.0))
+        start_frame = max(0, int(math.ceil(range_start_sec * fps - 1e-9)))
+        if end_sec is None:
+            end_frame = total_frame_count
+        else:
+            range_end_sec = max(range_start_sec, float(end_sec))
+            end_frame = min(
+                total_frame_count,
+                int(math.ceil(range_end_sec * fps - 1e-9)),
+            )
+        return range_start_sec, start_frame, end_frame
+
+    @staticmethod
+    def _time_window_index(
+        frame_idx: int,
+        fps: float,
+        range_start_sec: float,
+        interval_sec: float,
+    ) -> int:
+        """Return the user-time interval window containing frame_idx."""
+        interval = max(float(interval_sec), 1e-9)
+        frame_time = frame_idx / fps
+        elapsed = max(0.0, frame_time - range_start_sec)
+        return int(math.floor((elapsed + 1e-9) / interval))
+
+    def _media_summary_for_gpu_failure(self, video_path: str) -> str:
+        """Return a compact video summary for explaining GPU decode fallback."""
+        try:
+            proc = subprocess.run(
+                [
+                    self.ffprobe_path,
+                    "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries",
+                    "stream=codec_name,codec_long_name,profile,codec_tag_string,"
+                    "pix_fmt,width,height,avg_frame_rate,r_frame_rate",
+                    "-of", "json",
+                    str(video_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+            data = json.loads(proc.stdout)
+            streams = data.get("streams") or []
+            if streams:
+                stream = streams[0]
+                codec = stream.get("codec_name") or "unknown codec"
+                profile = stream.get("profile")
+                tag = stream.get("codec_tag_string")
+                pix_fmt = stream.get("pix_fmt")
+                width = stream.get("width")
+                height = stream.get("height")
+                rate = (
+                    stream.get("avg_frame_rate")
+                    or stream.get("r_frame_rate")
+                    or "unknown fps"
+                )
+                codec_bits = []
+                if profile and profile not in ("unknown", "N/A"):
+                    codec_bits.append(str(profile))
+                codec_bits.append(str(codec))
+                if tag and tag not in ("unknown", "N/A"):
+                    codec_bits.append(str(tag))
+                parts = [" / ".join(codec_bits)]
+                if pix_fmt:
+                    parts.append(str(pix_fmt))
+                if width and height:
+                    parts.append(f"{width}x{height}")
+                if rate and rate != "0/0":
+                    parts.append(f"{rate} fps")
+                return ", ".join(parts)
+        except Exception:
+            pass
+
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                return ""
+            fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC) or 0)
+            fourcc = "".join(
+                chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4)
+            ).strip("\x00")
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            cap.release()
+            parts = []
+            if fourcc:
+                parts.append(fourcc)
+            if width and height:
+                parts.append(f"{width}x{height}")
+            if fps:
+                parts.append(f"{fps:.3f} fps")
+            return ", ".join(parts)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _nvdec_failure_hint(media_summary: str) -> str:
+        """Return a concise hint for common non-NVDEC media formats."""
+        summary = media_summary.lower()
+        if any(token in summary for token in ("dnxhd", "dnxhr", "vc3", "avdh")):
+            return (
+                "DNxHD/DNxHR is not supported by NVDEC; CPU fallback is expected. "
+                "Use HEVC/H.265 or H.264 for GPU extraction."
+            )
+        if "prores" in summary or "apch" in summary or "apcn" in summary:
+            return (
+                "ProRes is not supported by NVDEC; CPU fallback is expected. "
+                "Use HEVC/H.265 or H.264 for GPU extraction."
+            )
+        if media_summary:
+            return (
+                "NVDEC may not support this codec, profile, chroma format, "
+                "container, or resolution on this GPU."
+            )
+        return "NVDEC could not open this stream; CPU fallback is expected."
+
+    def _gpu_reader_failure_messages(
+        self,
+        video_path: str,
+        stream_label: str = "",
+        exc: Optional[BaseException] = None,
+    ) -> List[str]:
+        """Build user-facing log lines for cudacodec reader failures."""
+        prefix = f"{stream_label} " if stream_label else ""
+        messages = [f"  GPU: {prefix}cudacodec reader failed"]
+        summary = self._media_summary_for_gpu_failure(video_path)
+        if summary:
+            messages.append(f"       media: {summary}")
+        messages.append(f"       note: {self._nvdec_failure_hint(summary)}")
+        if exc is not None:
+            detail = str(exc).strip().splitlines()
+            if detail:
+                messages.append(f"       OpenCV: {detail[0]}")
+        return messages
+
     # ── scoring helpers ──────────────────────────────────────────────
 
     @staticmethod
@@ -277,13 +427,12 @@ class SharpestExtractor:
         if fps <= 0:
             return None
 
-        window_size = max(1, int(fps * config.interval))
-        start_frame = int((config.start_sec or 0.0) * fps)
-        if config.end_sec is not None:
-            end_frame = min(int(config.end_sec * fps), total_frame_count)
-        else:
-            end_frame = total_frame_count
+        approx_window_frames = max(1, int(round(fps * config.interval)))
+        range_start_sec, start_frame, end_frame = self._frame_range_for_seconds(
+            fps, total_frame_count, config.start_sec, config.end_sec)
         frames_in_range = end_frame - start_frame
+        if frames_in_range <= 0:
+            return SharpestResult(success=False, error="Invalid time range")
 
         # Open cudacodec reader with firstFrameIdx for seeking
         params = cv2.cudacodec.VideoReaderInitParams()
@@ -291,8 +440,9 @@ class SharpestExtractor:
             params.firstFrameIdx = start_frame
         try:
             reader = cv2.cudacodec.createVideoReader(video_path, params=params)
-        except (cv2.error, TypeError):
-            _log("  GPU: cudacodec reader failed to open")
+        except (cv2.error, TypeError) as e:
+            for msg in self._gpu_reader_failure_messages(video_path, exc=e):
+                _log(msg)
             return None
 
         # Everything from here can fail with cv2.error — wrap for CPU fallback
@@ -328,7 +478,8 @@ class SharpestExtractor:
 
             _log(f"  GPU: NVDEC decode, {channels}ch {'uint16' if is_16bit else 'uint8'}, "
                  f"scoring: {config.scoring_method}, scene detection: {scene_aware}")
-            _log(f"  FPS: {fps:.2f}, window: {window_size} frames ({config.interval:.1f}s)")
+            _log(f"  FPS: {fps:.2f}, window: {config.interval:.1f}s "
+                 f"(~{approx_window_frames} frames)")
 
             # Pre-create GPU filters
             if config.scoring_method == "tenengrad":
@@ -432,6 +583,7 @@ class SharpestExtractor:
             best_score = -1.0
             best_gpu_frame = None
             best_frame_idx = -1
+            current_window_idx: Optional[int] = None
 
             # Check cancel before first-frame processing
             if cancel_check and cancel_check():
@@ -449,13 +601,8 @@ class SharpestExtractor:
             best_score = sharpness
             best_gpu_frame = first_gpu.clone()
             best_frame_idx = start_frame
-
-            relative_idx = 0
-            if (relative_idx + 1) % window_size == 0:
-                _write_gpu_winner(best_gpu_frame, best_frame_idx)
-                best_score = -1.0
-                best_gpu_frame = None
-                best_frame_idx = -1
+            current_window_idx = self._time_window_index(
+                start_frame, fps, range_start_sec, config.interval)
 
             # Continue with remaining frames
             for frame_idx in range(start_frame + 1, end_frame):
@@ -473,6 +620,10 @@ class SharpestExtractor:
                 total_scored += 1
                 all_sharpness.append(sharpness)
 
+                relative_idx = frame_idx - start_frame
+                window_idx = self._time_window_index(
+                    frame_idx, fps, range_start_sec, config.interval)
+
                 is_scene = False
                 if scene_aware:
                     scene_bgr = _prepare_scene_bgr(gpu_frame)
@@ -480,6 +631,16 @@ class SharpestExtractor:
                         is_scene = self._detect_scene_change(
                             prev_scene_bgr, scene_bgr, config.scene_threshold)
                     prev_scene_bgr = scene_bgr
+
+                if current_window_idx is None:
+                    current_window_idx = window_idx
+                elif window_idx != current_window_idx:
+                    if best_gpu_frame is not None:
+                        _write_gpu_winner(best_gpu_frame, best_frame_idx)
+                    best_score = -1.0
+                    best_gpu_frame = None
+                    best_frame_idx = -1
+                    current_window_idx = window_idx
 
                 if is_scene:
                     scene_count += 1
@@ -493,14 +654,6 @@ class SharpestExtractor:
                     best_score = sharpness
                     best_gpu_frame = gpu_frame.clone()
                     best_frame_idx = frame_idx
-
-                relative_idx = frame_idx - start_frame
-                if (relative_idx + 1) % window_size == 0:
-                    if best_gpu_frame is not None:
-                        _write_gpu_winner(best_gpu_frame, best_frame_idx)
-                    best_score = -1.0
-                    best_gpu_frame = None
-                    best_frame_idx = -1
 
                 if frames_in_range > 0:
                     pct = int(relative_idx / frames_in_range * 100)
@@ -585,21 +738,22 @@ class SharpestExtractor:
             return SharpestResult(success=False, error="Could not determine video FPS")
 
         total_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        window_size = max(1, int(fps * config.interval))
+        approx_window_frames = max(1, int(round(fps * config.interval)))
 
-        # Determine frame range from start_sec / end_sec
-        start_frame = int((config.start_sec or 0.0) * fps)
-        if config.end_sec is not None:
-            end_frame = min(int(config.end_sec * fps), total_frame_count)
-        else:
-            end_frame = total_frame_count
+        # Determine exclusive frame range from start_sec / end_sec.
+        range_start_sec, start_frame, end_frame = self._frame_range_for_seconds(
+            fps, total_frame_count, config.start_sec, config.end_sec)
+        if end_frame <= start_frame:
+            cap.release()
+            return SharpestResult(success=False, error="Invalid time range")
 
         if start_frame > 0:
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
         frames_in_range = end_frame - start_frame
         _log(f"  Scoring: {config.scoring_method}, scene detection: {scene_aware}, analysis width: {config.scale_width}px")
-        _log(f"  FPS: {fps:.2f}, window: {window_size} frames ({config.interval:.1f}s)")
+        _log(f"  FPS: {fps:.2f}, window: {config.interval:.1f}s "
+             f"(~{approx_window_frames} frames)")
 
         # Select scoring function
         if config.scoring_method == "tenengrad":
@@ -642,6 +796,7 @@ class SharpestExtractor:
         best_score = -1.0
         best_frame = None
         best_frame_idx = -1
+        current_window_idx: Optional[int] = None
 
         while frame_idx < end_frame:
             if cancel_check and cancel_check():
@@ -675,7 +830,24 @@ class SharpestExtractor:
             if scene_aware:
                 prev_small_bgr = small
 
-            # Step 2: Scene boundary — flush previous sub-chunk BEFORE
+            relative_idx = frame_idx - start_frame
+            window_idx = self._time_window_index(
+                frame_idx, fps, range_start_sec, config.interval)
+
+            # Step 2: Time-window boundary — flush previous sub-chunk
+            # BEFORE considering this frame (boundary frame belongs to
+            # the new user-time interval).
+            if current_window_idx is None:
+                current_window_idx = window_idx
+            elif window_idx != current_window_idx:
+                if best_frame is not None:
+                    _write_winner(best_frame, best_frame_idx)
+                best_score = -1.0
+                best_frame = None
+                best_frame_idx = -1
+                current_window_idx = window_idx
+
+            # Step 3: Scene boundary — flush previous sub-chunk BEFORE
             # considering this frame (boundary frame belongs to new sub-chunk)
             if is_scene:
                 scene_count += 1
@@ -685,20 +857,11 @@ class SharpestExtractor:
                     best_frame = None
                     best_frame_idx = -1
 
-            # Step 3: Consider current frame for (possibly new) sub-chunk
+            # Step 4: Consider current frame for (possibly new) sub-chunk
             if sharpness > best_score:
                 best_score = sharpness
                 best_frame = frame
                 best_frame_idx = frame_idx
-
-            # Step 4: Window boundary — flush and reset
-            relative_idx = frame_idx - start_frame
-            if (relative_idx + 1) % window_size == 0:
-                if best_frame is not None:
-                    _write_winner(best_frame, best_frame_idx)
-                best_score = -1.0
-                best_frame = None
-                best_frame_idx = -1
 
             # Progress (linear 0-100%)
             if frames_in_range > 0:

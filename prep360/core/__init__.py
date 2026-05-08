@@ -10,6 +10,22 @@ from .reframer import Reframer, Ring, ViewConfig
 from .presets import Preset, PresetManager
 from .sky_filter import SkyFilter, SkyFilterConfig
 from .lut import LUTProcessor
+from .adjustment_recipe import (
+    AdjustmentRecipe,
+    LUTSettings,
+    ToneSettings,
+    WhiteBalanceSettings,
+    ColorSettings,
+    DetailSettings,
+    CorrectionSettings,
+    OutputSettings,
+)
+from .color_pipeline import (
+    ImageLoadResult,
+    apply_adjustment_recipe,
+    load_image_float,
+    write_image_float,
+)
 from .segmenter import Segmenter, SegmentConfig, COCO_CLASSES, CLASS_PRESETS
 from .adjustments import apply_shadow_highlight, batch_adjust_images
 from .blur_filter import BlurFilter, BlurFilterConfig
@@ -50,6 +66,18 @@ __all__ = [
     "SkyFilter",
     "SkyFilterConfig",
     "LUTProcessor",
+    "AdjustmentRecipe",
+    "LUTSettings",
+    "ToneSettings",
+    "WhiteBalanceSettings",
+    "ColorSettings",
+    "DetailSettings",
+    "CorrectionSettings",
+    "OutputSettings",
+    "ImageLoadResult",
+    "apply_adjustment_recipe",
+    "load_image_float",
+    "write_image_float",
     "Segmenter",
     "SegmentConfig",
     "COCO_CLASSES",
