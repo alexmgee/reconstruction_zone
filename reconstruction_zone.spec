@@ -36,7 +36,11 @@ gui_docs = [('reconstruction_gui/docs', 'reconstruction_gui/docs')]
 a = Analysis(
     ['reconstruction_gui/reconstruction_zone.py'],
     pathex=[],
-    binaries=[],
+    binaries=[
+        # Statically-linked ffmpeg + ffprobe (no DLL deps)
+        (r'C:\Users\alexm\ffmpeg\bin\ffmpeg.exe', 'ffmpeg'),
+        (r'C:\Users\alexm\ffmpeg\bin\ffprobe.exe', 'ffmpeg'),
+    ],
     datas=ctk_datas + prep360_datas + gui_docs + [('reconstruction-zone.ico', '.')],
     hiddenimports=[
         # --- PyTorch + CUDA ---
@@ -120,7 +124,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['scripts/pyinstaller_runtime_hook.py'],
     excludes=[
         # Large packages we don't need
         'matplotlib',
