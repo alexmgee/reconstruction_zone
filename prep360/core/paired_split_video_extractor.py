@@ -161,7 +161,6 @@ class PairedSplitVideoExtractor:
     def _select_from_paired_entries(
         self,
         paired_entries: list[dict[str, float]],
-        window_size: int,
         scene_aware: bool,
         log: Optional[Callable[[str], None]] = None,
     ) -> tuple[list[int], list[float], list[float]]:
@@ -193,7 +192,7 @@ class PairedSplitVideoExtractor:
                 back_scores.append(float(winner["back_score"]))
 
         for entry in paired_entries:
-            chunk_index = int(entry["relative_frame"]) // window_size
+            chunk_index = int(entry["window_index"])
             if current_chunk_index is None:
                 current_chunk_index = chunk_index
             if chunk_index != current_chunk_index:
@@ -213,7 +212,7 @@ class PairedSplitVideoExtractor:
         out_root: Path,
         start_frame: int,
         end_frame: int,
-        window_size: int,
+        range_start_sec: float,
         shared_fps: float,
         total_frames: int,
         config: PairedSplitConfig,
@@ -288,6 +287,12 @@ class PairedSplitVideoExtractor:
                     {
                         "relative_frame": frame_idx - start_frame,
                         "absolute_frame": frame_idx,
+                        "window_index": SharpestExtractor._time_window_index(
+                            frame_idx,
+                            shared_fps,
+                            range_start_sec,
+                            config.interval_sec,
+                        ),
                         "front_score": front_score,
                         "back_score": back_score,
                         "scene_change": is_scene,
@@ -329,7 +334,6 @@ class PairedSplitVideoExtractor:
 
             return self._select_from_paired_entries(
                 paired_entries,
-                window_size,
                 scene_aware=scene_aware,
                 log=_log,
             )
@@ -425,7 +429,7 @@ class PairedSplitVideoExtractor:
         back_out: Path,
         start_frame: int,
         end_frame: int,
-        window_size: int,
+        range_start_sec: float,
         shared_fps: float,
         config: PairedSplitConfig,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
@@ -458,13 +462,17 @@ class PairedSplitVideoExtractor:
             params.firstFrameIdx = start_frame
         try:
             front_reader = cv2.cudacodec.createVideoReader(front_video, params=params)
-        except (cv2.error, TypeError):
-            _log("  GPU: front cudacodec reader failed")
+        except (cv2.error, TypeError) as e:
+            for msg in self._sharpest._gpu_reader_failure_messages(
+                front_video, "front", e):
+                _log(msg)
             return None
         try:
             back_reader = cv2.cudacodec.createVideoReader(back_video, params=params)
-        except (cv2.error, TypeError):
-            _log("  GPU: back cudacodec reader failed")
+        except (cv2.error, TypeError) as e:
+            for msg in self._sharpest._gpu_reader_failure_messages(
+                back_video, "back", e):
+                _log(msg)
             return None
 
         # Everything from here can fail with cv2.error — wrap for CPU fallback
@@ -623,6 +631,7 @@ class PairedSplitVideoExtractor:
             best_b_score = 0.0
             prev_front_scene = None
             prev_back_scene = None
+            current_window_idx: Optional[int] = None
 
             def _flush_best():
                 if best_front_gpu is not None:
@@ -633,10 +642,13 @@ class PairedSplitVideoExtractor:
                 nonlocal best_key, best_front_gpu, best_back_gpu, best_frame_num
                 nonlocal best_f_score, best_b_score, scene_count, total_scored
                 nonlocal prev_front_scene, prev_back_scene
+                nonlocal current_window_idx
 
                 f_score = score_fn(_prepare_gray(f_gpu))
                 b_score = score_fn(_prepare_gray(b_gpu))
                 total_scored += 1
+                window_idx = SharpestExtractor._time_window_index(
+                    frame_num, shared_fps, range_start_sec, config.interval_sec)
 
                 is_scene = False
                 if scene_aware:
@@ -650,6 +662,16 @@ class PairedSplitVideoExtractor:
                         is_scene = f_sc or b_sc
                     prev_front_scene = f_scene_bgr
                     prev_back_scene = b_scene_bgr
+
+                if current_window_idx is None:
+                    current_window_idx = window_idx
+                elif window_idx != current_window_idx:
+                    _flush_best()
+                    best_key = None
+                    best_front_gpu = None
+                    best_back_gpu = None
+                    best_frame_num = -1
+                    current_window_idx = window_idx
 
                 if is_scene:
                     scene_count += 1
@@ -669,13 +691,6 @@ class PairedSplitVideoExtractor:
                     best_frame_num = frame_num
                     best_f_score = f_score
                     best_b_score = b_score
-
-                if (relative_idx + 1) % window_size == 0:
-                    _flush_best()
-                    best_key = None
-                    best_front_gpu = None
-                    best_back_gpu = None
-                    best_frame_num = -1
 
                 if total_frames > 0 and relative_idx % max(1, total_frames // 10) == 0:
                     pct = int(relative_idx / total_frames * 80)
@@ -836,10 +851,8 @@ class PairedSplitVideoExtractor:
                 front_fps, back_fps, front_count, back_count
             )
 
-            start_frame = max(0, int(round((config.start_sec or 0.0) * shared_fps)))
-            end_frame = shared_count
-            if config.end_sec is not None:
-                end_frame = min(end_frame, int(round(config.end_sec * shared_fps)))
+            range_start_sec, start_frame, end_frame = SharpestExtractor._frame_range_for_seconds(
+                shared_fps, shared_count, config.start_sec, config.end_sec)
             if end_frame <= start_frame:
                 return PairedSplitResult(
                     success=False,
@@ -860,7 +873,7 @@ class PairedSplitVideoExtractor:
             if mode == "sharpest" and SharpestExtractor._gpu_available(SharpestExtractor()):
                 gpu_result = self._extract_sharpest_gpu(
                     front_video, back_video, out_root, front_out, back_out,
-                    start_frame, end_frame, window_size, shared_fps, config,
+                    start_frame, end_frame, range_start_sec, shared_fps, config,
                     progress_callback=progress_callback,
                     cancel_check=cancel_check,
                     _log=_log,
@@ -888,7 +901,7 @@ class PairedSplitVideoExtractor:
                     out_root,
                     start_frame,
                     end_frame,
-                    window_size,
+                    range_start_sec,
                     shared_fps,
                     total_frames,
                     config,

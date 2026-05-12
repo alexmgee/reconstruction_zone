@@ -1,6 +1,14 @@
 # Extract Tab
 
-The Extract tab is the starting point for every reconstruction project. It handles video analysis, frame extraction with quality filtering, SRT geotagging, and 360° fisheye-to-perspective reframing. Everything downstream — masking, review, coverage — depends on the frames this tab produces.
+The Extract tab is the frame-selection stage for reconstruction projects. It handles video analysis, sharp/raw frame extraction, paired front/back synchronization, SRT geotagging, and 360° fisheye-to-perspective reframing.
+
+For the main reconstruction workflow, Extract produces **raw selected frames**. Visual color work belongs in **Adjust**, where LUTs and recipes can be previewed before export:
+
+```text
+Extract -> Adjust -> Mask -> Review -> Align
+```
+
+Raw selected frames are treated as the source truth. Adjusted frames are derivative datasets used by Mask, Review, and Align.
 
 ## Sections
 
@@ -9,7 +17,7 @@ The tab has four top-level sections — two always-visible and two collapsible:
 | Section | Type | Purpose |
 |---------|------|---------|
 | **Video Selection** | Always visible | Load a video (or split-lens pair), set output folder |
-| **Frame Extraction** | Always visible | Analysis, extraction settings, post-processing filters, batch queue |
+| **Frame Extraction** | Always visible | Analysis, extraction settings, Adjust handoff, legacy post-processing filters, batch queue |
 | **360 Processing** | Collapsible | Split dual-fisheye containers or reframe to pinhole perspectives |
 | **Advanced** | Collapsible (default: collapsed) | Frame quality filter for existing frames, SRT geotagging |
 
@@ -38,7 +46,7 @@ When **Use Split Lens Videos** is checked, the Analyze and Extract buttons opera
 | **Back** | Graded back lens video (`.mp4` / `.mov`) |
 | **Clip Folder** | Per-clip working folder (auto-filled from the filename stem). Extract writes `front/frames` + `back/frames` here. |
 
-The workflow is: Split Lenses (in the 360 Processing section below) → grade externally → enable Split Lens Videos here → Extract.
+The preferred workflow is: Split Lenses if needed → enable Split Lens Videos here → Extract raw selected pairs → Open in Adjust → apply one shared recipe to both lenses.
 
 ---
 
@@ -140,19 +148,23 @@ Once a video is analyzed, the estimate bar updates in real-time as you adjust se
 
 It accounts for mode, interval, time range, format, quality, and active filters.
 
-### Post-Processing
+### Post-Processing And Adjust Handoff
 
-A collapsible section inside Frame Extraction containing four optional filters that run after frames are extracted. Each is independently collapsible with its own enable checkbox.
+A collapsible section inside Frame Extraction contains the preferred Adjust handoff plus optional legacy filters that run after frames are extracted.
+
+#### Adjust Handoff
+
+Default extraction writes raw selected frames and stops. Use **Open in Adjust** to load the raw selected output root into the Adjust tab and preview LUT/color changes visually.
+
+If **Apply saved Adjust recipe after extraction** is enabled, the recipe is validated before extraction starts. A valid recipe is applied to a separate adjusted derivative folder after extraction; raw selected frames are not overwritten.
 
 #### Color & LUT
 
-> **Edition note:** This section is only visible in the `personal` edition. It is hidden in `community` and `release` builds.
-
-Collapsed by default. Applies color correction to extracted frames in place.
+Collapsed by default. Legacy quick color tools for advanced/headless batches. These run after extraction without visual preview, so LUT tuning should happen in Adjust.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| **Apply LUT after extraction** | Off | Enable/disable the entire color pipeline |
+| **Apply LUT after extraction (advanced)** | Off | Enable/disable the legacy in-place LUT path |
 | **LUT file** | (none) | `.cube` file for color space conversion (e.g. D-Log → Rec.709) |
 | **Strength** | 100% | Blend between original (0%) and full LUT (100%) |
 | **Shadows** | 50 | Lift or crush shadow detail. 50 = neutral |
@@ -195,7 +207,7 @@ This is useful for footage where the camera moves at varying speeds. The filter 
 
 ### Pipeline summary
 
-When you click **Extract**, the selected mode pulls frames from the video, then each enabled post-processing step runs sequentially on the output:
+When you click **Extract**, the selected mode pulls raw selected frames from the video. If optional legacy post-processing is enabled, it runs after extraction:
 
 ```
  Extract frames (mode determines selection strategy)
@@ -205,8 +217,8 @@ When you click **Extract**, the selected mode pulls frames from the video, then 
        ▼
  Post-processing (each step is optional, runs in order)
        │
-       ├─ 1. LUT              → color-correct in place (personal edition only)
-       ├─ 2. Shadows/HL       → adjust tonality in place (personal edition only)
+       ├─ 1. LUT              → legacy color-correct in place
+       ├─ 2. Shadows/HL       → legacy tonality adjustment in place
        ├─ 3. Sky Filter        → delete sky-dominated frames
        ├─ 4. Blur Filter       → delete blurriest frames (skipped in Sharpest mode)
        └─ 5. Motion Selection  → delete redundant/blurry frames by optical flow
@@ -217,7 +229,7 @@ When you click **Extract**, the selected mode pulls frames from the video, then 
        └─ Write GPS, altitude, focal length, datetime → EXIF via exiftool
 ```
 
-Each post-processing step reads from disk, processes, and either overwrites (LUT, shadow/highlight) or deletes (sky, blur, motion) in place. Geotagging runs last so it only tags surviving frames. The cancel flag is checked between frames.
+Each legacy post-processing step reads from disk, processes, and either overwrites (LUT, shadow/highlight) or deletes (sky, blur, motion) in place. Geotagging runs last so it only tags surviving frames. If optional LUT/color post-processing fails after extraction, the extraction is still logged as complete and the raw selected frames remain available for Adjust.
 
 ---
 
@@ -547,7 +559,8 @@ Collapsible subsection (collapsed by default, disabled by default). Thins redund
 5. (Optional)       → Enable Blur Filter at 80% to remove worst frames
 6. (Optional)       → Enable Sky Filter if outdoor scene has upward-facing frames
 7.                  → Click Extract
-8.                  → Frames appear in {output}/{video_name}/
+8.                  → Raw selected frames appear in {output}/{video_name}/
+9. Adjust           → Open in Adjust, preview LUT/recipe, export adjusted dataset
 ```
 
 ## Typical workflow: drone video with GPS
@@ -558,8 +571,9 @@ Collapsible subsection (collapsed by default, disabled by default). Thins redund
 3. Frame Extraction → Choose mode, adjust settings
 4.                  → Auto-geotag is on by default (Advanced → Metadata)
 5.                  → Click Extract
-6.                  → Frames extracted + GPS/altitude/focal length written to EXIF
-7. (If SRT not found) → Advanced → Metadata: manually set the SRT file path
+6.                  → Raw selected frames extracted + GPS/altitude/focal length written to EXIF
+7. Adjust           → Apply visual recipe if needed, then continue to Mask
+8. (If SRT not found) → Advanced → Metadata: manually set the SRT file path
 ```
 
 ## Typical workflow: batch processing
@@ -597,7 +611,9 @@ Collapsible subsection (collapsed by default, disabled by default). Thins redund
 5.                  → Analyze to verify pair consistency
 6. Frame Extraction → Configure mode + interval
 7.                  → Click Extract
-8.                  → Clip folder with front/frames + back/frames ready for Metashape
+8.                  → Raw paired clip folder with front/frames + back/frames
+9. Adjust           → Apply one shared recipe to both lenses and export adjusted paired dataset
+10.                 → Continue with Mask → Review → Align on the adjusted dataset
 ```
 
 ## Typical workflow: filter existing frames

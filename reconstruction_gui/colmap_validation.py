@@ -370,20 +370,22 @@ def from_pycolmap_reconstruction(rec) -> Dict[str, Any]:
             model=cam.model_name,
             width=cam.width,
             height=cam.height,
-            params=list(cam.params),
+            params=[float(p) for p in cam.params],
         )
 
     images: Dict[int, COLMAPImage] = {}
     for img_id, img in rec.images.items():
-        quat = img.cam_from_world.rotation.quat  # [w, x, y, z]
-        tvec = img.cam_from_world.translation
+        cfw = img.cam_from_world()
+        # pycolmap quaternion is [x, y, z, w] (Eigen), COLMAP text is [w, x, y, z]
+        quat = cfw.rotation.quat
+        tvec = cfw.translation
         points2d = []
-        for pt2d_idx, pt2d in enumerate(img.points2D):
-            points2d.append((pt2d.xy[0], pt2d.xy[1], pt2d.point3D_id))
+        for pt2d in img.points2D:
+            points2d.append((float(pt2d.xy[0]), float(pt2d.xy[1]), int(pt2d.point3D_id)))
         images[img_id] = COLMAPImage(
             image_id=img_id,
-            qw=float(quat[0]), qx=float(quat[1]),
-            qy=float(quat[2]), qz=float(quat[3]),
+            qw=float(quat[3]), qx=float(quat[0]),
+            qy=float(quat[1]), qz=float(quat[2]),
             tx=float(tvec[0]), ty=float(tvec[1]), tz=float(tvec[2]),
             camera_id=img.camera_id,
             name=img.name,

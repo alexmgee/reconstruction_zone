@@ -1739,6 +1739,18 @@ def _normalized_mapper(mapper_value: str) -> str:
     return "incremental"
 
 
+def _find_adjustment_manifest(images_dir: str) -> str:
+    image_root = Path(images_dir)
+    for candidate in (
+        image_root / "adjustment_manifest.json",
+        image_root.parent / "adjustment_manifest.json",
+        image_root.parent.parent / "adjustment_manifest.json",
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return ""
+
+
 def _snapshot_alignment_settings(app) -> Dict[str, object]:
     images_dir = app.alignment_images_entry.get().strip()
     masks_dir = app.alignment_masks_entry.get().strip()
@@ -1776,6 +1788,7 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
         raise ValueError(f"Camera mask path not found: {camera_mask_path}")
     if vocab_tree_path and not Path(vocab_tree_path).exists():
         raise ValueError(f"Vocab tree path not found: {vocab_tree_path}")
+    adjustment_manifest_path = _find_adjustment_manifest(images_dir)
 
     max_features = _parse_int(app.alignment_max_features_entry.get(), "Max features", minimum=1)
     max_image_size = _parse_int(app.alignment_max_image_size_entry.get(), "Max image size", minimum=0)
@@ -2034,6 +2047,7 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
         "match_extra_args": profile.match_extra_args,
         "reconstruct_extra_args": profile.reconstruct_extra_args,
         "rig_config_path": rig_config_path,
+        "adjustment_manifest_path": adjustment_manifest_path,
     }
 
     return {
@@ -2048,6 +2062,7 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
         "max_num_matches": max_num_matches,
         "min_num_inliers": min_num_inliers,
         "rig_config_path": rig_config_path,
+        "adjustment_manifest_path": adjustment_manifest_path,
         "signature": json.dumps(signature_payload, sort_keys=True, default=str),
     }
 
@@ -2124,6 +2139,12 @@ def _alignment_worker(app, snapshot: Dict[str, object], stages_to_run: List[str]
                 images_dir=str(snapshot["images_dir"]),
                 masks_dir=str(snapshot["masks_dir"]) or None,
             )
+            adjustment_manifest_path = str(snapshot.get("adjustment_manifest_path", "") or "")
+            if adjustment_manifest_path:
+                _alignment_log(app, f"Adjustment manifest: {adjustment_manifest_path}")
+                if runner.current_run_info:
+                    runner.current_run_info["adjustment_manifest_path"] = adjustment_manifest_path
+                    runner._write_run_info()
             app._alignment_runner = runner
             run_dir = str(runner.current_run_dir) if runner.current_run_dir else ""
             if run_dir:
@@ -2207,6 +2228,7 @@ def _alignment_worker(app, snapshot: Dict[str, object], stages_to_run: List[str]
                 details={
                     "engine": str(snapshot["engine_name"]),
                     "stages_completed": len(stages_to_run),
+                    "adjustment_manifest": str(snapshot.get("adjustment_manifest_path", "") or ""),
                 },
             )
     except Exception as exc:

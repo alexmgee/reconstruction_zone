@@ -132,13 +132,25 @@ class AppInfrastructure:
         _file_logger.info(msg)
 
     def _poll_log_queue(self):
+        inserted = False
         try:
             while True:
                 msg = self.log_queue.get_nowait()
                 self.log_textbox.insert("end", msg + "\n")
-                self.log_textbox.see("end")
+                inserted = True
         except queue.Empty:
             pass
+        # Only see/idle once per polling cycle — calling see() after each
+        # insert in a tight loop is wasted work (tkinter doesn't redraw mid-
+        # handler) and can leave the scroll position in an intermediate state
+        # if the final see() is preempted. update_idletasks forces the redraw
+        # so the user sees the latest line.
+        if inserted:
+            try:
+                self.log_textbox.see("end")
+                self.log_textbox.update_idletasks()
+            except Exception:
+                pass
         self.after(100, self._poll_log_queue)
 
     # ── operation control ──

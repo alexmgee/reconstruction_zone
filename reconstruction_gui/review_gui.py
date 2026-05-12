@@ -24,21 +24,35 @@ from review_status import ReviewStatusManager, MaskStatus
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Quality level → border color
-QUALITY_COLORS = {
-    "excellent": "#22c55e",  # green
-    "good":      "#eab308",  # yellow
-    "review":    "#f97316",  # orange
-    "poor":      "#ef4444",  # red
-    "reject":    "#991b1b",  # dark red
-    "":          "#6b7280",  # gray (unknown)
+# Review status → border color (binary status model)
+REVIEW_COLORS = {
+    "reviewed":   "#22c55e",  # green
+    "unreviewed": "#6b7280",  # gray
 }
-STATUS_COLORS = {
-    "edited":   "#3b82f6",  # blue
-    "accepted": "#22c55e",  # green
-    "rejected": "#ef4444",  # red
-    "skipped":  "#6b7280",  # gray
-}
+
+# Legacy aliases — kept so any out-of-tree consumer doesn't break.
+# Internally, all border-color lookups now go through REVIEW_COLORS.
+QUALITY_COLORS = {"": "#6b7280"}
+STATUS_COLORS = REVIEW_COLORS
+
+# Per-layer overlay tints in BGR channel deltas — applied to masked pixels.
+# Order is the assignment order; index 0 → first layer (typically `base`).
+# 12 distinct hues — beyond this the palette recycles. Beyond ~12, hue
+# discrimination collapses for most viewers, so 12 is a deliberate cap.
+LAYER_COLORS = [
+    (0, 0, 100),       # red
+    (100, 0, 0),       # blue
+    (0, 100, 0),       # green
+    (0, 100, 100),     # yellow
+    (100, 100, 0),     # cyan
+    (100, 0, 100),     # magenta
+    (0, 60, 120),      # orange (R-heavy + bit of G)
+    (100, 0, 60),      # purple (B + bit of R)
+    (40, 110, 40),     # lime  (G with hint of B/R, distinct from green)
+    (90, 60, 110),     # pink  (R-heavy + B/G)
+    (90, 80, 30),      # teal  (B+G low, no R)
+    (40, 60, 80),      # brown (low all-channel mix)
+]
 
 THUMB_SIZE = 150
 
@@ -77,6 +91,57 @@ def load_overlay_thumbnail(image_path: Path, mask_path: Path, size: int = THUMB_
     return result
 
 
+def load_multi_layer_thumbnail(
+    image_path: Path,
+    layer_masks: List[Tuple[Path, Tuple[int, int, int]]],
+    size: int = THUMB_SIZE,
+    pad_to_square: bool = True,
+) -> Optional[Image.Image]:
+    """Composite multiple mask layers as colored overlays on a single thumbnail.
+
+    Args:
+        image_path: Source image path.
+        layer_masks: List of (mask_path, (b_delta, g_delta, r_delta)) tuples.
+            Each layer's BGR deltas are added to masked pixels (mask < 128).
+        size: Target longest-side size for the thumbnail.
+        pad_to_square: If True, pad to a square canvas.
+    """
+    img = cv2.imread(str(image_path))
+    if img is None:
+        return None
+
+    h, w = img.shape[:2]
+    scale = size / max(h, w)
+    new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+    overlay = cv2.resize(img, (new_w, new_h))
+
+    for mask_path, (bd, gd, rd) in layer_masks:
+        if mask_path is None or not mask_path.exists():
+            continue
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            continue
+        if mask.shape[:2] != (new_h, new_w):
+            mask = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        masked = mask < 128  # disk convention: black = masked region
+        # Apply BGR-channel deltas, clipped to [0, 255]
+        overlay[masked, 0] = np.clip(overlay[masked, 0].astype(int) + bd, 0, 255).astype(np.uint8)
+        overlay[masked, 1] = np.clip(overlay[masked, 1].astype(int) + gd, 0, 255).astype(np.uint8)
+        overlay[masked, 2] = np.clip(overlay[masked, 2].astype(int) + rd, 0, 255).astype(np.uint8)
+
+    rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(rgb)
+
+    if not pad_to_square:
+        return pil_img
+
+    result = Image.new("RGB", (size, size), (30, 30, 30))
+    x_off = (size - new_w) // 2
+    y_off = (size - new_h) // 2
+    result.paste(pil_img, (x_off, y_off))
+    return result
+
+
 def compute_mask_area_percent(mask_path: Path) -> float:
     """Compute mask coverage as a percentage of total image area."""
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
@@ -95,8 +160,8 @@ class ThumbnailWidget(ctk.CTkFrame):
         self.stem = stem
         self.on_click = on_click
 
-        # Border color by status (overrides quality)
-        border_color = STATUS_COLORS.get(status.status, QUALITY_COLORS.get(status.quality, "#6b7280"))
+        # Border color by binary review status
+        border_color = REVIEW_COLORS.get(status.status, "#6b7280")
         self.configure(border_width=3, border_color=border_color, corner_radius=6)
 
         # Thumbnail image
@@ -217,7 +282,7 @@ class ReviewApp(ctk.CTk):
         self.sort_var = ctk.StringVar(value="Filename")
         sort_menu = ctk.CTkOptionMenu(
             top_frame, variable=self.sort_var,
-            values=["Filename", "Confidence", "Quality", "Area %"],
+            values=["Filename", "Confidence", "Quality", "Area %", "Modified"],
             command=self._on_sort_change, width=120
         )
         sort_menu.pack(side="left", padx=2)
@@ -225,7 +290,7 @@ class ReviewApp(ctk.CTk):
         ctk.CTkLabel(top_frame, text="Filter:").pack(side="left", padx=(20, 2))
         self.filter_var = ctk.StringVar(value="All")
         filter_seg = ctk.CTkSegmentedButton(
-            top_frame, values=["All", "Needs Review", "Poor", "Unreviewed"],
+            top_frame, values=["All", "Unreviewed", "Reviewed"],
             variable=self.filter_var, command=self._on_filter_change
         )
         filter_seg.pack(side="left", padx=2)
@@ -281,13 +346,13 @@ class ReviewApp(ctk.CTk):
                                       fg_color="#2563eb", width=120)
         self.edit_btn.pack(side="left", padx=5, pady=5)
 
-        self.accept_btn = ctk.CTkButton(btn_frame, text="Accept", command=self._on_accept,
-                                        fg_color="#16a34a", width=90)
-        self.accept_btn.pack(side="left", padx=5, pady=5)
+        self.save_btn = ctk.CTkButton(btn_frame, text="Save", command=self._on_save,
+                                      fg_color="#16a34a", width=90)
+        self.save_btn.pack(side="left", padx=5, pady=5)
 
-        self.reject_btn = ctk.CTkButton(btn_frame, text="Reject", command=self._on_reject,
+        self.delete_btn = ctk.CTkButton(btn_frame, text="Delete", command=self._on_delete,
                                         fg_color="#dc2626", width=90)
-        self.reject_btn.pack(side="left", padx=5, pady=5)
+        self.delete_btn.pack(side="left", padx=5, pady=5)
 
         self.skip_btn = ctk.CTkButton(btn_frame, text="Skip", command=self._on_skip,
                                       fg_color="#6b7280", width=90)
@@ -298,11 +363,6 @@ class ReviewApp(ctk.CTk):
                                            fg_color="#7c3aed", width=120)
         self.propagate_btn.pack(side="left", padx=5, pady=5)
 
-        self.accept_all_btn = ctk.CTkButton(btn_frame, text="Accept All Good",
-                                            command=self._on_accept_all_good,
-                                            fg_color="#065f46", width=130)
-        self.accept_all_btn.pack(side="right", padx=5, pady=5)
-
     # ---- Grid Population ----
 
     def _get_sorted_filtered_pairs(self) -> List[Dict]:
@@ -311,12 +371,10 @@ class ReviewApp(ctk.CTk):
 
         # Filter
         filt = self.filter_var.get()
-        if filt == "Needs Review":
-            pairs = [p for p in pairs if self.status_mgr.get(p["stem"]).quality in ("review", "poor")]
-        elif filt == "Poor":
-            pairs = [p for p in pairs if self.status_mgr.get(p["stem"]).quality == "poor"]
-        elif filt == "Unreviewed":
-            pairs = [p for p in pairs if self.status_mgr.get(p["stem"]).status == "pending"]
+        if filt == "Unreviewed":
+            pairs = [p for p in pairs if self.status_mgr.get(p["stem"]).status == "unreviewed"]
+        elif filt == "Reviewed":
+            pairs = [p for p in pairs if self.status_mgr.get(p["stem"]).status == "reviewed"]
 
         # Sort
         sort_key = self.sort_var.get()
@@ -327,6 +385,9 @@ class ReviewApp(ctk.CTk):
             pairs.sort(key=lambda p: order.get(self.status_mgr.get(p["stem"]).quality, -1))
         elif sort_key == "Area %":
             pairs.sort(key=lambda p: self.status_mgr.get(p["stem"]).area_percent, reverse=True)
+        elif sort_key == "Modified":
+            order = {True: 0, False: 1, None: 2}
+            pairs.sort(key=lambda p: order.get(self.status_mgr.get(p["stem"]).last_edit_modified, 2))
         else:  # Filename
             pairs.sort(key=lambda p: p["stem"])
 
@@ -357,10 +418,10 @@ class ReviewApp(ctk.CTk):
         # Update summary
         summary = self.status_mgr.get_summary()
         total = len(self.pairs)
-        accepted = summary.get("accepted", 0) + summary.get("edited", 0)
+        reviewed = summary.get("reviewed", 0)
+        unreviewed = summary.get("unreviewed", 0)
         self.summary_label.configure(
-            text=f"{total} masks | {accepted} done | {summary.get('rejected', 0)} rejected | "
-                 f"{summary.get('pending', 0)} pending"
+            text=f"{total} masks | {reviewed} reviewed | {unreviewed} unreviewed"
         )
 
     def _on_sort_change(self, _=None):
@@ -419,10 +480,15 @@ class ReviewApp(ctk.CTk):
             self.preview_labels[i]._ctk_image = ctk_img  # prevent GC
 
         # Info text
+        mod_str = ""
+        if ms.last_edit_modified is True:
+            mod_str = "  |  edited"
+        elif ms.last_edit_modified is False:
+            mod_str = "  |  unchanged"
         self.info_text.configure(
             text=f"File: {self.selected_stem}\n"
-                 f"Quality: {ms.quality or '?'}  |  Confidence: {ms.confidence:.0%}  |  "
-                 f"Area: {ms.area_percent:.1f}%  |  Status: {ms.status}"
+                 f"{ms.status}  |  Confidence: {ms.confidence:.0%}  |  "
+                 f"Area: {ms.area_percent:.1f}%{mod_str}"
         )
 
     # ---- Actions ----
@@ -450,7 +516,7 @@ class ReviewApp(ctk.CTk):
                 window_name=f"Edit: {self.selected_stem}"
             )
             if result == "save":
-                self.status_mgr.record_action(self.selected_stem, "edited")
+                self.status_mgr.record_action(self.selected_stem, "reviewed", modified=True)
             # Refresh UI on main thread
             self.after(0, self._refresh_after_edit)
 
@@ -462,31 +528,30 @@ class ReviewApp(ctk.CTk):
         self._populate_grid()
         self._update_preview()
 
-    def _on_accept(self):
+    def _on_save(self):
+        """Mark the current mask as reviewed without opening the editor."""
         if self.selected_stem:
-            self.status_mgr.record_action(self.selected_stem, "accepted")
+            self.status_mgr.record_action(self.selected_stem, "reviewed", modified=False)
             self._advance_to_next()
 
-    def _on_reject(self):
-        if self.selected_stem:
-            self.status_mgr.record_action(self.selected_stem, "rejected")
-            self._advance_to_next()
+    def _on_delete(self):
+        """Delete the current mask from disk and remove from the review set."""
+        if not self.selected_stem:
+            return
+        pair = next((p for p in self.pairs if p["stem"] == self.selected_stem), None)
+        if pair:
+            mask_path = Path(pair["mask_path"])
+            if mask_path.exists():
+                mask_path.unlink()
+                logger.info(f"Deleted: {mask_path.name}")
+        self.status_mgr.record_action(self.selected_stem, "deleted")
+        self.pairs = [p for p in self.pairs if p["stem"] != self.selected_stem]
+        self._advance_to_next()
 
     def _on_skip(self):
+        """Advance to next without changing review status."""
         if self.selected_stem:
-            self.status_mgr.record_action(self.selected_stem, "skipped")
             self._advance_to_next()
-
-    def _on_accept_all_good(self):
-        """Accept all masks with quality good or excellent that are still pending."""
-        count = 0
-        for pair in self.pairs:
-            ms = self.status_mgr.get(pair["stem"])
-            if ms.status == "pending" and ms.quality in ("good", "excellent"):
-                self.status_mgr.record_action(pair["stem"], "accepted")
-                count += 1
-        logger.info(f"Accepted {count} good/excellent masks")
-        self._populate_grid()
 
     def _on_propagate(self):
         """Propagate the current mask edit to similar frames.
@@ -503,8 +568,8 @@ class ReviewApp(ctk.CTk):
             return
 
         ms = self.status_mgr.get(self.selected_stem)
-        if ms.status != "edited":
-            logger.info("Propagate requires an edited mask as source")
+        if not ms.last_edit_modified:
+            logger.info("Propagate requires a mask edited in the OpenCV editor as source")
             return
 
         # Load current (edited) mask
@@ -525,7 +590,7 @@ class ReviewApp(ctk.CTk):
             if other_pair["stem"] == self.selected_stem:
                 continue
             other_ms = self.status_mgr.get(other_pair["stem"])
-            if other_ms.status != "pending":
+            if other_ms.status != "unreviewed":
                 continue
 
             other_mask = cv2.imread(str(other_pair["mask_path"]), cv2.IMREAD_GRAYSCALE)
@@ -554,27 +619,27 @@ class ReviewApp(ctk.CTk):
 
             # Apply: replace the overlapping region with our edited version
             cv2.imwrite(str(other_pair["mask_path"]), edited_mask)
-            self.status_mgr.record_action(other_pair["stem"], "edited")
+            self.status_mgr.record_action(other_pair["stem"], "reviewed", modified=True)
             applied_count += 1
 
         logger.info(f"Propagated edit to {applied_count} masks")
         self._populate_grid()
 
     def _advance_to_next(self):
-        """Move selection to next pending mask and refresh."""
+        """Move selection to next unreviewed mask and refresh."""
         current_pairs = self._get_sorted_filtered_pairs()
         current_idx = next(
             (i for i, p in enumerate(current_pairs) if p["stem"] == self.selected_stem), -1
         )
-        # Find next pending
+        # Find next unreviewed
         for i in range(current_idx + 1, len(current_pairs)):
             ms = self.status_mgr.get(current_pairs[i]["stem"])
-            if ms.status == "pending":
+            if ms.status == "unreviewed":
                 self.selected_stem = current_pairs[i]["stem"]
                 self._populate_grid()
                 self._update_preview()
                 return
-        # No more pending — just refresh
+        # No more unreviewed — just refresh
         self._populate_grid()
         self._update_preview()
 

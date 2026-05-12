@@ -498,6 +498,7 @@ class ColmapRunner:
             "masks_dir": str(masks_path.resolve()) if masks_path else "",
             "stages": {},
             "selected_model_dir": "",
+            "adjustment_manifest_path": "",
         }
         if self._binary_validation is not None:
             self._record_binary_validation(self._binary_validation)
@@ -800,14 +801,6 @@ class ColmapRunner:
     ) -> StageResult:
         stage = "feature_extraction"
         try:
-            self._ensure_binary_validated()
-            if self.camera_model.upper() == "SPHERE":
-                validation = self._binary_validation
-                if not validation or not validation.supports_sphere_workflow:
-                    raise RuntimeError(
-                        "SPHERE camera model requires a SphereSfM-like binary "
-                        "that exposes sphere workflow commands."
-                    )
             requested_images = self._validate_existing_dir(images_dir, label="Images directory")
             requested_masks = None
             if masks_dir:
@@ -820,41 +813,69 @@ class ColmapRunner:
             ):
                 self.start_run(images_dir=str(requested_images), masks_dir=str(requested_masks) if requested_masks else None)
 
-            args: Dict[str, Any] = {
-                "database_path": self.current_run_dir / "database.db",
-                "image_path": self.current_images_dir,
-                "ImageReader.camera_model": self.camera_model,
-            }
             mask_stats: Dict[str, Any] = {}
-            normalized_feature_type = (feature_type or "").strip().upper()
-            is_aliked = normalized_feature_type.startswith("ALIKED")
-            if is_aliked:
-                args["FeatureExtraction.type"] = normalized_feature_type
-                args["AlikedExtraction.max_num_features"] = max_features
-            else:
-                args["SiftExtraction.max_num_features"] = max_features
-                if normalized_feature_type and normalized_feature_type != "SIFT":
-                    args["FeatureExtraction.type"] = feature_type
+            effective_masks_dir = None
             if self.current_masks_dir is not None:
                 effective_masks_dir, mask_stats = self._resolve_effective_masks_dir()
+
+            start = time.monotonic()
+
+            if self._use_pycolmap():
+                self._extract_features_pycolmap(
+                    feature_type=feature_type,
+                    max_features=max_features,
+                    max_image_size=max_image_size,
+                    effective_masks_dir=effective_masks_dir,
+                    extra_args=extra_args,
+                    progress_callback=progress_callback,
+                )
+                log_text = f"pycolmap.extract_features completed"
+            else:
+                self._ensure_binary_validated()
+                if self.camera_model.upper() == "SPHERE":
+                    validation = self._binary_validation
+                    if not validation or not validation.supports_sphere_workflow:
+                        raise RuntimeError(
+                            "SPHERE camera model requires a SphereSfM-like binary "
+                            "that exposes sphere workflow commands."
+                        )
+                args: Dict[str, Any] = {
+                    "database_path": self.current_run_dir / "database.db",
+                    "image_path": self.current_images_dir,
+                    "ImageReader.camera_model": self.camera_model,
+                }
+                normalized_feature_type = (feature_type or "").strip().upper()
+                is_aliked = normalized_feature_type.startswith("ALIKED")
+                if is_aliked:
+                    args["FeatureExtraction.type"] = normalized_feature_type
+                    args["AlikedExtraction.max_num_features"] = max_features
+                else:
+                    args["SiftExtraction.max_num_features"] = max_features
+                    if normalized_feature_type and normalized_feature_type != "SIFT":
+                        args["FeatureExtraction.type"] = feature_type
                 if effective_masks_dir is not None:
                     args["ImageReader.mask_path"] = effective_masks_dir
-            if max_image_size > 0:
-                max_image_size_key = (
-                    "SiftExtraction.max_image_size"
-                    if self._is_spheresfm_like()
-                    else "FeatureExtraction.max_image_size"
-                )
-                args[max_image_size_key] = max_image_size
-            if extra_args:
-                args.update({k: v for k, v in extra_args.items() if v is not None})
+                if max_image_size > 0:
+                    max_image_size_key = (
+                        "SiftExtraction.max_image_size"
+                        if self._is_spheresfm_like()
+                        else "FeatureExtraction.max_image_size"
+                    )
+                    args[max_image_size_key] = max_image_size
+                if extra_args:
+                    args.update({k: v for k, v in extra_args.items() if v is not None})
 
-            cmd_result = self._run_cli_command(
-                "feature_extractor",
-                args,
-                progress_callback=progress_callback,
-                cancel_event=cancel_event,
-            )
+                cmd_result = self._run_cli_command(
+                    "feature_extractor",
+                    args,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
+                )
+                if cmd_result.status != "success":
+                    raise RuntimeError(cmd_result.error or f"feature_extractor failed (exit {cmd_result.returncode})")
+                log_text = cmd_result.log
+
+            duration_s = time.monotonic() - start
             stats = {
                 "camera_model": self.camera_model,
                 "feature_type": feature_type,
@@ -862,17 +883,15 @@ class ColmapRunner:
                 "max_image_size": max_image_size,
                 "images_dir": str(self.current_images_dir),
                 "masks_dir": str(self.current_masks_dir) if self.current_masks_dir else "",
+                "backend": "pycolmap" if self._use_pycolmap() else "subprocess",
             }
             stats.update(mask_stats)
             result = StageResult(
                 stage=stage,
-                status=cmd_result.status,
-                duration_s=cmd_result.duration_s,
+                status="success",
+                duration_s=duration_s,
                 stats=stats,
-                log=cmd_result.log,
-                returncode=cmd_result.returncode,
-                error=cmd_result.error,
-                command=cmd_result.command,
+                log=log_text,
                 run_dir=str(self.current_run_dir) if self.current_run_dir else "",
             )
         except Exception as exc:
@@ -887,6 +906,58 @@ class ColmapRunner:
         self._write_stage_log(stage, result.log or result.error)
         self._record_stage_result(result)
         return result
+
+    def _extract_features_pycolmap(
+        self,
+        feature_type: str,
+        max_features: int,
+        max_image_size: int,
+        effective_masks_dir: Optional[Path],
+        extra_args: Optional[Dict[str, Any]],
+        progress_callback: Optional[Callable[[str], None]],
+    ) -> None:
+        import pycolmap
+
+        db_path = str(self.current_run_dir / "database.db")
+        image_dir = str(self.current_images_dir)
+
+        reader_options = pycolmap.ImageReaderOptions(
+            camera_model=self.camera_model,
+        )
+        if effective_masks_dir is not None:
+            reader_options.mask_path = str(effective_masks_dir)
+
+        # Camera params from extra_args
+        if extra_args:
+            if extra_args.get("ImageReader.single_camera"):
+                pass  # handled via camera_mode below
+            if extra_args.get("ImageReader.camera_params"):
+                reader_options.camera_params = str(extra_args["ImageReader.camera_params"])
+
+        camera_mode = pycolmap.CameraMode.AUTO
+        if extra_args and extra_args.get("ImageReader.single_camera"):
+            camera_mode = pycolmap.CameraMode.SINGLE
+        if extra_args and extra_args.get("ImageReader.single_camera_per_folder"):
+            camera_mode = pycolmap.CameraMode.PER_FOLDER
+
+        normalized_type = (feature_type or "").strip().upper()
+
+        if progress_callback:
+            progress_callback(f"Extracting {normalized_type} features via pycolmap...")
+
+        kwargs: Dict[str, Any] = {
+            "camera_mode": camera_mode,
+            "reader_options": reader_options,
+        }
+
+        if normalized_type.startswith("ALIKED"):
+            kwargs["feature_extractor"] = pycolmap.FeatureExtractor.ALIKED
+        # SIFT is the default — no extra kwarg needed
+
+        pycolmap.extract_features(db_path, image_dir, **kwargs)
+
+        if progress_callback:
+            progress_callback("Feature extraction complete")
 
     def apply_rig_config(
         self,
@@ -959,58 +1030,72 @@ class ColmapRunner:
     ) -> StageResult:
         stage = "matching"
         try:
-            self._ensure_binary_validated()
             self._ensure_active_run()
 
             if strategy not in self.MATCHER_COMMANDS:
                 raise ValueError(f"Unknown matching strategy: {strategy}")
+            if strategy == "vocab_tree" and not vocab_tree_path:
+                raise ValueError("vocab_tree strategy requires vocab_tree_path to be set")
 
-            command = self.MATCHER_COMMANDS[strategy]
-            self._ensure_command_supported(command)
-            args: Dict[str, Any] = {
-                "database_path": self.current_run_dir / "database.db",
-                self._matching_option_key(
-                    "FeatureMatching.max_num_matches",
-                    "SiftMatching.max_num_matches",
-                ): max_num_matches,
-            }
-            if guided:
-                args[
+            start = time.monotonic()
+
+            if self._use_pycolmap():
+                self._match_features_pycolmap(
+                    strategy=strategy,
+                    guided=guided,
+                    max_num_matches=max_num_matches,
+                    vocab_tree_path=vocab_tree_path,
+                    extra_args=extra_args,
+                    progress_callback=progress_callback,
+                )
+                log_text = f"pycolmap.match_{strategy} completed"
+            else:
+                self._ensure_binary_validated()
+                command = self.MATCHER_COMMANDS[strategy]
+                self._ensure_command_supported(command)
+                args: Dict[str, Any] = {
+                    "database_path": self.current_run_dir / "database.db",
                     self._matching_option_key(
-                        "FeatureMatching.guided_matching",
-                        "SiftMatching.guided_matching",
-                    )
-                ] = True
-            if strategy == "vocab_tree":
-                if not vocab_tree_path:
-                    raise ValueError(
-                        "vocab_tree strategy requires vocab_tree_path to be set"
-                    )
-                args["VocabTreeMatching.vocab_tree_path"] = vocab_tree_path
-            if extra_args:
-                args.update({k: v for k, v in extra_args.items() if v is not None})
+                        "FeatureMatching.max_num_matches",
+                        "SiftMatching.max_num_matches",
+                    ): max_num_matches,
+                }
+                if guided:
+                    args[
+                        self._matching_option_key(
+                            "FeatureMatching.guided_matching",
+                            "SiftMatching.guided_matching",
+                        )
+                    ] = True
+                if strategy == "vocab_tree":
+                    args["VocabTreeMatching.vocab_tree_path"] = vocab_tree_path
+                if extra_args:
+                    args.update({k: v for k, v in extra_args.items() if v is not None})
 
-            cmd_result = self._run_cli_command(
-                command,
-                args,
-                progress_callback=progress_callback,
-                cancel_event=cancel_event,
-            )
+                cmd_result = self._run_cli_command(
+                    command,
+                    args,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
+                )
+                if cmd_result.status != "success":
+                    raise RuntimeError(cmd_result.error or f"{command} failed (exit {cmd_result.returncode})")
+                log_text = cmd_result.log
+
+            duration_s = time.monotonic() - start
             stats = {
                 "strategy": strategy,
                 "guided": guided,
                 "max_num_matches": max_num_matches,
                 "vocab_tree_path": vocab_tree_path or "",
+                "backend": "pycolmap" if self._use_pycolmap() else "subprocess",
             }
             result = StageResult(
                 stage=stage,
-                status=cmd_result.status,
-                duration_s=cmd_result.duration_s,
+                status="success",
+                duration_s=duration_s,
                 stats=stats,
-                log=cmd_result.log,
-                returncode=cmd_result.returncode,
-                error=cmd_result.error,
-                command=cmd_result.command,
+                log=log_text,
                 run_dir=str(self.current_run_dir) if self.current_run_dir else "",
             )
         except Exception as exc:
@@ -1026,6 +1111,156 @@ class ColmapRunner:
         self._record_stage_result(result)
         return result
 
+    def _match_features_pycolmap(
+        self,
+        strategy: str,
+        guided: bool,
+        max_num_matches: int,
+        vocab_tree_path: Optional[str],
+        extra_args: Optional[Dict[str, Any]],
+        progress_callback: Optional[Callable[[str], None]],
+    ) -> None:
+        import pycolmap
+
+        db_path = str(self.current_run_dir / "database.db")
+
+        matching_options = pycolmap.FeatureMatchingOptions(
+            max_num_matches=max_num_matches,
+            guided_matching=guided,
+        )
+
+        # Set matching type from extra_args (e.g. SIFT_LIGHTGLUE, ALIKED_LIGHTGLUE)
+        if extra_args:
+            matching_type = extra_args.get("FeatureMatching.type")
+            if matching_type:
+                matching_options.type = getattr(
+                    pycolmap.FeatureMatchingType, matching_type, matching_options.type
+                )
+
+        if progress_callback:
+            progress_callback(f"Matching features ({strategy}) via pycolmap...")
+
+        if strategy == "exhaustive":
+            pycolmap.match_exhaustive(db_path, matching_options=matching_options)
+        elif strategy == "sequential":
+            pycolmap.match_sequential(db_path, matching_options=matching_options)
+        elif strategy == "spatial":
+            pycolmap.match_spatial(db_path, matching_options=matching_options)
+        elif strategy == "vocab_tree":
+            pycolmap.match_vocabtree(db_path, matching_options=matching_options)
+
+        if progress_callback:
+            progress_callback("Feature matching complete")
+
+    def _reconstruct_pycolmap(
+        self,
+        mapper_key: str,
+        sparse_root: Path,
+        min_num_inliers: int,
+        extra_args: Optional[Dict[str, Any]],
+        progress_callback: Optional[Callable[[str], None]],
+    ) -> StageResult:
+        """Run reconstruction via pycolmap (incremental or global)."""
+        import pycolmap
+
+        stage = "reconstruction"
+        start = time.monotonic()
+
+        db_path = str(self.current_run_dir / "database.db")
+        image_dir = str(self.current_images_dir)
+
+        # Deterministic seed
+        seed = 0
+        if extra_args and extra_args.get("Mapper.random_seed") is not None:
+            seed = int(extra_args["Mapper.random_seed"])
+        pycolmap.set_random_seed(seed)
+
+        if progress_callback:
+            mode_label = "global" if mapper_key in ("global", "global_mapper") else "incremental"
+            progress_callback(f"Running {mode_label} mapping via pycolmap...")
+
+        if mapper_key in ("global", "global_mapper"):
+            recs = pycolmap.global_mapping(db_path, image_dir, str(sparse_root))
+        else:
+            opts = pycolmap.IncrementalPipelineOptions(
+                min_num_matches=min_num_inliers,
+            )
+            if extra_args:
+                for attr, key in [
+                    ("ba_refine_focal_length", "Mapper.ba_refine_focal_length"),
+                    ("ba_refine_principal_point", "Mapper.ba_refine_principal_point"),
+                    ("ba_refine_extra_params", "Mapper.ba_refine_extra_params"),
+                ]:
+                    if key in extra_args:
+                        setattr(opts, attr, bool(extra_args[key]))
+            recs = pycolmap.incremental_mapping(db_path, image_dir, str(sparse_root), opts)
+
+        duration_s = time.monotonic() - start
+
+        if not recs:
+            return StageResult(
+                stage=stage, status="failed", duration_s=duration_s,
+                error="Reconstruction produced no models",
+                run_dir=str(self.current_run_dir),
+            )
+
+        # Find best reconstruction
+        best_idx = max(recs, key=lambda i: recs[i].num_reg_images())
+        best_rec = recs[best_idx]
+        model_dir = sparse_root / str(best_idx)
+
+        # Write model to disk (binary format — pycolmap model reader handles it)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        best_rec.write(str(model_dir))
+        self._record_selected_model(model_dir)
+
+        # Build stats from the Reconstruction object directly
+        num_registered = best_rec.num_reg_images()
+        num_points = len(best_rec.points3D)
+        track_lengths = [pt.track.length() for pt in best_rec.points3D.values()]
+        mean_error = best_rec.compute_mean_reprojection_error() if num_points > 0 else 0.0
+        mean_track = sum(track_lengths) / len(track_lengths) if track_lengths else 0.0
+        if track_lengths:
+            sorted_tracks = sorted(track_lengths)
+            mid = len(sorted_tracks) // 2
+            median_track = float(
+                sorted_tracks[mid] if len(sorted_tracks) % 2
+                else (sorted_tracks[mid - 1] + sorted_tracks[mid]) / 2.0
+            )
+        else:
+            median_track = 0.0
+
+        selected_stats = {
+            "num_registered": num_registered,
+            "num_points": num_points,
+            "mean_reproj_error": mean_error,
+            "mean_track_length": mean_track,
+            "median_track_length": median_track,
+        }
+
+        mapper_label = "global_mapper" if mapper_key in ("global", "global_mapper") else "mapper"
+        stats: Dict[str, Any] = {
+            "mapper": mapper_label,
+            "num_models": len(recs),
+            "selected_model_dir": str(model_dir),
+            "selected_model_stats": selected_stats,
+            "backend": "pycolmap",
+        }
+
+        log_text = best_rec.summary()
+        if progress_callback:
+            progress_callback(f"Reconstruction complete: {num_registered} images, {num_points} points")
+
+        return StageResult(
+            stage=stage,
+            status="success",
+            duration_s=duration_s,
+            stats=stats,
+            log=log_text,
+            run_dir=str(self.current_run_dir),
+            selected_model_dir=str(model_dir),
+        )
+
     def reconstruct(
         self,
         mapper: str = "incremental",
@@ -1037,7 +1272,6 @@ class ColmapRunner:
     ) -> StageResult:
         stage = "reconstruction"
         try:
-            self._ensure_binary_validated()
             self._ensure_active_run(images_dir=images_dir)
 
             if images_dir:
@@ -1049,6 +1283,24 @@ class ColmapRunner:
             sparse_root.mkdir(parents=True, exist_ok=True)
 
             mapper_key = mapper.lower().strip()
+
+            # pycolmap path for stock COLMAP (not SphereSfM, not pose_prior)
+            if self._use_pycolmap() and mapper_key not in ("pose_prior", "pose_prior_mapper"):
+                result = self._reconstruct_pycolmap(
+                    mapper_key=mapper_key,
+                    sparse_root=sparse_root,
+                    min_num_inliers=min_num_inliers,
+                    extra_args=extra_args,
+                    progress_callback=progress_callback,
+                )
+                self._write_stage_log(stage, result.log or result.error)
+                self._record_stage_result(result)
+                return result
+
+            # Subprocess path (SphereSfM + pose_prior + fallback)
+            if not self._use_pycolmap():
+                self._ensure_binary_validated()
+
             if mapper_key in ("incremental", "mapper"):
                 command = "mapper"
             elif mapper_key in ("global", "global_mapper"):
