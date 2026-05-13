@@ -1722,8 +1722,9 @@ def _extract_single_worker(app, video_path, base_output):
                         label = key.replace("after_", "")
                         trail.append(f"{label}\u2192{pp_stats[key]}")
 
+            trail_str = " \u2192 ".join(trail)
             app.log(f"\nDone: {final_count} frames "
-                    f"({' \u2192 '.join(trail)}) in {total_elapsed:.1f}s")
+                    f"({trail_str}) in {total_elapsed:.1f}s")
             app.log(f"{'='*50}")
 
             # Record activity for Recent Activity view
@@ -2080,8 +2081,9 @@ def _extract_queue_worker(app):
                                 label = key.replace("after_", "")
                                 trail.append(f"{label}\u2192{pp_stats[key]}")
 
+                    trail_str = " \u2192 ".join(trail)
                     app.log(f"\nDone: {final_count} frames "
-                            f"({' \u2192 '.join(trail)}) in {item_elapsed:.1f}s")
+                            f"({trail_str}) in {item_elapsed:.1f}s")
 
                     # Record activity for Recent Activity view
                     app.record_activity(
