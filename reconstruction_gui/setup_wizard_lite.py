@@ -469,8 +469,8 @@ class SetupWizardLite(ctk.CTkToplevel):
         ci = ctk.CTkFrame(ctx, fg_color="transparent")
         ci.pack(fill="x", padx=16, pady=12)
         ctk.CTkLabel(ci,
-                     text="SAM3 is a gated model on HuggingFace. You need to "
-                          "request access and provide a token to download it.",
+                     text="SAM3 is a gated model on HuggingFace. You need a "
+                          "free account, model access approval, and a token.",
                      font=("", 11), text_color=_TEXT_SECONDARY,
                      wraplength=540, justify="left", anchor="w").pack(fill="x")
         ctk.CTkLabel(ci,
@@ -478,6 +478,27 @@ class SetupWizardLite(ctk.CTkToplevel):
                           "YOLO26 and RF-DETR will still work for masking.",
                      font=("", 11), text_color=_TEXT_MUTED,
                      wraplength=540, justify="left", anchor="w").pack(fill="x", pady=(6, 0))
+
+        # Step-by-step instructions
+        steps_frame = ctk.CTkFrame(self._container, fg_color=_SURFACE, corner_radius=_CARD_RADIUS)
+        steps_frame.pack(fill="x", pady=(8, 0))
+        si = ctk.CTkFrame(steps_frame, fg_color="transparent")
+        si.pack(fill="x", padx=16, pady=12)
+        ctk.CTkLabel(si, text="Steps:", font=("", 12, "bold"),
+                     text_color=_TEXT_SECONDARY).pack(anchor="w")
+        steps = [
+            "1.  Go to huggingface.co and create a free account (or log in)",
+            "2.  Go to huggingface.co/facebook/sam3",
+            "3.  Click \"Expand to review and access\" then \"Agree and access\"",
+            "4.  Wait for the approval email (usually instant, can take hours)",
+            "5.  Go to huggingface.co/settings/tokens",
+            "6.  Click \"Create new token\", give it any name, role = Read",
+            "7.  Copy the token (starts with hf_...) and paste it below",
+        ]
+        for step in steps:
+            ctk.CTkLabel(si, text=step, font=("Consolas", 10),
+                         text_color=_TEXT_MUTED, anchor="w",
+                         wraplength=520, justify="left").pack(fill="x", pady=1)
 
         # Token input
         tok_box = ctk.CTkFrame(self._container, fg_color=_SURFACE, corner_radius=_CARD_RADIUS)
