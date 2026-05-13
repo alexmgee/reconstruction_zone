@@ -40,8 +40,9 @@ MIN_DISK_GB = 10
 # NOTE: Default PyPI torch is CPU-only. CUDA wheels always require --index-url.
 CUDA_INDEX_MAP = [
     # (min_version, max_version, index_url)
-    ((13, 0), (99, 99), "https://download.pytorch.org/whl/cu130"),
-    ((12, 6), (12, 99), "https://download.pytorch.org/whl/cu128"),
+    # cu130 has known dependency resolution issues; cu128 is backward-compatible
+    # with CUDA 13.x drivers and supports Blackwell (RTX 50xx) since PyTorch 2.7.
+    ((12, 6), (99, 99), "https://download.pytorch.org/whl/cu128"),
     ((12, 1), (12, 5),  "https://download.pytorch.org/whl/cu124"),
     ((11, 8), (12, 0),  "https://download.pytorch.org/whl/cu118"),
 ]
