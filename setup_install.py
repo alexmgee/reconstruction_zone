@@ -402,7 +402,7 @@ def step_create_shortcut() -> None:
         print_warn("Desktop folder not found — skipping shortcut creation")
         return
 
-    shortcut_path = desktop / "Reconstruction Zone.lnk"
+    shortcut_path = desktop / "Reconstruction Zone Lite.lnk"
     icon_arg = f", '{ICON_FILE}', 0" if ICON_FILE.is_file() else ""
 
     ps_script = (

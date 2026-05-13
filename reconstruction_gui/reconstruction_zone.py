@@ -619,7 +619,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Equirectangular
         erp_sec = _CollapsibleSection(post, "Equirectangular",
                                       subtitle="nadir masking, pole expansion, cubemap seam overlap",
-                                      expanded=True)
+                                      expanded=False)
         erp_sec.pack(fill="x", pady=(0, 2), padx=2)
         erp = erp_sec.content
 
@@ -645,7 +645,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Fisheye
         fe_sec = _CollapsibleSection(post, "Fisheye",
                                      subtitle="circle masking and periphery trimming",
-                                     expanded=False)
+                                     expanded=True)
         fe_sec.pack(fill="x", pady=(0, 2), padx=2)
         fe = fe_sec.content
 

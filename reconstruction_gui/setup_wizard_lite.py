@@ -288,7 +288,7 @@ class SetupWizardLite(ctk.CTkToplevel):
 
     def __init__(self, parent, health_checks: List[HealthCheck], models: List[ModelInfo]):
         super().__init__(parent)
-        self._root = parent
+        self._parent = parent
         self.title("Reconstruction Zone — Setup")
         self.geometry("640x720")
         self.resizable(False, False)
@@ -508,7 +508,7 @@ class SetupWizardLite(ctk.CTkToplevel):
             self._gate_status.configure(text="SAM3 access verified!",
                                         text_color=_SUCCESS)
             self._sam3_gate_resolved = True
-            self._root.after(500, self._show_downloading)
+            self._parent.after(500, self._show_downloading)
         elif report.overall_stage == "needs_access":
             self._gate_status.configure(text=report.message, text_color=_WARNING)
 
@@ -665,7 +665,7 @@ class SetupWizardLite(ctk.CTkToplevel):
         except Exception:
             logger.exception("Wizard queue handler failed")
         if self._current_step not in ("done", "overview"):
-            self._root.after(100, self._poll)
+            self._parent.after(100, self._poll)
 
     def _handle_message(self, msg):
         msg_type = msg[0]
@@ -708,7 +708,7 @@ class SetupWizardLite(ctk.CTkToplevel):
                 self._gate_status.configure(text="Access verified! Proceeding...",
                                             text_color=_SUCCESS)
                 self._sam3_gate_resolved = True
-                self._root.after(1000, self._show_downloading)
+                self._parent.after(1000, self._show_downloading)
             elif report.overall_stage == "needs_access":
                 self._gate_status.configure(
                     text=report.message + "\n" + report.next_action,
