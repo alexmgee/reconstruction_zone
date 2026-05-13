@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Reconstruction Zone
-===================
-Unified photogrammetry prep GUI. Double-click to launch.
+Reconstruction Zone (Lite)
+==========================
+Unified photogrammetry prep GUI. Double-click launch.bat to start.
 
 Tabs:
-  Projects — central registry for photogrammetry projects, lifecycle tracking
   Extract  — video analysis, frame extraction (queue), reframe, fisheye, LUT, filters
   Mask     — multi-model masking pipeline (YOLO, SAM3, RF-DETR)
   Review   — paginated thumbnail grid, large preview, OpenCV editor launch
-  Align    — sparse COLMAP / SphereSfM alignment
 
 No CLI arguments required. All configuration via the GUI.
 """
@@ -88,9 +86,7 @@ from widgets import (
     LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
 )
 from app_infra import AppInfrastructure
-from tabs.alignment_tab import build_alignment_tab
 from tabs.source_tab import build_source_tab
-from tabs.projects_tab import build_projects_tab
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -101,18 +97,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
     """Unified photogrammetry prep: prepare → mask → review → gaps."""
 
     _PREFS_FILE = prefs_file(create=False)
-    _SPHERESFM_PREBUILT_CANDIDATES = (
-        _project_root / ".tmp" / "SphereSfM-2025-8-18" / "SphereSfM-2024-12-14" / "colmap.exe",
-    )
-    _SPHERESFM_LEGACY_CUSTOM_DEFAULT = Path(r"D:\Tools\SphereSfM\bin\colmap.exe")
-    _ALIGNMENT_BINARY_PREF_KEYS = {
-        "colmap": "alignment_colmap_binary",
-        "spheresfm": "alignment_spheresfm_binary",
-    }
-    _ALIGNMENT_BINARY_ENV_KEYS = {
-        "colmap": "COLMAP_BINARY",
-        "spheresfm": "SPHERESFM_BINARY",
-    }
 
     def __init__(self):
         super().__init__()
@@ -132,10 +116,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.is_running = False
         self.cancel_flag = threading.Event()
         self._prefs = self._load_prefs()
-        self._activity_store = None  # Lazy — set after project store in build_projects_tab
         self._preview_mode = "process"  # "process" or "review"
-        self._alignment_binary_paths: Dict[str, str] = {}
-        self._alignment_binary_status: Dict[str, Dict[str, object]] = {}
 
         # Review state (lazy)
         self._review_loaded = False
@@ -189,11 +170,11 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _run_setup_wizard(self):
-        """Check model weights and show setup wizard if any are missing."""
+        """Check environment health and model weights, show wizard if needed."""
         try:
-            from setup_wizard import run_setup_wizard_if_needed
+            from setup_wizard_lite import run_setup_wizard_if_needed
         except ImportError:
-            from reconstruction_gui.setup_wizard import run_setup_wizard_if_needed
+            from reconstruction_gui.setup_wizard_lite import run_setup_wizard_if_needed
         run_setup_wizard_if_needed(self)
 
     def record_activity(self, operation: str, input_path: str, output_path: str,
@@ -223,238 +204,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             logger.warning("ffmpeg not found on PATH — video extraction will not work")
         if not shutil.which("exiftool"):
             logger.warning("exiftool not found on PATH — SRT geotagging will not work")
-        self._refresh_alignment_binary_cache()
-
-    def _normalize_alignment_engine_name(self, engine_name: str) -> str:
-        normalized = (engine_name or "").strip().lower()
-        if normalized in {"colmap", "stock", "stock-colmap"}:
-            return "colmap"
-        if normalized in {"sphere", "spheresfm", "sphere-sfm"}:
-            return "spheresfm"
-        raise ValueError(f"Unknown alignment engine: {engine_name}")
-
-    def _alignment_binary_pref_key(self, engine_name: str) -> str:
-        normalized = self._normalize_alignment_engine_name(engine_name)
-        return self._ALIGNMENT_BINARY_PREF_KEYS[normalized]
-
-    def _iter_spheresfm_prebuilt_candidates(self):
-        seen = set()
-        for candidate in self._SPHERESFM_PREBUILT_CANDIDATES:
-            path = Path(candidate).expanduser()
-            key = str(path).lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            yield path
-
-    def _maybe_promote_prebuilt_spheresfm_pref(self) -> bool:
-        pref_key = self._alignment_binary_pref_key("spheresfm")
-        configured_value = str(self._prefs.get(pref_key, "") or "").strip()
-        if not configured_value:
-            return False
-
-        try:
-            configured_path = Path(configured_value).expanduser().resolve()
-        except Exception:
-            configured_path = Path(configured_value).expanduser()
-
-        legacy_path = self._SPHERESFM_LEGACY_CUSTOM_DEFAULT
-        try:
-            legacy_path = legacy_path.resolve()
-        except Exception:
-            pass
-
-        if str(configured_path).lower() != str(legacy_path).lower():
-            return False
-
-        for candidate in self._iter_spheresfm_prebuilt_candidates():
-            if candidate.is_file():
-                preferred = str(candidate.resolve())
-                self._prefs[pref_key] = preferred
-                logger.info(
-                    "Promoting official prebuilt SphereSfM binary over legacy custom default: %s",
-                    preferred,
-                )
-                return True
-        return False
-
-    def _iter_alignment_binary_candidates(self, engine_name: str):
-        normalized = self._normalize_alignment_engine_name(engine_name)
-        pref_key = self._alignment_binary_pref_key(normalized)
-        env_key = self._ALIGNMENT_BINARY_ENV_KEYS[normalized]
-        seen = set()
-
-        def add_candidate(raw_path: Optional[str], source: str):
-            candidate = (raw_path or "").strip()
-            if not candidate:
-                return
-            path = Path(candidate).expanduser()
-            key = str(path).lower()
-            if key in seen:
-                return
-            seen.add(key)
-            yield path, source
-
-        yield from add_candidate(self._prefs.get(pref_key, ""), "prefs")
-        yield from add_candidate(os.environ.get(env_key, ""), "env")
-
-        if normalized == "colmap":
-            yield from add_candidate(shutil.which("colmap"), "path")
-            home_colmap_root = Path.home() / "COLMAP"
-            if home_colmap_root.is_dir():
-                for path in sorted(home_colmap_root.glob("*/bin/colmap.exe"), reverse=True):
-                    yield from add_candidate(str(path), "home-colmap")
-                yield from add_candidate(str(home_colmap_root / "bin" / "colmap.exe"), "home-colmap")
-        else:
-            for path in self._iter_spheresfm_prebuilt_candidates():
-                yield from add_candidate(str(path), "official-prebuilt-v1.2")
-            yield from add_candidate(r"D:\Tools\SphereSfM\bin\colmap.exe", "legacy-custom-spheresfm")
-            yield from add_candidate(str(Path.home() / "SphereSfM" / "bin" / "colmap.exe"), "home-spheresfm")
-
-    def _validate_alignment_binary_candidate(self, engine_name: str, binary_path: Path) -> Dict[str, object]:
-        from reconstruction_gui.colmap_runner import ColmapRunner
-
-        normalized = self._normalize_alignment_engine_name(engine_name)
-        probe_camera_model = "SPHERE" if normalized == "spheresfm" else "PINHOLE"
-        probe_root = _project_root / ".tmp" / "alignment_binary_probe" / normalized
-        runner = ColmapRunner(
-            binary_path=str(binary_path),
-            camera_model=probe_camera_model,
-            workspace_root=str(probe_root),
-            engine_name=normalized,
-        )
-        validation = runner.validate_binary()
-        return {
-            "success": validation.success,
-            "path": str(binary_path),
-            "resolved_binary": validation.resolved_binary,
-            "binary_flavor": validation.binary_flavor,
-            "supports_sphere_workflow": validation.supports_sphere_workflow,
-            "detected_commands": list(validation.detected_commands),
-            "error": validation.error,
-        }
-
-    def _refresh_alignment_binary_cache(self):
-        updated_prefs = self._maybe_promote_prebuilt_spheresfm_pref()
-
-        for engine_name in ("colmap", "spheresfm"):
-            pref_key = self._alignment_binary_pref_key(engine_name)
-            configured_value = str(self._prefs.get(pref_key, "") or "").strip()
-            errors: List[str] = []
-            selected: Optional[Dict[str, object]] = None
-
-            for candidate, source in self._iter_alignment_binary_candidates(engine_name):
-                try:
-                    info = self._validate_alignment_binary_candidate(engine_name, candidate)
-                except Exception as exc:
-                    errors.append(f"{candidate}: {exc}")
-                    continue
-
-                if not info["success"]:
-                    errors.append(f"{candidate}: {info['error']}")
-                    continue
-
-                if engine_name == "spheresfm" and not info["supports_sphere_workflow"]:
-                    errors.append(
-                        f"{candidate}: binary validated but does not expose sphere workflow commands"
-                    )
-                    continue
-
-                if (
-                    engine_name == "colmap"
-                    and info["binary_flavor"] == "spheresfm-like"
-                    and source not in {"prefs", "env"}
-                ):
-                    errors.append(
-                        f"{candidate}: skipping sphere-focused binary for stock COLMAP auto-discovery"
-                    )
-                    continue
-
-                selected = {
-                    **info,
-                    "engine_name": engine_name,
-                    "source": source,
-                    "status": "ready",
-                }
-                break
-
-            if selected is None:
-                message = "; ".join(errors) if errors else "No candidate binary found"
-                self._alignment_binary_paths[engine_name] = ""
-                self._alignment_binary_status[engine_name] = {
-                    "engine_name": engine_name,
-                    "path": configured_value,
-                    "resolved_binary": "",
-                    "binary_flavor": "",
-                    "supports_sphere_workflow": False,
-                    "detected_commands": [],
-                    "status": "missing",
-                    "source": "",
-                    "error": message,
-                }
-                if configured_value:
-                    logger.warning(
-                        "%s binary configured but unavailable: %s",
-                        engine_name,
-                        message,
-                    )
-                else:
-                    logger.info(
-                        "%s binary not discovered yet — alignment support will stay unavailable until one is configured",
-                        engine_name,
-                    )
-                continue
-
-            resolved_binary = str(selected["resolved_binary"])
-            self._alignment_binary_paths[engine_name] = resolved_binary
-            self._alignment_binary_status[engine_name] = selected
-
-            if configured_value != resolved_binary:
-                self._prefs[pref_key] = resolved_binary
-                updated_prefs = True
-
-            logger.info(
-                "Detected %s binary: %s (%s)",
-                engine_name,
-                resolved_binary,
-                selected["binary_flavor"],
-            )
-
-        if updated_prefs:
-            self._save_prefs()
-
-    def get_alignment_binary_info(self, engine_name: str) -> Dict[str, object]:
-        normalized = self._normalize_alignment_engine_name(engine_name)
-        if normalized not in self._alignment_binary_status:
-            self._refresh_alignment_binary_cache()
-        return dict(self._alignment_binary_status.get(normalized, {}))
-
-    def get_alignment_binary_path(self, engine_name: str) -> str:
-        info = self.get_alignment_binary_info(engine_name)
-        return str(info.get("resolved_binary", "") or "")
-
-    def create_alignment_runner(
-        self,
-        engine_name: str,
-        workspace_root: str,
-        camera_model: str,
-        binary_path: Optional[str] = None,
-    ):
-        from reconstruction_gui.colmap_runner import ColmapRunner
-
-        normalized = self._normalize_alignment_engine_name(engine_name)
-        resolved_binary = (binary_path or "").strip() or self.get_alignment_binary_path(normalized)
-        if not resolved_binary:
-            status = self.get_alignment_binary_info(normalized)
-            detail = status.get("error", "No binary configured")
-            raise RuntimeError(f"{normalized} binary is unavailable: {detail}")
-
-        return ColmapRunner(
-            binary_path=resolved_binary,
-            camera_model=camera_model,
-            workspace_root=workspace_root,
-            engine_name=normalized,
-        )
 
     # ── prefs ──
     # _load_prefs and _save_prefs inherited from AppInfrastructure
@@ -466,116 +215,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             if val:
                 entry.delete(0, "end")
                 entry.insert(0, val)
-        alignment_entry_map = [
-            ("alignment_images_dir", "alignment_images_entry"),
-            ("alignment_masks_dir", "alignment_masks_entry"),
-            ("alignment_workspace_root", "alignment_workspace_entry"),
-            ("alignment_vocab_tree_path", "alignment_vocab_tree_entry"),
-            ("alignment_camera_params", "alignment_camera_params_entry"),
-            ("alignment_pose_path", "alignment_pose_path_entry"),
-            ("alignment_camera_mask_path", "alignment_camera_mask_path_entry"),
-            ("alignment_snapshot_path", "alignment_snapshot_path_entry"),
-            ("alignment_spatial_max_distance", "alignment_spatial_max_distance_entry"),
-        ]
-        for pref_key, attr_name in alignment_entry_map:
-            entry = getattr(self, attr_name, None)
-            val = self._prefs.get(pref_key, "")
-            if entry is not None and val:
-                entry.delete(0, "end")
-                entry.insert(0, val)
-        if hasattr(self, "alignment_engine_var") and self._prefs.get("alignment_engine"):
-            self.alignment_engine_var.set(self._prefs["alignment_engine"])
-        if hasattr(self, "alignment_feature_type_var") and self._prefs.get("alignment_feature_type"):
-            self.alignment_feature_type_var.set(self._prefs["alignment_feature_type"])
-        if hasattr(self, "alignment_matcher_type_var") and self._prefs.get("alignment_matcher_type"):
-            self.alignment_matcher_type_var.set(self._prefs["alignment_matcher_type"])
-        if hasattr(self, "alignment_strategy_var") and self._prefs.get("alignment_strategy"):
-            self.alignment_strategy_var.set(self._prefs["alignment_strategy"])
-        if hasattr(self, "alignment_mapper_var") and self._prefs.get("alignment_mapper"):
-            mapper_value = str(self._prefs["alignment_mapper"])
-            if mapper_value == "global_mapper":
-                mapper_value = "global"
-            self.alignment_mapper_var.set(mapper_value)
-        if hasattr(self, "alignment_guided_var") and "alignment_guided_matching" in self._prefs:
-            self.alignment_guided_var.set(bool(self._prefs["alignment_guided_matching"]))
-        if hasattr(self, "alignment_single_camera_var") and "alignment_single_camera" in self._prefs:
-            self.alignment_single_camera_var.set(bool(self._prefs["alignment_single_camera"]))
-        if hasattr(self, "alignment_spatial_is_gps_var") and "alignment_spatial_is_gps" in self._prefs:
-            self.alignment_spatial_is_gps_var.set(bool(self._prefs["alignment_spatial_is_gps"]))
-        if hasattr(self, "alignment_ba_refine_focal_var") and "alignment_ba_refine_focal_length" in self._prefs:
-            self.alignment_ba_refine_focal_var.set(bool(self._prefs["alignment_ba_refine_focal_length"]))
-        if hasattr(self, "alignment_ba_refine_principal_var") and "alignment_ba_refine_principal_point" in self._prefs:
-            self.alignment_ba_refine_principal_var.set(bool(self._prefs["alignment_ba_refine_principal_point"]))
-        if hasattr(self, "alignment_ba_refine_extra_var") and "alignment_ba_refine_extra_params" in self._prefs:
-            self.alignment_ba_refine_extra_var.set(bool(self._prefs["alignment_ba_refine_extra_params"]))
-        for attr, pref_key in [
-            ("alignment_prior_std_x_entry", "alignment_prior_std_x"),
-            ("alignment_prior_std_y_entry", "alignment_prior_std_y"),
-            ("alignment_prior_std_z_entry", "alignment_prior_std_z"),
-        ]:
-            if hasattr(self, attr) and pref_key in self._prefs:
-                val = self._prefs[pref_key]
-                if val not in ("", None):
-                    getattr(self, attr).delete(0, "end")
-                    getattr(self, attr).insert(0, str(val))
-        if hasattr(self, "alignment_prior_overwrite_var") and "alignment_prior_overwrite" in self._prefs:
-            self.alignment_prior_overwrite_var.set(bool(self._prefs["alignment_prior_overwrite"]))
-        if hasattr(self, "alignment_deterministic_var") and "alignment_deterministic" in self._prefs:
-            self.alignment_deterministic_var.set(bool(self._prefs["alignment_deterministic"]))
-        if hasattr(self, "alignment_max_features_entry") and self._prefs.get("alignment_max_features"):
-            self.alignment_max_features_entry.delete(0, "end")
-            self.alignment_max_features_entry.insert(0, str(self._prefs["alignment_max_features"]))
-        if hasattr(self, "alignment_max_image_size_entry") and "alignment_max_image_size" in self._prefs:
-            self.alignment_max_image_size_entry.delete(0, "end")
-            self.alignment_max_image_size_entry.insert(0, str(self._prefs["alignment_max_image_size"]))
-        if hasattr(self, "alignment_max_num_matches_entry") and "alignment_max_num_matches" in self._prefs:
-            self.alignment_max_num_matches_entry.delete(0, "end")
-            self.alignment_max_num_matches_entry.insert(0, str(self._prefs["alignment_max_num_matches"]))
-        if hasattr(self, "alignment_min_num_inliers_entry") and "alignment_min_num_inliers" in self._prefs:
-            self.alignment_min_num_inliers_entry.delete(0, "end")
-            self.alignment_min_num_inliers_entry.insert(0, str(self._prefs["alignment_min_num_inliers"]))
-        if hasattr(self, "alignment_snapshot_freq_entry") and "alignment_snapshot_images_freq" in self._prefs:
-            self.alignment_snapshot_freq_entry.delete(0, "end")
-            snapshot_freq = self._prefs["alignment_snapshot_images_freq"]
-            if snapshot_freq not in ("", None):
-                self.alignment_snapshot_freq_entry.insert(0, str(snapshot_freq))
-        if hasattr(self, "alignment_binary_entry"):
-            engine_name = self._prefs.get("alignment_engine", "colmap")
-            pref_key = self._ALIGNMENT_BINARY_PREF_KEYS.get(engine_name, self._ALIGNMENT_BINARY_PREF_KEYS["colmap"])
-            binary_val = self._prefs.get(pref_key, "")
-            if binary_val:
-                self.alignment_binary_entry.delete(0, "end")
-                self.alignment_binary_entry.insert(0, binary_val)
-                detected_binary = self.get_alignment_binary_path(engine_name)
-                self._alignment_last_auto_binary = binary_val if binary_val == detected_binary else ""
-        if hasattr(self, "alignment_camera_model_var") and self._prefs.get("alignment_camera_model"):
-            engine_name = self._prefs.get("alignment_engine", "colmap")
-            restored_camera_model = self._prefs.get("alignment_camera_model", "")
-            if engine_name != "spheresfm" and restored_camera_model:
-                self.alignment_camera_model_var.set(restored_camera_model)
-            default_camera_model = "SPHERE" if engine_name == "spheresfm" else "PINHOLE"
-            self._alignment_last_auto_camera_model = (
-                restored_camera_model if restored_camera_model == default_camera_model else ""
-            )
-        # Rig mode, preset, file
-        # Rig mode is derived from preset selection, no checkbox to restore
-        if hasattr(self, "alignment_rig_preset_var") and self._prefs.get("alignment_rig_preset"):
-            self.alignment_rig_preset_var.set(self._prefs["alignment_rig_preset"])
-        if hasattr(self, "alignment_rig_file_entry") and self._prefs.get("alignment_rig_file"):
-            self.alignment_rig_file_entry.delete(0, "end")
-            self.alignment_rig_file_entry.insert(0, self._prefs["alignment_rig_file"])
-        for pref_key, attr_name in [
-            ("alignment_extract_args", "alignment_extract_args_text"),
-            ("alignment_match_args", "alignment_match_args_text"),
-            ("alignment_reconstruct_args", "alignment_reconstruct_args_text"),
-        ]:
-            textbox = getattr(self, attr_name, None)
-            text_val = self._prefs.get(pref_key, "")
-            if textbox is not None and text_val:
-                textbox.configure(state="normal")
-                textbox.delete("1.0", "end")
-                textbox.insert("1.0", str(text_val))
-                textbox.configure(state="disabled")
         # Restore prompt fields
         if self._prefs.get("remove_prompts"):
             self.remove_prompts_entry.delete(0, "end")
@@ -605,17 +244,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
     def _on_close(self):
         """Fast shutdown — kill subprocesses, clear caches, destroy widgets."""
-        # Persist tracker store path
-        if hasattr(self, '_project_store') and self._project_store:
-            self._prefs["tracker_store_path"] = str(self._project_store.store_path)
-            self._save_prefs()
         # Signal any running extraction/processing threads to stop
         self.cancel_flag.set()
-        if hasattr(self, "_alignment_cancel_event") and self._alignment_cancel_event is not None:
-            self._alignment_cancel_event.set()
-        # Destroy VTK viewer before window is destroyed
-        from tabs.alignment_tab import alignment_viewer_destroy
-        alignment_viewer_destroy(self)
         if self._editor_proc is not None and self._editor_proc.poll() is None:
             self._editor_proc.terminate()
         self._thumb_cache.clear()
@@ -648,11 +278,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Left: tabview (settings tabs only)
         self.tabs = ctk.CTkTabview(self._main_frame, command=self._on_tab_change)
         self.tabs.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=0)
-        self.tabs.add("Projects")
         self.tabs.add("Extract")
         self.tabs.add("Mask")
         self.tabs.add("Review")
-        self.tabs.add("Align")
 
         # Right: shared preview panel (collapsible)
         self._preview_visible = True
@@ -660,13 +288,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._preview_panel.grid(row=0, column=1, sticky="nsew", padx=0, pady=(17, 0))
         self._build_preview_panel()
 
-        build_projects_tab(self, self.tabs.tab("Projects"))
         build_source_tab(self, self.tabs.tab("Extract"))
         self._build_process_tab()
         self._build_review_tab()
-        build_alignment_tab(self, self.tabs.tab("Align"))
 
-        # Projects is the default tab — swap preview for detail panel
         self.after(50, self._on_tab_change)
 
     # ── responsive column layout ──
@@ -1463,49 +1088,13 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         """Tab changed — switch navigator data source and swap right panel."""
         active = self.tabs.get()
 
-        # Swap right-side panel: Projects info vs. Align detail vs. preview
-        if active == "Projects":
-            self._preview_panel.grid_forget()
-            if hasattr(self, '_preview_show_btn'):
-                self._preview_show_btn.destroy()
-            if hasattr(self, '_alignment_detail_panel'):
-                self._alignment_detail_panel.grid_forget()
-            if hasattr(self, '_proj_right_panel'):
-                self._proj_right_panel.grid(
-                    row=0, column=1, sticky="nsew", padx=0, pady=(17, 0),
-                )
+        if self._preview_visible:
             self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
-            # Refresh recent activity when returning to Projects tab
-            if hasattr(self, '_proj_list_mode_var') and self._proj_list_mode_var.get() == "Recent Activity":
-                from tabs.projects_tab import _refresh_recent_activity
-                _refresh_recent_activity(self)
-        elif active == "Align":
-            self._preview_panel.grid_forget()
-            if hasattr(self, '_preview_show_btn'):
-                self._preview_show_btn.destroy()
-            if hasattr(self, '_proj_right_panel'):
-                self._proj_right_panel.grid_forget()
-            if hasattr(self, '_alignment_detail_panel'):
-                self._alignment_detail_panel.grid(
-                    row=0, column=1, sticky="nsew", padx=0, pady=(17, 0),
-                )
-            self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
-            from tabs.alignment_tab import alignment_viewer_resume
-            alignment_viewer_resume(self)
+            self._preview_panel.grid(
+                row=0, column=1, sticky="nsew", padx=0, pady=(17, 0),
+            )
         else:
-            if hasattr(self, '_proj_right_panel'):
-                self._proj_right_panel.grid_forget()
-            if hasattr(self, '_alignment_detail_panel'):
-                self._alignment_detail_panel.grid_forget()
-            from tabs.alignment_tab import alignment_viewer_pause
-            alignment_viewer_pause(self)
-            if self._preview_visible:
-                self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
-                self._preview_panel.grid(
-                    row=0, column=1, sticky="nsew", padx=0, pady=(17, 0),
-                )
-            else:
-                self._main_frame.grid_columnconfigure(1, weight=0, minsize=0)
+            self._main_frame.grid_columnconfigure(1, weight=0, minsize=0)
 
         if active == "Mask":
             self._preview_mode = "process"

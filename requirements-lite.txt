@@ -1,0 +1,22 @@
+# Reconstruction Zone Lite — Dependencies
+#
+# PyTorch with CUDA is NOT listed here — it is installed by setup_install.py
+# which auto-detects your GPU and selects the correct CUDA wheel index.
+#
+# Install with: pip install -r requirements-lite.txt
+
+numpy
+opencv-python
+Pillow
+tqdm
+pyyaml
+customtkinter>=5.0
+py360convert
+scipy
+
+# Detection / segmentation models
+ultralytics
+rfdetr
+supervision
+transformers>=4.50,<5.0
+huggingface_hub

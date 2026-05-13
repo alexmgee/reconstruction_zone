@@ -1,0 +1,35 @@
+RECONSTRUCTION ZONE — QUICK START
+==================================
+
+Requirements:
+  - Windows 10/11
+  - Python 3.10, 3.11, or 3.12 (python.org — check "Add to PATH" during install)
+  - NVIDIA GPU with up-to-date drivers
+  - ~10 GB free disk space
+
+Setup (one time):
+  1. Open this folder in File Explorer
+  2. Double-click install.bat
+  3. Wait for setup to complete (~5-10 minutes depending on internet speed)
+
+Launch:
+  Double-click launch.bat (or use the desktop shortcut created during setup)
+
+First launch:
+  The setup wizard will check your environment and download AI model weights.
+  YOLO26 (6.5 MB) and RF-DETR (129 MB) download automatically.
+  SAM3 (3.3 GB) is optional and requires a free HuggingFace account.
+
+Workflow:
+  1. EXTRACT tab — Load a video, extract frames
+  2. MASK tab    — Point to your frames folder, run auto-masking
+  3. REVIEW tab  — Check results, edit masks if needed
+
+Troubleshooting:
+  - If install.bat fails, check that Python is on PATH: open a terminal and
+    type "python --version". You should see Python 3.10, 3.11, or 3.12.
+  - If the app opens but GPU is not detected, update your NVIDIA drivers
+    from https://www.nvidia.com/drivers/ and re-run install.bat.
+  - If video extraction doesn't work, the setup wizard will offer to
+    download ffmpeg automatically.
+  - Crash logs are saved to %USERPROFILE%\.reconstruction_zone\crash.log

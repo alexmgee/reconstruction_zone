@@ -1,113 +1,78 @@
-# Reconstruction Zone
+# Reconstruction Zone (Lite)
 
-![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)
-![Platform: Windows](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)
-![CUDA](https://img.shields.io/badge/CUDA-Recommended-76B900.svg)
-
-![Before and after masking](reconstruction_gui/docs/assets/hero_before_after.jpg)
-
-> Photogrammetry preprocessing toolkit — extract frames from video, reframe 360° and fisheye into perspective views, auto-mask unwanted objects, and build clean datasets for 3D reconstruction.
-
-This GUI prepares camera captures for 3D reconstruction. Extract and reframe perspectives from 360° or fisheye video, filter for sharpness, auto-detect and mask photographers/tripods/equipment across hundreds of images, review every mask with an interactive editor, then analyze spatial coverage and fill gaps. Outputs datasets ready for reconstruction pipelines.
+Automated object detection and masking for photogrammetry and 3D reconstruction. Extract frames from 360° or standard video, mask unwanted objects (people, tripods, equipment), and review results — all from one GUI.
 
 ## Requirements
 
-- Python 3.10+ (tested on 3.12–3.14)
-- NVIDIA GPU with CUDA (strongly recommended)
-- [ffmpeg + ffprobe](https://ffmpeg.org/download.html) on PATH (for video features)
+- **Windows** 10 or 11
+- **Python** 3.10, 3.11, or 3.12 — [download here](https://www.python.org/downloads/)
+  - Check **"Add Python to PATH"** during installation
+- **NVIDIA GPU** with up-to-date drivers — [download here](https://www.nvidia.com/drivers/)
+- **~10 GB** free disk space (PyTorch ~2.5 GB, models ~3.5 GB, dependencies ~1 GB)
 
 ## Installation
 
-Request access to SAM 3 model weights before starting — approval can take hours. Go to [facebook/sam3 on HuggingFace](https://huggingface.co/facebook/sam3), create a free account if needed, and click **Request access**.
-
-**PyTorch with CUDA** (CPU works but is 10–50x slower):
-
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+```
+git clone <repo-url> reconstruction-zone
+cd reconstruction-zone
+install.bat
 ```
 
-**Core + GUI + models:**
+The installer will:
+1. Check your Python version
+2. Detect your GPU and CUDA version
+3. Create a virtual environment
+4. Install PyTorch with the correct CUDA support
+5. Install all dependencies
+6. Download ffmpeg if needed
+7. Create a desktop shortcut
 
-```bash
-pip install numpy opencv-python Pillow ultralytics tqdm pyyaml customtkinter
-pip install rfdetr supervision py360convert
-pip install huggingface_hub "transformers>=4.50,<5.0"
+## Usage
+
+Double-click **launch.bat** (or the desktop shortcut).
+
+On first launch, a setup wizard checks your environment and downloads AI model weights:
+- **YOLO26** (6.5 MB) — fast object detection for known types (people, tripods, etc.)
+- **RF-DETR** (129 MB) — transformer-based detection, higher accuracy
+- **SAM3** (3.3 GB, optional) — text-prompted segmentation ("remove the photographer")
+
+### Tabs
+
+| Tab | Purpose |
+|-----|---------|
+| **Extract** | Load video, extract frames at intervals, reframe 360° to perspective views, apply LUTs and filters |
+| **Mask** | Auto-detect and mask objects using AI models. Supports equirectangular, fisheye, and pinhole images |
+| **Review** | Browse masked results as thumbnails, filter/sort, launch the OpenCV mask editor for manual fixes |
+
+### Basic workflow
+
+1. **Extract** — Load a video file, set extraction interval, click Extract
+2. **Mask** — Set Input to your extracted frames folder, set Output, click Process
+3. **Review** — Set Masks and Images folders, click Load, review results
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `python` not recognized | Reinstall Python with "Add to PATH" checked |
+| GPU not detected | Update NVIDIA drivers, re-run `install.bat` |
+| Video extraction fails | Setup wizard will offer ffmpeg download |
+| `torch.cuda.is_available()` returns False | Driver/CUDA mismatch — update drivers and re-run `install.bat` |
+| App crashes on launch | Check `%USERPROFILE%\.reconstruction_zone\crash.log` |
+
+## Project Structure
+
 ```
-
-**SAM 3** — text-prompted segmentation (primary masking model):
-
-```bash
-git clone https://github.com/facebookresearch/sam3.git
-cd sam3 && pip install -e .
+reconstruction-zone/
+├── install.bat              # One-time setup script
+├── launch.bat               # Launch the app
+├── setup_install.py         # Python installer (called by install.bat)
+├── requirements-lite.txt    # Python dependencies
+├── reconstruction-zone.ico  # App icon
+├── reconstruction_gui/      # Main application
+│   ├── reconstruction_zone.py   # GUI entry point
+│   ├── reconstruction_pipeline.py  # Masking engine
+│   ├── setup_wizard_lite.py     # First-launch wizard
+│   └── tabs/source_tab.py      # Extract tab
+└── prep360/                 # 360° video processing library
 ```
-
-**Authenticate with HuggingFace** (once your access request is approved):
-
-```bash
-huggingface-cli login
-```
-
-SAM 3 weights (~2 GB) download automatically on first run once authenticated. While waiting for approval, the app falls back to YOLO26 (class-based detection, works immediately).
-
-**Verify CUDA is working:**
-
-```bash
-python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
-```
-
-## Launch
-
-Double-click `reconstruction_gui/ReconstructionStudio.bat` to start the app (no console window).
-
-Or from the command line:
-
-```bash
-python reconstruction_gui/reconstruction_zone.py
-```
-
-## Workflow
-
-The main reconstruction path is:
-
-```text
-Extract -> Adjust -> Mask -> Review -> Align
-```
-
-Extract selects raw source frames. Adjust previews LUTs/recipes and exports adjusted derivatives for downstream masking and alignment.
-
-| Tab | What it does | Guide |
-|-----|-------------|-------|
-| **Projects** | Central registry for photogrammetry projects. Track sources, processing stages, and export status. | [Projects Guide](reconstruction_gui/docs/PROJECTS_TAB.md) |
-| **Extract** | Pull raw selected frames from 360° video, fisheye, split-lens pairs, or standard video. Equirect-to-perspective reframing with configurable view rings. | [Extract Guide](reconstruction_gui/docs/EXTRACT_TAB.md) |
-| **Adjust** | Preview `.cube` LUTs and recipes, tune color, and export safe adjusted image or paired front/back datasets. | [Adjust Guide](reconstruction_gui/docs/ADJUST_TAB.md) |
-| **Mask** | Auto-detect and mask objects using text prompts or class selection. Supports 360°-aware cubemap decomposition. | [Mask Guide](reconstruction_gui/docs/MASK_TAB.md) |
-| **Review** | Thumbnail grid with accept/reject/skip workflow. Open any mask in the interactive editor for brush, flood fill, and lasso touch-ups. | [Review Guide](reconstruction_gui/docs/REVIEW_TAB.md) |
-| **Align** | Run sparse COLMAP or SphereSfM reconstruction. Feature extraction, matching, and mapping with live point cloud viewer. | [Align Guide](reconstruction_gui/docs/ALIGN_TAB.md) |
-| **Coverage** | Analyze spatial coverage gaps in your dataset and extract bridge frames to fill them. | [Coverage Guide](reconstruction_gui/docs/COVERAGE_TAB.md) |
-
-<details>
-<summary><strong>Supported models</strong></summary>
-
-| Model | Type | Speed | Best for |
-|-------|------|-------|----------|
-| **SAM 3** | Text-prompted | ~300ms/img | Highest quality, arbitrary objects ("selfie stick", "tripod") |
-| **YOLO26** | Class-based | ~15ms/img | Fast batch processing, COCO objects (person, backpack, car) |
-| **RF-DETR** | Transformer | ~50ms/img | Strong detection + segmentation in one pass |
-| **FastSAM** | Real-time SAM | ~30ms/img | Quick previews, lightweight |
-| **EfficientSAM** | Lightweight SAM | ~40ms/img | Fallback when others unavailable |
-
-YOLO26, FastSAM, and RF-DETR weights auto-download on first use. SAM 3 requires [HuggingFace access](#installation) first. See the full [Model Guide](reconstruction_gui/docs/MODELS.md) for configuration, model sizes, and comparison.
-
-</details>
-
-## Documentation
-
-- [Quickstart](reconstruction_gui/docs/QUICKSTART.md) — First mask in 5 minutes
-- [Architecture](reconstruction_gui/docs/ARCHITECTURE.md) — Pipeline internals, data flow, module map
-- [Model Guide](reconstruction_gui/docs/MODELS.md) — Model comparison, configuration, COCO class reference
-- [Contributing](reconstruction_gui/docs/CONTRIBUTING.md) — Adding new models and modules
-
-## License
-
-This project is licensed under the [GNU General Public License v3.0](LICENSE).

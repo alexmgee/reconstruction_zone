@@ -24,13 +24,11 @@ from .fisheye_calibration import (
     FisheyeCalibrator, FisheyeCalibration, DualFisheyeCalibration,
 )
 from .motion_selector import MotionSelector, FrameScore, SelectionResult
-from .gap_detector import GapDetector, GapReport, SpatialGap, CameraPosition as GapCameraPosition
 from .fisheye_reframer import (
     FisheyeReframer, FisheyeView, FisheyeViewConfig,
     FISHEYE_PRESETS, batch_extract as fisheye_batch_extract,
     default_osmo360_calibration,
 )
-from .bridge_extractor import BridgeExtractor, BridgeRequest, BridgeResult, BridgeFrameInfo
 from .sharpest_extractor import SharpestExtractor, SharpestConfig, SharpestResult
 from .paired_split_video_extractor import (
     PairedSplitVideoExtractor,
@@ -79,13 +77,6 @@ __all__ = [
     "MotionSelector",
     "FrameScore",
     "SelectionResult",
-    "GapDetector",
-    "GapReport",
-    "SpatialGap",
-    "BridgeExtractor",
-    "BridgeRequest",
-    "BridgeResult",
-    "BridgeFrameInfo",
     "SharpestExtractor",
     "SharpestConfig",
     "SharpestResult",
