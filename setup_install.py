@@ -37,9 +37,10 @@ MIN_DISK_GB = 10
 
 # CUDA version → PyTorch index URL mapping
 # nvidia-smi reports the max CUDA version the driver supports.
+# NOTE: Default PyPI torch is CPU-only. CUDA wheels always require --index-url.
 CUDA_INDEX_MAP = [
-    # (min_version, max_version, index_url_or_None)
-    ((13, 0), (99, 99), None),  # 13.0+ → default PyPI (PyTorch 2.11+ ships cu130)
+    # (min_version, max_version, index_url)
+    ((13, 0), (99, 99), "https://download.pytorch.org/whl/cu130"),
     ((12, 6), (12, 99), "https://download.pytorch.org/whl/cu128"),
     ((12, 1), (12, 5),  "https://download.pytorch.org/whl/cu124"),
     ((11, 8), (12, 0),  "https://download.pytorch.org/whl/cu118"),
@@ -199,16 +200,13 @@ def step_detect_gpu() -> Tuple[str, Tuple[int, ...]]:
     return gpu_name, cuda_ver
 
 
-def step_select_pytorch_index(cuda_ver: Tuple[int, ...]) -> Optional[str]:
-    """Map CUDA version to PyTorch index URL. Returns None for default PyPI."""
+def step_select_pytorch_index(cuda_ver: Tuple[int, ...]) -> str:
+    """Map CUDA version to PyTorch index URL."""
     cuda_major_minor = cuda_ver[:2]
 
     for min_ver, max_ver, index_url in CUDA_INDEX_MAP:
         if min_ver <= cuda_major_minor <= max_ver:
-            if index_url:
-                print_ok(f"Using PyTorch index: {index_url}")
-            else:
-                print_ok("Using default PyPI (CUDA 13.0+ supported natively)")
+            print_ok(f"Using PyTorch index: {index_url}")
             return index_url
 
     abort(
@@ -218,11 +216,10 @@ def step_select_pytorch_index(cuda_ver: Tuple[int, ...]) -> Optional[str]:
     )
 
 
-def step_install_pytorch(index_url: Optional[str]) -> None:
+def step_install_pytorch(index_url: str) -> None:
     packages = ["torch", "torchvision", "torchaudio"]
     args = ["install"] + packages
-    if index_url:
-        args += ["--index-url", index_url]
+    args += ["--index-url", index_url]
 
     if not run_pip(args, "PyTorch install"):
         abort(
