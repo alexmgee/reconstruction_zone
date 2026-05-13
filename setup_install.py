@@ -218,6 +218,14 @@ def step_select_pytorch_index(cuda_ver: Tuple[int, ...]) -> str:
 
 
 def step_install_pytorch(index_url: str) -> None:
+    # Pre-install typing-extensions from PyPI first. The PyTorch wheel index
+    # hosts its own copies of typing-extensions with conflicting version
+    # metadata. If we let --index-url replace PyPI, pip tries to resolve
+    # typing-extensions from the PyTorch index and fails. Installing it
+    # from PyPI first satisfies the requirement before torch is fetched.
+    if not run_pip(["install", "typing-extensions"], "typing-extensions pre-install"):
+        print_warn("typing-extensions pre-install failed, continuing anyway")
+
     packages = ["torch", "torchvision", "torchaudio"]
     args = ["install"] + packages
     args += ["--index-url", index_url]
