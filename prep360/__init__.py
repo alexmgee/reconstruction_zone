@@ -37,10 +37,6 @@ from .core import (
     SkyFilter,
     SkyFilterConfig,
     LUTProcessor,
-    Segmenter,
-    SegmentConfig,
-    COCO_CLASSES,
-    CLASS_PRESETS,
     BlurFilter,
     BlurFilterConfig,
     ColmapExporter,
@@ -75,3 +71,15 @@ __all__ = [
     "parse_metashape_xml",
     "ExportResult",
 ]
+
+
+# Lazy imports for heavy optional dependencies (ultralytics via prep360.core.segmenter)
+_LAZY_SEGMENTER = {"Segmenter", "SegmentConfig", "COCO_CLASSES", "CLASS_PRESETS"}
+
+def __getattr__(name):
+    if name in _LAZY_SEGMENTER:
+        from .core.segmenter import Segmenter, SegmentConfig, COCO_CLASSES, CLASS_PRESETS
+        _map = {"Segmenter": Segmenter, "SegmentConfig": SegmentConfig,
+                "COCO_CLASSES": COCO_CLASSES, "CLASS_PRESETS": CLASS_PRESETS}
+        return _map[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

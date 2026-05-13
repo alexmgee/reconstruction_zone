@@ -32,12 +32,16 @@ from pathlib import Path
 from tkinter import filedialog
 from typing import Dict, Optional
 
-# ── File-based crash-resilient logger ──────────────────────────────────
-# Survives GUI freezes and pythonw.exe (no console).  Writes to
-# ~/.reconstruction_zone/crash.log with rotation (3 × 2 MB).
+try:
+    from app_paths import crash_log_file
+except ImportError:
+    from reconstruction_gui.app_paths import crash_log_file
 
-_LOG_DIR = Path.home() / ".reconstruction_zone"
-_LOG_FILE = _LOG_DIR / "crash.log"
+# ── File-based crash-resilient logger ──────────────────────────────────
+# Survives GUI freezes and pythonw.exe (no console). Writes to the app-home
+# logs directory with rotation (3 × 2 MB).
+
+_LOG_FILE = crash_log_file(create=False)
 
 def _init_file_logger() -> logging.Logger:
     """Create (or return existing) file logger for the application."""
@@ -45,16 +49,19 @@ def _init_file_logger() -> logging.Logger:
     if logger.handlers:
         return logger  # already initialised
 
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.handlers.RotatingFileHandler(
-        _LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=3,
-        encoding="utf-8",
-    )
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s  %(levelname)-7s  %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    ))
-    logger.addHandler(handler)
+    try:
+        log_file = crash_log_file(create=True)
+        handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=2 * 1024 * 1024, backupCount=3,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s  %(levelname)-7s  %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        logger.addHandler(handler)
+    except Exception:
+        logger.addHandler(logging.NullHandler())
     logger.setLevel(logging.DEBUG)
     return logger
 
@@ -256,7 +263,7 @@ class AppInfrastructure:
         if self._PREFS_FILE is None:
             return {}
         try:
-            return json.loads(self._PREFS_FILE.read_text())
+            return json.loads(self._PREFS_FILE.read_text(encoding="utf-8"))
         except Exception:
             return {}
 
@@ -264,7 +271,8 @@ class AppInfrastructure:
         if self._PREFS_FILE is None:
             return
         try:
-            self._PREFS_FILE.write_text(json.dumps(self._prefs, indent=2))
+            self._PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self._PREFS_FILE.write_text(json.dumps(self._prefs, indent=2), encoding="utf-8")
         except Exception:
             pass
 

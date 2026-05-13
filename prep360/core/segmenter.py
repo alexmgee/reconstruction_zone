@@ -26,7 +26,7 @@ try:
         raise ImportError("YOLO excluded from Gumroad build")
     from ultralytics import YOLO
     HAS_YOLO = True
-except ImportError:
+except Exception:
     HAS_YOLO = False
 
 

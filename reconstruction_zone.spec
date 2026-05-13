@@ -35,7 +35,7 @@ gui_docs = [('reconstruction_gui/docs', 'reconstruction_gui/docs')]
 
 a = Analysis(
     ['reconstruction_gui/reconstruction_zone.py'],
-    pathex=[],
+    pathex=['reconstruction_gui'],
     binaries=[
         # Statically-linked ffmpeg + ffprobe (no DLL deps)
         (r'C:\Users\alexm\ffmpeg\bin\ffmpeg.exe', 'ffmpeg'),
@@ -44,8 +44,6 @@ a = Analysis(
     datas=ctk_datas + prep360_datas + gui_docs + [('reconstruction-zone.ico', '.')],
     hiddenimports=[
         # --- PyTorch + CUDA ---
-        # collect_submodules pulls in all torch.* / torchvision.* subpackages
-        # so that lazy imports inside the app resolve correctly.
         *collect_submodules('torch'),
         *collect_submodules('torchvision'),
 
@@ -107,10 +105,10 @@ a = Analysis(
         'reconstruction_gui.colmap_validation',
         'reconstruction_gui.sam3_pipeline',
         'reconstruction_gui._version',
+        '_version',
         'reconstruction_gui.project_store',
         'reconstruction_gui.project_scanner',
         'reconstruction_gui.project_exporters',
-        'reconstruction_gui.model_downloader',
         'reconstruction_gui.colmap_runner',
         'reconstruction_gui.alignment_profiles',
         'reconstruction_gui.rig_presets',
@@ -124,6 +122,16 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
+    module_collection_mode={
+        # 'py' mode: collect .py source files only (no PYZ bytecode).
+        # Torch's circular cross-imports break when loaded from the PYZ
+        # archive because PyInstaller's loader resolves modules in a
+        # different order than CPython's standard import machinery.
+        # Keeping torch as loose .py files lets CPython's normal import
+        # system handle the ordering correctly.
+        'torch': 'py',
+        'torchvision': 'py',
+    },
     runtime_hooks=['scripts/pyinstaller_runtime_hook.py'],
     excludes=[
         # Large packages we don't need
@@ -145,7 +153,6 @@ a = Analysis(
         'unittest',
         'doctest',
         # Unused torch extras
-        'torch.testing',
         'torch.utils.tensorboard',
         'tensorboard',
         'caffe2',

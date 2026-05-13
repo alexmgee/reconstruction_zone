@@ -976,14 +976,6 @@ def _build_alignment_detail_panel(app):
     )
     app.alignment_reset_btn.pack(side="right", padx=(0, 10))
 
-    app.alignment_send_to_coverage_btn = ctk.CTkButton(
-        ctrl_bar, text="Send To Coverage", width=130, height=28,
-        font=ctk.CTkFont(size=12), fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
-        state="disabled",
-        command=lambda: _send_alignment_to_coverage(app, switch_tab=True),
-    )
-    app.alignment_send_to_coverage_btn.pack(side="right", padx=(0, 6))
-
     # ── Row 3: Summary ──
     # Use a plain frame (not CollapsibleSection) so it fills grid weight properly
     summary_frame = ctk.CTkFrame(panel, corner_radius=0)
@@ -1166,12 +1158,18 @@ def _load_viewer_model(app, model_dir: str):
                 colmap_binary = app.get_alignment_binary_path("colmap") if hasattr(app, "get_alignment_binary_path") else ""
                 if colmap_binary:
                     import subprocess
+                    from pathlib import Path as _P
+                    try:
+                        from subprocess_env import isolated_subprocess_kwargs
+                    except ImportError:
+                        from reconstruction_gui.subprocess_env import isolated_subprocess_kwargs
                     cmd = [colmap_binary, "model_converter",
                            "--input_path", str(model_path),
                            "--output_path", str(model_path),
                            "--output_type", "TXT"]
                     app.log(f"Converting binary model to text: {model_path.name}")
-                    subprocess.run(cmd, capture_output=True, timeout=30)
+                    subprocess.run(cmd, capture_output=True, timeout=30,
+                                   **isolated_subprocess_kwargs(_P(colmap_binary)))
                 else:
                     app.log("Cannot load binary model — no COLMAP binary available for conversion")
                     return
@@ -2247,11 +2245,6 @@ def _set_alignment_busy(app, busy: bool):
         app.alignment_cancel_btn.configure(state="normal" if busy else "disabled")
     if hasattr(app, "alignment_reset_btn"):
         app.alignment_reset_btn.configure(state="disabled" if busy else "normal")
-    if hasattr(app, "alignment_send_to_coverage_btn"):
-        has_model = bool(getattr(app, "_alignment_last_selected_model_dir", ""))
-        app.alignment_send_to_coverage_btn.configure(
-            state="disabled" if busy or not has_model else "normal"
-        )
 
 
 def _cancel_alignment(app):
@@ -2566,37 +2559,6 @@ def _alignment_log(app, message: str):
         app.after(0, lambda text=f"{line}\n": _append_textbox_text(app.alignment_log_text, text))
 
 
-def _send_alignment_to_coverage(app, switch_tab: bool = False):
-    selected_model_dir = getattr(app, "_alignment_last_selected_model_dir", "") or app._prefs.get(
-        "alignment_last_selected_model_dir",
-        "",
-    )
-    if not selected_model_dir:
-        app.log("No alignment model is available to send to Coverage yet.")
-        return
-    if not Path(selected_model_dir).exists():
-        app.log(f"Selected alignment model no longer exists: {selected_model_dir}")
-        return
-
-    try:
-        from reconstruction_gui.tabs.gaps_tab import _on_source_change
-    except ImportError:
-        from tabs.gaps_tab import _on_source_change
-
-    app.gaps_source_var.set("colmap")
-    _on_source_change(app)
-    _set_entry_text(app.gaps_source_entry, selected_model_dir)
-
-    images_dir = app.alignment_images_entry.get().strip()
-    if images_dir and hasattr(app, "gaps_images_entry") and not app.gaps_images_entry.get().strip():
-        _set_entry_text(app.gaps_images_entry, images_dir)
-
-    if switch_tab:
-        app.tabs.set("Coverage")
-
-    app.log(f"Coverage source updated to alignment model: {selected_model_dir}")
-
-
 def _store_rig_result(app, result):
     """Store the rig configurator result for the summary display."""
     app._alignment_rig_result = result
@@ -2681,11 +2643,8 @@ def _apply_stage_result(app, stage_key: str, result):
             if progress_status:
                 _alignment_log(app, f"Reconstruction progress summary: {progress_status}")
 
-            app.alignment_send_to_coverage_btn.configure(state="normal")
             _load_viewer_model(app, selected_model_dir)
-            if result.success:
-                _send_alignment_to_coverage(app, switch_tab=False)
-            elif result.stats.get("partial_model_available"):
+            if result.stats.get("partial_model_available"):
                 if result.stats.get("recovered_from_snapshot"):
                     _alignment_log(
                         app,

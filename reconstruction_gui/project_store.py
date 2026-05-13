@@ -26,6 +26,14 @@ MEDIA_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".mp4", ".mov", ".avi", 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
 
+def _default_store_path() -> Path:
+    try:
+        from app_paths import project_store_file
+    except ImportError:
+        from reconstruction_gui.app_paths import project_store_file
+    return project_store_file(create=False)
+
+
 def count_media_files(directory: str) -> int:
     """Count media files in a directory. Shared helper to avoid duplication."""
     p = Path(directory)
@@ -212,8 +220,8 @@ class ProjectStore:
 
     VERSION = 1
 
-    def __init__(self, store_path: str = "D:\\tracker.json"):
-        self.store_path = Path(store_path)
+    def __init__(self, store_path: Optional[str] = None):
+        self.store_path = Path(store_path) if store_path else _default_store_path()
         self._projects: Dict[str, Project] = {}
         self._load()
 

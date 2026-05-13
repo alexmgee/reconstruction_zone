@@ -36,9 +36,6 @@ class ExtractionSettings:
     lut_enabled: bool = False
     lut_path: str = ""
     lut_strength: float = 1.0
-    adjust_recipe_enabled: bool = False
-    adjust_recipe_path: str = ""
-    open_adjust_after_extraction: bool = False
     shadow: int = 50
     highlight: int = 50
     sky_brightness: float = 0.85
@@ -67,9 +64,6 @@ class ExtractionSettings:
             lut_enabled=data.get("lut_enabled", False),
             lut_path=data.get("lut_path", ""),
             lut_strength=data.get("lut_strength", 1.0),
-            adjust_recipe_enabled=data.get("adjust_recipe_enabled", False),
-            adjust_recipe_path=data.get("adjust_recipe_path", ""),
-            open_adjust_after_extraction=data.get("open_adjust_after_extraction", False),
             shadow=data.get("shadow", 50),
             highlight=data.get("highlight", 50),
             sky_brightness=data.get("sky_brightness", 0.85),
@@ -103,10 +97,6 @@ class ExtractionSettings:
             parts.append("sky")
         if self.lut_enabled:
             parts.append("LUT")
-        if self.adjust_recipe_enabled:
-            parts.append("Adjust recipe")
-        if self.open_adjust_after_extraction:
-            parts.append("open Adjust")
         if self.shadow != 50 or self.highlight != 50:
             parts.append(f"sh{self.shadow}/hl{self.highlight}")
         return ", ".join(parts)

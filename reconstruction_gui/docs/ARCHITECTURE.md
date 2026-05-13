@@ -315,7 +315,18 @@ def _worker(self):
 
 ### Preferences persistence
 
-`.studio_prefs.json` stores last-used directories, prompt lists, shadow settings, preview state. Loaded at startup, saved on change. Located in the `reconstruction_gui/` directory.
+`studio_prefs.json` stores last-used directories, prompt lists, shadow settings, and preview state. Loaded at startup, saved on change. Runtime preferences now live under the app-home prefs directory, normally `%LOCALAPPDATA%\ReconstructionZone\prefs\studio_prefs.json` on Windows, and can be redirected for isolated tests with `RECONSTRUCTION_ZONE_APP_HOME`.
+
+The project registry and activity log also live under app-home by default:
+
+```text
+%LOCALAPPDATA%\ReconstructionZone\projects\tracker.json
+%LOCALAPPDATA%\ReconstructionZone\projects\activity_log.json
+```
+
+Existing users with an explicit `tracker_store_path` preference keep that
+custom path. New installs without that preference do not read or write the
+legacy `D:\tracker.json` default.
 
 ## MaskConfig reference
 

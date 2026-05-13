@@ -10,7 +10,9 @@ from .reframer import Reframer, Ring, ViewConfig
 from .presets import Preset, PresetManager
 from .sky_filter import SkyFilter, SkyFilterConfig
 from .lut import LUTProcessor
-from .segmenter import Segmenter, SegmentConfig, COCO_CLASSES, CLASS_PRESETS
+# Segmenter imports are lazy to avoid pulling ultralytics at package import time.
+# Use: from prep360.core.segmenter import Segmenter
+# Or:  from prep360.core import Segmenter  (triggers lazy load)
 from .adjustments import apply_shadow_highlight, batch_adjust_images
 from .blur_filter import BlurFilter, BlurFilterConfig
 from .colmap_export import (
@@ -90,4 +92,20 @@ __all__ = [
     "PairedSplitVideoExtractor",
     "PairedSplitConfig",
     "PairedSplitResult",
+    "Segmenter",
+    "SegmentConfig",
+    "COCO_CLASSES",
+    "CLASS_PRESETS",
 ]
+
+
+# Lazy imports for heavy optional dependencies (ultralytics)
+_LAZY_SEGMENTER = {"Segmenter", "SegmentConfig", "COCO_CLASSES", "CLASS_PRESETS"}
+
+def __getattr__(name):
+    if name in _LAZY_SEGMENTER:
+        from .segmenter import Segmenter, SegmentConfig, COCO_CLASSES, CLASS_PRESETS
+        _map = {"Segmenter": Segmenter, "SegmentConfig": SegmentConfig,
+                "COCO_CLASSES": COCO_CLASSES, "CLASS_PRESETS": CLASS_PRESETS}
+        return _map[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,0 +1,44 @@
+# Nuitka user package config: fix functools.singledispatch for compiled functions.
+#
+# Nuitka strips type annotations from compiled functions. functools.singledispatch
+# .register() needs those annotations to determine dispatch types. This config
+# rewrites the implicit @register form (annotation-dependent) to the explicit
+# @register(ClassName) form (no annotation needed) before compilation.
+#
+# Targets: 6 decorators across 2 modules, all loaded during `import torch`.
+#   torch.library:  @define.register (line 556), @impl.register (line 670)
+#   torch._refs:    4x @_to_dispatch.register (lines 2131, 2149, 2167, 2183)
+#   torch._dynamo._trace_wrapped_higher_order_op:
+#                   convert PEP 585 list[...] annotations on custom_op schema to
+#                   typing.List[...] so compiled annotations match infer_schema.
+#
+# Usage:
+#   --user-package-configuration-file=scripts/nuitka-torch-fix.yml
+
+- module-name: 'torch.library'
+  anti-bloat:
+    - description: 'fix singledispatch @define.register and @impl.register for Nuitka'
+      replacements_plain:
+        '@define.register': '@define.register(Library)'
+        '@impl.register': '@impl.register(Library)'
+
+- module-name: 'torch._refs'
+  anti-bloat:
+    - description: 'fix singledispatch @_to_dispatch.register for Nuitka (4 overloads)'
+      replacements_re:
+        # _to_device dispatches on torch.device
+        '@_to_dispatch\.register\ndef _to_device\(\n    device: torch\.device,': '@_to_dispatch.register(torch.device)\ndef _to_device(\n    device,'
+        # _to_device_str dispatches on str
+        '@_to_dispatch\.register\ndef _to_device_str\(\n    device: str,': '@_to_dispatch.register(str)\ndef _to_device_str(\n    device,'
+        # _to_dtype dispatches on torch.dtype
+        '@_to_dispatch\.register\ndef _to_dtype\(\n    dtype: torch\.dtype,': '@_to_dispatch.register(torch.dtype)\ndef _to_dtype(\n    dtype,'
+        # _to_other dispatches on Tensor
+        '@_to_dispatch\.register\ndef _to_other\(\n    other: Tensor,': '@_to_dispatch.register(Tensor)\ndef _to_other(\n    other,'
+
+- module-name: 'torch._dynamo._trace_wrapped_higher_order_op'
+  anti-bloat:
+    - description: 'fix torch custom_op schema annotations for Nuitka'
+      replacements_plain:
+        'from typing import Any, Optional': 'from typing import Any, Optional, List'
+        'shape: list[int],': 'shape: List[int],'
+        'indices: list[Tensor],': 'indices: List[Tensor],'

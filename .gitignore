@@ -60,6 +60,16 @@ test_tmp/
 /docs/
 /legacy/
 
+# Nuitka build output
+dist_nuitka/
+dist_test/
+*.build/
+*.dist/
+nuitka-report.xml
+
+# Benchmark output (large test images)
+bench_output/
+
 # Dev-only files
 CLAUDE.md
 HANDOVER.md

@@ -205,6 +205,11 @@ class SharpestExtractor:
     def _media_summary_for_gpu_failure(self, video_path: str) -> str:
         """Return a compact video summary for explaining GPU decode fallback."""
         try:
+            try:
+                from prep360.core.subprocess_utils import subprocess_kwargs_for_binary
+                _env_kw = subprocess_kwargs_for_binary(self.ffprobe_path)
+            except ImportError:
+                _env_kw = {}
             proc = subprocess.run(
                 [
                     self.ffprobe_path,
@@ -220,6 +225,7 @@ class SharpestExtractor:
                 text=True,
                 check=True,
                 timeout=10,
+                **_env_kw,
             )
             data = json.loads(proc.stdout)
             streams = data.get("streams") or []

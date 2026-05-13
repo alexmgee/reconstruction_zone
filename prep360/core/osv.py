@@ -33,6 +33,13 @@ from typing import Optional, Tuple, List, Dict, Any, Callable
 
 _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
+def _isolated_flags(binary_path: str) -> dict:
+    try:
+        from prep360.core.subprocess_utils import subprocess_kwargs_for_binary
+        return subprocess_kwargs_for_binary(binary_path)
+    except ImportError:
+        return _SUBPROCESS_FLAGS
+
 
 @dataclass
 class OSVStreamInfo:
@@ -253,7 +260,7 @@ class OSVHandler:
             "-update", "1",
             output_path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, **_SUBPROCESS_FLAGS)
+        result = subprocess.run(cmd, capture_output=True, text=True, **_isolated_flags(self.ffmpeg_path))
         return result.returncode == 0
 
     # --- Internal methods ---
@@ -268,7 +275,7 @@ class OSVHandler:
             path,
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True, **_SUBPROCESS_FLAGS)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, **_isolated_flags(self.ffprobe_path))
             return json.loads(result.stdout)
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"ffprobe failed: {e.stderr}")
@@ -403,7 +410,7 @@ class OSVHandler:
             "-c", "copy",
             output_path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, **_SUBPROCESS_FLAGS)
+        result = subprocess.run(cmd, capture_output=True, text=True, **_isolated_flags(self.ffmpeg_path))
         if result.returncode != 0:
             raise RuntimeError(
                 f"Failed to demux stream {stream_idx}: {result.stderr}"
@@ -449,7 +456,7 @@ class OSVHandler:
         output_pattern = str(Path(output_dir) / f"%05d.{output_format}")
         cmd.append(output_pattern)
 
-        result = subprocess.run(cmd, capture_output=True, text=True, **_SUBPROCESS_FLAGS)
+        result = subprocess.run(cmd, capture_output=True, text=True, **_isolated_flags(self.ffmpeg_path))
         if result.returncode != 0:
             raise RuntimeError(
                 f"Frame extraction failed for stream {stream_idx}: "

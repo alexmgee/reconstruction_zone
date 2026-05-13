@@ -47,6 +47,11 @@ else:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+try:
+    from app_paths import crash_log_file, prefs_file
+except ImportError:
+    from reconstruction_gui.app_paths import crash_log_file, prefs_file
+
 # ---------- lazy imports ----------
 
 def _import_pipeline():
@@ -95,7 +100,7 @@ from tabs.projects_tab import build_projects_tab
 class ReconstructionZone(AppInfrastructure, ctk.CTk):
     """Unified photogrammetry prep: prepare → mask → review → gaps."""
 
-    _PREFS_FILE = _this_dir / ".studio_prefs.json"
+    _PREFS_FILE = prefs_file(create=False)
     _SPHERESFM_PREBUILT_CANDIDATES = (
         _project_root / ".tmp" / "SphereSfM-2025-8-18" / "SphereSfM-2024-12-14" / "colmap.exe",
     )
@@ -177,14 +182,19 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._restore_prefs()
         self._check_external_tools()
 
-        # Check for missing model weights on first launch
-        from reconstruction_gui.model_downloader import check_missing_models, ModelDownloadDialog
-        missing = check_missing_models()
-        if missing:
-            dialog = ModelDownloadDialog(self, missing)
-            self.wait_window(dialog)
+        # First-launch setup wizard — downloads model weights if needed.
+        # Runs after mainloop starts so tkinter threading works correctly.
+        self.after(500, self._run_setup_wizard)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _run_setup_wizard(self):
+        """Check model weights and show setup wizard if any are missing."""
+        try:
+            from setup_wizard import run_setup_wizard_if_needed
+        except ImportError:
+            from reconstruction_gui.setup_wizard import run_setup_wizard_if_needed
+        run_setup_wizard_if_needed(self)
 
     def record_activity(self, operation: str, input_path: str, output_path: str,
                         status: str = "completed",
@@ -4394,7 +4404,7 @@ def _show_crash_dialog(exc_type, exc_value, exc_tb):
     silently if even tkinter is broken.
     """
     import traceback as _tb
-    log_path = Path.home() / ".reconstruction_zone" / "crash.log"
+    log_path = crash_log_file(create=False)
     detail = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
     try:
         import tkinter as _tk
@@ -4447,12 +4457,13 @@ def main():
         # Write to crash log (app_infra's excepthook may have already done this,
         # but ensure it happens even if the app failed before infra init)
         import traceback
-        log_dir = Path.home() / ".reconstruction_zone"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "crash.log"
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(f"\n{'='*60}\nFATAL CRASH: {__import__('datetime').datetime.now().isoformat()}\n{'='*60}\n")
-            traceback.print_exc(file=f)
+        log_file = crash_log_file(create=True)
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"\n{'='*60}\nFATAL CRASH: {__import__('datetime').datetime.now().isoformat()}\n{'='*60}\n")
+                traceback.print_exc(file=f)
+        except Exception:
+            pass
 
         _show_crash_dialog(*sys.exc_info())
         raise

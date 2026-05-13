@@ -28,6 +28,11 @@ from widgets import (
     HEIGHT_ACTION_BAR, HEIGHT_INLINE, HEIGHT_NAV,
 )
 
+try:
+    from app_paths import activity_store_file, project_store_file
+except ImportError:
+    from reconstruction_gui.app_paths import activity_store_file, project_store_file
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
 
@@ -46,12 +51,16 @@ def build_projects_tab(app, parent):
 
     # Initialize store
     from project_store import ProjectStore
-    store_path = app._prefs.get("tracker_store_path", "D:\\tracker.json")
+    store_path = app._prefs.get("tracker_store_path", str(project_store_file(create=False)))
     app._project_store = ProjectStore(store_path)
 
-    # Activity store — separate file, same directory as project store
+    # Activity store follows the project store unless the user has selected a
+    # legacy/custom tracker path.
     from activity_store import ActivityStore
-    activity_path = str(Path(store_path).parent / "activity_log.json")
+    if "tracker_store_path" in app._prefs:
+        activity_path = str(Path(store_path).parent / "activity_log.json")
+    else:
+        activity_path = str(activity_store_file(create=False))
     app._activity_store = ActivityStore(activity_path)
 
     # -- Left column: mode toggle + mode content frames --

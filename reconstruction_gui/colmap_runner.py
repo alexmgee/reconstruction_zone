@@ -315,6 +315,18 @@ class ColmapRunner:
             "startupinfo": startupinfo,
         }
 
+    def _isolated_env_kwargs(self) -> Dict[str, Any]:
+        """Build subprocess kwargs with PATH isolation for external binaries.
+
+        Prevents DLL contamination from Miniconda/Conda directories
+        (e.g., miniconda's tiff.dll breaking COLMAP).
+        """
+        try:
+            from subprocess_env import isolated_subprocess_kwargs
+        except ImportError:
+            from reconstruction_gui.subprocess_env import isolated_subprocess_kwargs
+        return isolated_subprocess_kwargs(self.binary_path)
+
     @staticmethod
     def _extract_reconstruction_progress(log_text: str) -> Dict[str, Any]:
         registration_pattern = re.compile(r"Registering image #(\d+) \((\d+)\)")
@@ -391,7 +403,7 @@ class ColmapRunner:
                     text=True,
                     timeout=timeout_s,
                     check=False,
-                    **self._subprocess_window_kwargs(),
+                    **self._isolated_env_kwargs(),
                 )
             except Exception as exc:
                 attempts.append((cmd, "", str(exc), None))
@@ -677,7 +689,7 @@ class ColmapRunner:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            **self._subprocess_window_kwargs(),
+            **self._isolated_env_kwargs(),
         )
         self.active_process = proc
 

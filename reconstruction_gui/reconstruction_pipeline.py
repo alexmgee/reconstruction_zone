@@ -69,9 +69,9 @@ try:
         raise ImportError("FastSAM excluded from Gumroad build")
     from ultralytics import FastSAM
     HAS_FASTSAM = True
-except ImportError:
+except Exception as e:
     HAS_FASTSAM = False
-    warnings.warn("FastSAM not found. Install with: pip install ultralytics")
+    warnings.warn(f"FastSAM not available: {e}")
 
 try:
     # YOLO26 - Production recommendation for class-based detection
@@ -79,8 +79,9 @@ try:
         raise ImportError("YOLO excluded from Gumroad build")
     from ultralytics import YOLO
     HAS_YOLO = True
-except ImportError:
+except Exception as e:
     HAS_YOLO = False
+    warnings.warn(f"YOLO not available: {e}")
 
 try:
     # RF-DETR-Seg - Transformer-based instance segmentation (Roboflow, ICLR 2026)
@@ -989,7 +990,16 @@ class YOLO26Segmenter(BaseSegmenter):
         if self.config.model_checkpoint:
             model_path = self.config.model_checkpoint
         else:
-            model_path = model_name  # ultralytics auto-downloads
+            # Check shared model directory first, fall back to ultralytics auto-download
+            try:
+                try:
+                    from model_paths import resolve_yolo26_weights
+                except ImportError:
+                    from reconstruction_gui.model_paths import resolve_yolo26_weights
+                resolved = resolve_yolo26_weights(size)
+                model_path = str(resolved) if resolved else model_name
+            except Exception:
+                model_path = model_name
 
         logger.info(f"Loading YOLO26 from {model_path}")
         self.model = YOLO(model_path)
@@ -1094,8 +1104,24 @@ class RFDETRSegmenter(BaseSegmenter):
             )
 
         model_cls = getattr(_rfdetr_module, cls_name)
-        logger.info(f"Loading RF-DETR-Seg: {cls_name}")
-        self.model = model_cls()
+
+        # Check shared model directory for pre-downloaded weights
+        model_kwargs = {}
+        try:
+            try:
+                from model_paths import resolve_rfdetr_seg_weights
+            except ImportError:
+                from reconstruction_gui.model_paths import resolve_rfdetr_seg_weights
+            resolved = resolve_rfdetr_seg_weights(size)
+            if resolved:
+                model_kwargs["pretrain_weights"] = str(resolved)
+                logger.info(f"Loading RF-DETR-Seg: {cls_name} from {resolved}")
+            else:
+                logger.info(f"Loading RF-DETR-Seg: {cls_name} (rfdetr will download)")
+        except Exception:
+            logger.info(f"Loading RF-DETR-Seg: {cls_name} (rfdetr will download)")
+
+        self.model = model_cls(**model_kwargs)
 
     def segment_image(
         self,

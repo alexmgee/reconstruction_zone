@@ -22,6 +22,13 @@ from .srt_parser import SrtData, SrtEntry, parse_srt, find_srt_for_video
 
 _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
+def _isolated_flags(binary_path: str) -> dict:
+    try:
+        from prep360.core.subprocess_utils import subprocess_kwargs_for_binary
+        return subprocess_kwargs_for_binary(binary_path)
+    except ImportError:
+        return _SUBPROCESS_FLAGS
+
 # Manifest filename written by FrameExtractor alongside extracted frames
 MANIFEST_FILENAME = "extraction_manifest.json"
 
@@ -42,7 +49,7 @@ def _find_exiftool() -> Optional[str]:
         result = subprocess.run(
             ["exiftool", "-ver"],
             capture_output=True, text=True,
-            **_SUBPROCESS_FLAGS,
+            **_isolated_flags("exiftool"),
         )
         if result.returncode == 0:
             return "exiftool"
@@ -247,7 +254,7 @@ def _geotag_frames(
         result = subprocess.run(
             [exiftool, "-@", argfile_path],
             capture_output=True, text=True,
-            **_SUBPROCESS_FLAGS,
+            **_isolated_flags("exiftool"),
         )
 
         # Count successes from exiftool output

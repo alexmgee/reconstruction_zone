@@ -14,6 +14,14 @@ from typing import Optional, Dict, Any
 
 _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
+def _isolated_flags(binary_path: str) -> dict:
+    """Get isolated subprocess kwargs for an external binary, with fallback."""
+    try:
+        from prep360.core.subprocess_utils import subprocess_kwargs_for_binary
+        return subprocess_kwargs_for_binary(binary_path)
+    except ImportError:
+        return _SUBPROCESS_FLAGS
+
 
 def _safe_float(val) -> float:
     """Parse a float from ffprobe output, returning 0.0 for None/'N/A'/garbage."""
@@ -153,7 +161,7 @@ class VideoAnalyzer:
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True, **_SUBPROCESS_FLAGS)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, **_isolated_flags(self.ffprobe_path))
             return json.loads(result.stdout)
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"ffprobe failed: {e.stderr}")

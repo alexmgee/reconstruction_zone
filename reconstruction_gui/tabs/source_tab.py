@@ -40,7 +40,6 @@ try:
         VideoAnalyzer,
         FrameExtractor, ExtractionConfig, ExtractionMode,
         LUTProcessor,
-        AdjustmentRecipe,
         SkyFilter, SkyFilterConfig,
         OSVHandler,
         FisheyeViewConfig, FISHEYE_PRESETS,
@@ -62,15 +61,6 @@ try:
     HAS_PREP360 = True
 except ImportError:
     HAS_PREP360 = False
-
-try:
-    from reconstruction_gui.adjust_workflow import detect_adjust_input, export_adjusted_dataset
-except ImportError:
-    try:
-        from adjust_workflow import detect_adjust_input, export_adjusted_dataset
-    except ImportError:
-        detect_adjust_input = None
-        export_adjusted_dataset = None
 
 # GPU extraction availability (uses extractor's hardened check)
 _HAS_CUDACODEC = False
@@ -194,21 +184,6 @@ def _snapshot_settings(app) -> "ExtractionSettings":
         lut_enabled=app.extract_lut_enabled_var.get(),
         lut_path=app.extract_lut_file_entry.get().strip(),
         lut_strength=app.extract_lut_strength_var.get(),
-        adjust_recipe_enabled=(
-            app.extract_adjust_recipe_enabled_var.get()
-            if hasattr(app, "extract_adjust_recipe_enabled_var")
-            else False
-        ),
-        adjust_recipe_path=(
-            app.extract_adjust_recipe_entry.get().strip()
-            if hasattr(app, "extract_adjust_recipe_entry")
-            else ""
-        ),
-        open_adjust_after_extraction=(
-            app.extract_open_adjust_var.get()
-            if hasattr(app, "extract_open_adjust_var")
-            else False
-        ),
         shadow=app.extract_shadow_var.get(),
         highlight=app.extract_highlight_var.get(),
         sky_brightness=app.extract_sky_brightness_var.get(),
@@ -977,47 +952,9 @@ def _build_extract_section(app, parent):
     pp_sec.pack(fill="x", pady=(16, 0), padx=2)
     pp = pp_sec.content
 
-    handoff_sec = CollapsibleSection(pp, "Adjust Handoff",
-                                     subtitle="preferred color workflow after extraction",
-                                     expanded=True)
-    handoff_sec.pack(fill="x", pady=(6, 0), padx=(10, 2))
-    hc = handoff_sec.content
-
-    app.extract_open_adjust_var = ctk.BooleanVar(value=True)
-    ctk.CTkCheckBox(
-        hc,
-        text="Offer Open in Adjust after extraction",
-        variable=app.extract_open_adjust_var,
-    ).pack(pady=3, anchor="w")
-
-    app.extract_adjust_recipe_enabled_var = ctk.BooleanVar(value=False)
-    ctk.CTkCheckBox(
-        hc,
-        text="Apply saved Adjust recipe after extraction",
-        variable=app.extract_adjust_recipe_enabled_var,
-    ).pack(pady=3, anchor="w")
-
-    recipe_row = ctk.CTkFrame(hc, fg_color="transparent")
-    recipe_row.pack(fill="x", pady=3)
-    ctk.CTkLabel(recipe_row, text="Recipe:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    app.extract_adjust_recipe_entry = ctk.CTkEntry(recipe_row, placeholder_text="adjustment_recipe.json...")
-    app.extract_adjust_recipe_entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
-    ctk.CTkButton(
-        recipe_row,
-        text="...",
-        width=BROWSE_BUTTON_WIDTH,
-        fg_color=COLOR_ACTION_SECONDARY,
-        hover_color=COLOR_ACTION_SECONDARY_H,
-        command=lambda: app._browse_file_for(
-            app.extract_adjust_recipe_entry,
-            "Select Adjust Recipe",
-            [("JSON Recipe", "*.json"), ("All Files", "*.*")],
-        ),
-    ).pack(side="left")
-
     # -- Color & LUT (collapsible) --
     lut_sec = CollapsibleSection(pp, "Color & LUT",
-                                 subtitle="legacy quick post-process; prefer Adjust for LUTs",
+                                 subtitle=".cube LUT, shadow/highlight adjustment",
                                  expanded=False)
     lut_sec.pack(fill="x", pady=(6, 0), padx=(10, 2))
     app.extract_lut_section = lut_sec
@@ -1027,7 +964,7 @@ def _build_extract_section(app, parent):
         lut_sec.set_active(app.extract_lut_enabled_var.get())
         if app.extract_lut_enabled_var.get():
             lut_sec.expand()
-    ctk.CTkCheckBox(lut_sec.content, text="Apply LUT after extraction (advanced)",
+    ctk.CTkCheckBox(lut_sec.content, text="Apply LUT after extraction",
                     variable=app.extract_lut_enabled_var,
                     command=_on_lut_toggle,
                     ).pack(pady=3, anchor="w")
@@ -1440,96 +1377,6 @@ class PostProcessingError(RuntimeError):
     """Raised when optional post-extraction processing fails."""
 
 
-def _validate_adjust_recipe_before_extraction(settings) -> Optional["AdjustmentRecipe"]:
-    """Validate a saved Adjust recipe before expensive extraction begins."""
-    if not getattr(settings, "adjust_recipe_enabled", False):
-        return None
-    if not HAS_PREP360:
-        raise ValueError("prep360 core not available; cannot load Adjust recipe")
-
-    recipe_path = getattr(settings, "adjust_recipe_path", "") or ""
-    if not recipe_path.strip():
-        raise ValueError("Adjust recipe post-processing is enabled but no recipe path is set")
-
-    recipe = AdjustmentRecipe.load(recipe_path)
-    errors = recipe.validate()
-    if errors:
-        raise ValueError("Adjust recipe is invalid: " + "; ".join(errors))
-
-    if recipe.input_lut.enabled:
-        processor = LUTProcessor()
-        processor.load_cube(recipe.input_lut.path)
-    return recipe
-
-
-def _run_post_processing_safely(app, settings, output_dir):
-    try:
-        return _run_post_processing(app, settings, output_dir)
-    except Exception as e:
-        app.log("Extraction complete, but optional post-processing failed.")
-        app.log(f"  Error: {e}")
-        app.log(f"  Raw selected frames remain available at: {output_dir}")
-        app.log("  Open in Adjust to retry LUT/color export.")
-        return {"initial": 0, "steps": [], "error": str(e)}
-
-
-def _export_adjusted_derivative(app, settings, raw_output_root: Path):
-    if not getattr(settings, "adjust_recipe_enabled", False):
-        return None
-    if detect_adjust_input is None or export_adjusted_dataset is None:
-        raise ValueError("Adjust workflow helpers are not available")
-
-    recipe = _validate_adjust_recipe_before_extraction(settings)
-    if recipe is None:
-        return None
-
-    dataset = detect_adjust_input(raw_output_root)
-    recipe_slug = re.sub(r"[^A-Za-z0-9_-]+", "_", recipe.name).strip("_") or "recipe"
-    adjusted_root = raw_output_root.with_name(f"{raw_output_root.name}_adjusted_{recipe_slug}")
-    app.log(f"\nExporting adjusted derivative: {adjusted_root}")
-
-    def progress(curr, total, name):
-        if not app.cancel_flag.is_set():
-            app.log(f"  [Adjust {curr}/{total}] {name}")
-
-    result = export_adjusted_dataset(
-        dataset,
-        adjusted_root,
-        recipe,
-        refuse_non_empty=True,
-        keep_partials=False,
-        cancel_check=lambda: app.cancel_flag.is_set(),
-        progress_callback=progress,
-    )
-    if result.cancelled:
-        app.log("  Adjusted derivative export cancelled; partial files removed.")
-        return None
-    app.log(f"  Adjusted derivative written: {adjusted_root}")
-    return adjusted_root
-
-
-def _offer_open_in_adjust(app, output_root: Path):
-    app.log(f"  Next:          Open in Adjust: {output_root}")
-
-    if not getattr(app, "extract_open_adjust_var", None) or not app.extract_open_adjust_var.get():
-        return
-    if not hasattr(app, "adjust_input_entry"):
-        return
-
-    def _handoff():
-        try:
-            app.tabs.set("Adjust")
-            _set_entry_text(app.adjust_input_entry, str(output_root))
-            if hasattr(app, "adjust_output_entry") and not app.adjust_output_entry.get().strip():
-                _set_entry_text(app.adjust_output_entry, str(output_root.with_name(f"{output_root.name}_adjusted")))
-            from tabs.adjust_tab import _load_adjust_images
-            _load_adjust_images(app)
-        except Exception as e:
-            app.log(f"[Adjust] Open in Adjust handoff failed: {e}")
-
-    app.after(0, _handoff)
-
-
 def _run_post_processing(app, settings, output_dir):
     """Run post-processing filters on extracted frames in output_dir.
 
@@ -1758,7 +1605,6 @@ def _extract_single_worker(app, video_path, base_output):
         start_sec = _parse_time(start) if start else None
         end_sec = _parse_time(end) if end else None
         settings = _snapshot_settings(app)
-        _validate_adjust_recipe_before_extraction(settings)
 
         # Detailed header
         app.log(f"\n{'='*50}")
@@ -1857,15 +1703,7 @@ def _extract_single_worker(app, video_path, base_output):
             app.log(f"  {result.frame_count} frames extracted ({extract_elapsed:.1f}s)")
 
             settings = _snapshot_settings(app)
-            pp_stats = _run_post_processing_safely(app, settings, output_dir)
-            try:
-                adjusted_root = _export_adjusted_derivative(app, settings, output_dir)
-            except Exception as e:
-                adjusted_root = None
-                app.log("Extraction complete, but Adjust recipe export failed.")
-                app.log(f"  Error: {e}")
-                app.log(f"  Raw selected frames remain available at: {output_dir}")
-                app.log("  Open in Adjust to retry color export.")
+            pp_stats = _run_post_processing(app, settings, output_dir)
 
             # Recount after filtering
             ext = fmt
@@ -1886,9 +1724,6 @@ def _extract_single_worker(app, video_path, base_output):
 
             app.log(f"\nDone: {final_count} frames "
                     f"({' \u2192 '.join(trail)}) in {total_elapsed:.1f}s")
-            if adjusted_root:
-                app.log(f"Adjusted derivative: {adjusted_root}")
-            _offer_open_in_adjust(app, output_dir)
             app.log(f"{'='*50}")
 
             # Record activity for Recent Activity view
@@ -2137,7 +1972,6 @@ def _extract_queue_worker(app):
                 fmt = s.format
                 start_sec = s.start_sec
                 end_sec = s.end_sec
-                _validate_adjust_recipe_before_extraction(s)
 
                 base_output = Path(app.extract_output_entry.get())
                 video_name = Path(item.filename).stem
@@ -2229,15 +2063,7 @@ def _extract_queue_worker(app):
                 if result.success:
                     app.log(f"  {result.frame_count} frames extracted ({extract_elapsed:.1f}s)")
 
-                    pp_stats = _run_post_processing_safely(app, s, output_dir)
-                    try:
-                        adjusted_root = _export_adjusted_derivative(app, s, output_dir)
-                    except Exception as e:
-                        adjusted_root = None
-                        app.log("Extraction complete, but Adjust recipe export failed.")
-                        app.log(f"  Error: {e}")
-                        app.log(f"  Raw selected frames remain available at: {output_dir}")
-                        app.log("  Open in Adjust to retry color export.")
+                    pp_stats = _run_post_processing(app, s, output_dir)
                     ext = s.format
                     final_count = len(list(output_dir.glob(f"*.{ext}")))
 
@@ -2256,9 +2082,6 @@ def _extract_queue_worker(app):
 
                     app.log(f"\nDone: {final_count} frames "
                             f"({' \u2192 '.join(trail)}) in {item_elapsed:.1f}s")
-                    if adjusted_root:
-                        app.log(f"Adjusted derivative: {adjusted_root}")
-                    _offer_open_in_adjust(app, output_dir)
 
                     # Record activity for Recent Activity view
                     app.record_activity(
@@ -3392,7 +3215,6 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
     t_start = time.perf_counter()
 
     settings = _snapshot_settings(app)
-    _validate_adjust_recipe_before_extraction(settings)
     sharpness = settings.sharpness_method
     scene = settings.scene_detection
     mode = "sharpest" if sharpness != "none" else "fixed"
@@ -3473,18 +3295,9 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
                                   ("back", clip_root / "back" / "frames")]:
         if lens_dir.exists() and any(lens_dir.iterdir()):
             app.log(f"\nPost-processing {lens_label} frames...")
-            pp_stats = _run_post_processing_safely(app, settings, lens_dir)
+            pp_stats = _run_post_processing(app, settings, lens_dir)
             final = len(list(lens_dir.glob("*.*")))
             app.log(f"  {lens_label}: {final} frames after post-processing")
-
-    try:
-        adjusted_root = _export_adjusted_derivative(app, settings, clip_root)
-    except Exception as e:
-        adjusted_root = None
-        app.log("Paired extraction complete, but Adjust recipe export failed.")
-        app.log(f"  Error: {e}")
-        app.log(f"  Raw selected paired frames remain available at: {clip_root}")
-        app.log("  Open in Adjust to retry color export.")
 
     total_elapsed = time.perf_counter() - t_start
 
@@ -3494,12 +3307,9 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         f"  Front frames:  {clip_root / 'front' / 'frames'}",
         f"  Back frames:   {clip_root / 'back' / 'frames'}",
         f"  Manifest:      {clip_root / 'paired_extraction_manifest.json'}",
-        "  Next:          Open in Adjust, then Mask the adjusted dataset.",
+        "  Next:          Run Mask on this clip folder, then assemble the Metashape session below Metadata.",
     ])
-    if adjusted_root:
-        summary += f"\n  Adjusted:      {adjusted_root}"
     app.log(f"\n{summary}")
-    _offer_open_in_adjust(app, clip_root)
 
     def _update_ui():
         if hasattr(app, "metashape_clips_root_entry") and not app.metashape_clips_root_entry.get().strip():

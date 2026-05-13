@@ -18,6 +18,13 @@ MANIFEST_FILENAME = "extraction_manifest.json"
 
 _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
+def _isolated_flags(binary_path: str) -> dict:
+    try:
+        from prep360.core.subprocess_utils import subprocess_kwargs_for_binary
+        return subprocess_kwargs_for_binary(binary_path)
+    except ImportError:
+        return _SUBPROCESS_FLAGS
+
 
 class ExtractionMode(Enum):
     """Frame extraction modes."""
@@ -126,7 +133,7 @@ class FrameExtractor:
                 cmd,
                 capture_output=True,
                 text=True,
-                **_SUBPROCESS_FLAGS,
+                **_isolated_flags(self.ffmpeg_path),
             )
 
             if result.returncode != 0:
