@@ -31,6 +31,7 @@ import yaml
 from abc import ABC, abstractmethod
 import logging
 import warnings
+import importlib.util
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import multiprocessing as mp
 from collections import deque
@@ -53,6 +54,14 @@ except ImportError:
     def _is_gumroad(): return False
 
 # Try importing segmentation models in order of preference
+def _module_available(module_name: str) -> bool:
+    """Check optional package presence without importing heavy module trees."""
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
 try:
     # SAM3 / SAM 3.1 - Primary model (Meta)
     # Real API: git clone https://github.com/facebookresearch/sam3 && pip install -e .
@@ -63,25 +72,12 @@ except ImportError:
     HAS_SAM3 = False
     warnings.warn("SAM3 not found. Install from: https://github.com/facebookresearch/sam3")
 
-try:
-    # FastSAM - Fast fallback
-    if _is_gumroad():
-        raise ImportError("FastSAM excluded from Gumroad build")
-    from ultralytics import FastSAM
-    HAS_FASTSAM = True
-except Exception as e:
-    HAS_FASTSAM = False
-    warnings.warn(f"FastSAM not available: {e}")
-
-try:
-    # YOLO26 - Production recommendation for class-based detection
-    if _is_gumroad():
-        raise ImportError("YOLO excluded from Gumroad build")
-    from ultralytics import YOLO
-    HAS_YOLO = True
-except Exception as e:
-    HAS_YOLO = False
-    warnings.warn(f"YOLO not available: {e}")
+# FastSAM/YOLO are provided by ultralytics. Do not import ultralytics here:
+# its package init walks optional SAM/torchvision paths and can stall packaged
+# Mask Preview before RF-DETR fallback is selected.
+_HAS_ULTRALYTICS = (not _is_gumroad()) and _module_available("ultralytics")
+HAS_FASTSAM = _HAS_ULTRALYTICS
+HAS_YOLO = _HAS_ULTRALYTICS
 
 try:
     # RF-DETR-Seg - Transformer-based instance segmentation (Roboflow, ICLR 2026)
@@ -916,6 +912,11 @@ class FastSAMSegmenter(BaseSegmenter):
         """Initialize FastSAM model."""
         if not HAS_FASTSAM:
             raise ImportError("FastSAM not available")
+
+        try:
+            from ultralytics import FastSAM
+        except Exception as e:
+            raise ImportError(f"FastSAM not available: {e}") from e
         
         model_path = self.config.model_checkpoint or "FastSAM-x.pt"
         self.model = FastSAM(model_path)
@@ -983,6 +984,11 @@ class YOLO26Segmenter(BaseSegmenter):
         """Initialize YOLO26 model."""
         if not HAS_YOLO:
             raise ImportError("YOLO not available. Install with: pip install ultralytics")
+
+        try:
+            from ultralytics import YOLO
+        except Exception as e:
+            raise ImportError(f"YOLO not available: {e}") from e
 
         size = self.config.yolo_model_size
         model_name = f"yolo26{size}-seg.pt"

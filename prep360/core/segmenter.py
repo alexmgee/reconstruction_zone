@@ -9,6 +9,7 @@ before photogrammetry processing.
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Callable, Dict, Tuple, Set
+import importlib.util
 import json
 import time
 
@@ -21,13 +22,16 @@ try:
 except ImportError:
     def _is_gumroad(): return False
 
-try:
-    if _is_gumroad():
-        raise ImportError("YOLO excluded from Gumroad build")
-    from ultralytics import YOLO
-    HAS_YOLO = True
-except Exception:
-    HAS_YOLO = False
+
+def _module_available(module_name: str) -> bool:
+    """Check optional package presence without importing heavy module trees."""
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+HAS_YOLO = (not _is_gumroad()) and _module_available("ultralytics")
 
 
 # COCO class names (80 classes)
@@ -115,6 +119,12 @@ class Segmenter:
     def model(self):
         """Lazy-load the YOLO model."""
         if self._model is None:
+            try:
+                from ultralytics import YOLO
+            except Exception as e:
+                raise ImportError(
+                    f"ultralytics could not be imported. Install with: pip install ultralytics. Error: {e}"
+                ) from e
             self._model = YOLO(self.config.model_name)
             if self.config.device:
                 self._model.to(self.config.device)
