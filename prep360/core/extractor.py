@@ -8,7 +8,6 @@ Writes an extraction manifest alongside frames for geotagging.
 import json
 import os
 import subprocess
-import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path

@@ -26,10 +26,9 @@ from widgets import (
     COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
     COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
     COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
-    COLOR_TEXT_MUTED, COLOR_TEXT_DIM, COLOR_TEXT_DISABLED,
-    FONT_TEXT_SUBTITLE, FONT_TEXT_MONO_VALUE, FONT_TEXT_STATUS,
-    FONT_TEXT_BTN_PRIMARY, FONT_TEXT_BTN_SECONDARY,
-    LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+    COLOR_TEXT_DIM, COLOR_TEXT_DISABLED,
+    FONT_TEXT_MONO_VALUE, FONT_TEXT_STATUS,
+    FONT_TEXT_BTN_PRIMARY, LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
     HEIGHT_ACTION_BAR,
 )
 
@@ -82,7 +81,7 @@ except Exception:
     pass
 
 try:
-    from PIL import Image
+    from PIL import Image  # noqa: F401
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -1282,7 +1281,7 @@ def _build_extract_section(app, parent):
     _queue_refresh(app)
 
     # -- wire up live estimate updates --
-    _est = lambda *_a: _update_estimate(app)
+    _est = lambda *_a: _update_estimate(app)  # noqa: E731
     app.extract_scoring_var.trace_add("write", _est)
     app.extract_scene_var.trace_add("write", _est)
     app.extract_interval_var.trace_add("write", _est)
@@ -1787,12 +1786,10 @@ def _extract_single_worker(app, video_path, base_output):
                     _last_logged_pct[0] = pct
                 app.after(0, lambda m=msg: app.log(m))
 
-        used_sharpest = False
-        app.log(f"\nExtraction...")
+        app.log("\nExtraction...")
         t_extract = time.perf_counter()
 
         if sharpness != "none":
-            used_sharpest = True
             sharp_cfg = SharpestConfig(
                 interval=interval,
                 quality=quality,
@@ -1885,7 +1882,7 @@ def _extract_single_worker(app, video_path, base_output):
                         trail.append(f"{label}\u2192{pp_stats[key]}")
 
             app.log(f"\nDone: {final_count} frames "
-                    f"({' \u2192 '.join(trail)}) in {total_elapsed:.1f}s")
+                    f"({' → '.join(trail)}) in {total_elapsed:.1f}s")
             if adjusted_root:
                 app.log(f"Adjusted derivative: {adjusted_root}")
             _offer_open_in_adjust(app, output_dir)
@@ -2157,13 +2154,11 @@ def _extract_queue_worker(app):
                 app.log(f"Output: {output_dir}")
                 app.log(f"Settings: {s.summary()}")
 
-                app.log(f"\nExtraction...")
+                app.log("\nExtraction...")
                 t_extract = time.perf_counter()
-                used_sharpest = False
 
                 if s.sharpness_method != "none":
                     # Sharpest-frame extraction
-                    used_sharpest = True
                     sharp_cfg = SharpestConfig(
                         interval=interval,
                         quality=quality,
@@ -2255,7 +2250,7 @@ def _extract_queue_worker(app):
                                 trail.append(f"{label}\u2192{pp_stats[key]}")
 
                     app.log(f"\nDone: {final_count} frames "
-                            f"({' \u2192 '.join(trail)}) in {item_elapsed:.1f}s")
+                            f"({' → '.join(trail)}) in {item_elapsed:.1f}s")
                     if adjusted_root:
                         app.log(f"Adjusted derivative: {adjusted_root}")
                     _offer_open_in_adjust(app, output_dir)
@@ -3433,7 +3428,7 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         if not app.cancel_flag.is_set():
             app.log(f"  [{current}/{total}] {msg}")
 
-    app.log(f"\nExtraction...")
+    app.log("\nExtraction...")
     t_extract = time.perf_counter()
     extractor = PairedSplitVideoExtractor()
     result = extractor.extract(
@@ -3473,7 +3468,7 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
                                   ("back", clip_root / "back" / "frames")]:
         if lens_dir.exists() and any(lens_dir.iterdir()):
             app.log(f"\nPost-processing {lens_label} frames...")
-            pp_stats = _run_post_processing_safely(app, settings, lens_dir)
+            _run_post_processing_safely(app, settings, lens_dir)
             final = len(list(lens_dir.glob("*.*")))
             app.log(f"  {lens_label}: {final} frames after post-processing")
 

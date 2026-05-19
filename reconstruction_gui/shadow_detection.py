@@ -591,9 +591,7 @@ class TargetedPersonShadowDetector(BaseShadowDetector):
 
         # Person bounding box
         y_min, y_max = int(person_ys.min()), int(person_ys.max())
-        x_min, x_max = int(person_xs.min()), int(person_xs.max())
         person_height = y_max - y_min
-        person_width = x_max - x_min
         person_area = int(np.sum(person_mask > 0))
 
         if person_height < 20 or person_area < 200:

@@ -71,23 +71,22 @@ def _import_review():
 # Shared widgets & infrastructure (extracted to separate modules)
 # ──────────────────────────────────────────────────────────────────────
 
-from _version import __version__
-from widgets import (
+from _version import __version__  # noqa: E402
+from widgets import (  # noqa: E402
     Section as _Section, CollapsibleSection as _CollapsibleSection, slider_row, Tooltip,
     COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
     COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
     COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
     COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
     COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
-    FONT_TEXT_SUBTITLE, FONT_TEXT_MONO_VALUE, FONT_TEXT_CONSOLE, FONT_TEXT_STATUS,
     LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
 )
-from app_infra import AppInfrastructure
-from tabs.adjust_tab import build_adjust_tab
-from tabs.alignment_tab import build_alignment_tab
-from tabs.source_tab import build_source_tab
-from tabs.gaps_tab import build_gaps_tab
-from tabs.projects_tab import build_projects_tab
+from app_infra import AppInfrastructure  # noqa: E402
+from tabs.adjust_tab import build_adjust_tab  # noqa: E402
+from tabs.alignment_tab import build_alignment_tab  # noqa: E402
+from tabs.source_tab import build_source_tab  # noqa: E402
+from tabs.gaps_tab import build_gaps_tab  # noqa: E402
+from tabs.projects_tab import build_projects_tab  # noqa: E402
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -3410,7 +3409,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
     def _worker(self, input_path: str, output_path: str):
         try:
             import numpy as np
-            MaskingPipeline = _import_pipeline()[0]
             config, model_str, geometry = self._build_mask_config()
 
             inp = Path(input_path)
@@ -3546,7 +3544,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                         )
             else:
                 self.log(f"Processing single image: {inp}")
-                import cv2, shutil
+                import cv2
+                import shutil
                 image = cv2.imread(str(inp))
                 if image is None:
                     self.log(f"ERROR: Failed to load image: {inp}")
@@ -3800,7 +3799,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         """Worker thread: process all pending folders in the masking queue."""
         try:
             import numpy as np
-            MaskingPipeline = _import_pipeline()[0]
             config, model_str, geometry = self._build_mask_config()
             pattern = self.pattern_var.get()
             skip_existing = self.skip_existing_var.get()
@@ -4960,7 +4958,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             batch = stems[i:i + BATCH]
             for stem in batch:
                 self._load_thumb_for_stem(stem)
-            loaded = min(i + BATCH, len(stems))
             total_cached = len(self._thumb_cache)
             total_pairs = len(self._filtered_pairs)
             # Update widgets on main thread
@@ -5301,6 +5298,11 @@ def _show_crash_dialog(exc_type, exc_value, exc_tb):
     import traceback as _tb
     log_path = Path.home() / ".reconstruction_zone" / "crash.log"
     detail = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(detail, encoding="utf-8")
+    except Exception:
+        pass
     try:
         import tkinter as _tk
         from tkinter import messagebox as _mb

@@ -57,7 +57,7 @@ def download_model(url: str, dest: Path,
 
         tmp.rename(dest)
         return True
-    except Exception as e:
+    except Exception:
         if tmp.exists():
             tmp.unlink()
         raise

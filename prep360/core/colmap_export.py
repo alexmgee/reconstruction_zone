@@ -190,11 +190,11 @@ def _parse_sensors(chunk_elem) -> Dict[int, SensorCalibration]:
                 elem = calib.find(coeff_name)
                 if elem is not None and elem.text:
                     val = float(elem.text)
-                    if coeff_name == "k1": k1 = val
-                    elif coeff_name == "k2": k2 = val
-                    elif coeff_name == "k3": k3 = val
-                    elif coeff_name == "p1": p1 = val
-                    elif coeff_name == "p2": p2 = val
+                    if coeff_name == "k1": k1 = val  # noqa: E701
+                    elif coeff_name == "k2": k2 = val  # noqa: E701
+                    elif coeff_name == "k3": k3 = val  # noqa: E701
+                    elif coeff_name == "p1": p1 = val  # noqa: E701
+                    elif coeff_name == "p2": p2 = val  # noqa: E701
 
         # Fallback: check resolution directly on sensor element
         if width == 0:

@@ -95,7 +95,7 @@ def apply_shadow_highlight(
     # Apply LUT to each channel
     # Convert to LAB for better perceptual results (adjust L channel only)
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
+    l, a, b = cv2.split(lab)  # noqa: E741
 
     # Apply LUT to luminance channel
     l_adjusted = cv2.LUT(l, lut)

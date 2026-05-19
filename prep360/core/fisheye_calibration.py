@@ -22,9 +22,9 @@ import json
 import datetime
 import numpy as np
 import cv2
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple
 
 
 @dataclass

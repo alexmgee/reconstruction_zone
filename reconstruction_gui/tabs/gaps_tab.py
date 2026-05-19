@@ -29,8 +29,8 @@ from widgets import (
 
 try:
     from prep360.core import (
-        GapDetector, GapReport, SpatialGap,
-        BridgeExtractor, BridgeResult,
+        GapDetector,
+        BridgeExtractor,
         FisheyeReframer, FISHEYE_PRESETS,
     )
 

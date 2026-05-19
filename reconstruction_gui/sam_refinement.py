@@ -20,12 +20,11 @@ Integration pattern mirrors shadow_detection.py:
     refined = refiner.refine(image_bgr, coarse_mask)
 """
 
-import hashlib
 import logging
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -43,7 +42,7 @@ except ImportError:
     HAS_SAM = False
 
 try:
-    import FastGeodis
+    import FastGeodis  # noqa: F401
     HAS_FASTGEODIS = True
 except ImportError:
     HAS_FASTGEODIS = False
@@ -226,7 +225,6 @@ class SAMMaskRefiner:
                 "Install: pip install segment-anything"
             )
 
-        import torch
 
         # Resolve checkpoint path
         if self.config.sam_checkpoint:
@@ -324,7 +322,6 @@ class SAMMaskRefiner:
         component_mask: np.ndarray,
     ) -> np.ndarray:
         """Refine a single connected component using multi-prompt SAM predict."""
-        import torch
 
         h, w = component_mask.shape
 

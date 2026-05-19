@@ -6,7 +6,7 @@ Manages a persistent queue of video files for batch processing.
 
 import json
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime

@@ -829,7 +829,7 @@ class ColmapRunner:
                     extra_args=extra_args,
                     progress_callback=progress_callback,
                 )
-                log_text = f"pycolmap.extract_features completed"
+                log_text = "pycolmap.extract_features completed"
             else:
                 self._ensure_binary_validated()
                 if self.camera_model.upper() == "SPHERE":

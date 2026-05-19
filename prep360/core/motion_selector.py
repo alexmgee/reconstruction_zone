@@ -29,9 +29,9 @@ Usage:
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional
 
 import cv2
 import numpy as np
@@ -323,7 +323,7 @@ class MotionSelector:
                     flow_from_prev=flow_mag,
                 )
                 # Temporarily store frame data for saving later
-                fs._frame_data = frame  # noqa: attribute assignment
+                fs._frame_data = frame  # attribute assignment
                 all_scores.append(fs)
 
                 if progress_callback:

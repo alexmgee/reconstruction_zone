@@ -870,7 +870,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     # List presets
-    list_p = sub.add_parser("presets", help="List available presets")
+    sub.add_parser("presets", help="List available presets")
 
     # Extract from a single pair
     single_p = sub.add_parser("extract", help="Extract views from one frame pair")
@@ -1011,7 +1011,7 @@ def main():
                 intr = reframer.get_virtual_pinhole_intrinsics(fov, config.crop_size)
                 p = intr["params"]
                 print(f"\n  FOV {fov:.0f}°:")
-                print(f"    Model: PINHOLE")
+                print("    Model: PINHOLE")
                 print(f"    fx={p[0]:.2f}  fy={p[1]:.2f}")
                 print(f"    cx={p[2]:.2f}  cy={p[3]:.2f}")
                 print(f"    COLMAP line: PINHOLE {config.crop_size} {config.crop_size} "

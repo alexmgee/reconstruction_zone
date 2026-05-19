@@ -26,9 +26,9 @@ Usage:
 import json
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -283,7 +283,6 @@ class GapDetector:
             if cam.transform is None or not cam.enabled:
                 continue
 
-            R_parent = cam.transform[:3, :3].copy()
             t_parent = cam.transform[:3, 3].copy()
 
             # Camera center in world coordinates

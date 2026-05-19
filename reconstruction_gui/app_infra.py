@@ -30,7 +30,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
-from typing import Dict, Optional
+from typing import Optional
 
 # ── File-based crash-resilient logger ──────────────────────────────────
 # Survives GUI freezes and pythonw.exe (no console).  Writes to

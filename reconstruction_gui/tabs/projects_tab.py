@@ -6,25 +6,22 @@ Right column (_proj_right_panel): project info panel + directory tree + thumbnai
 All interactions are inline -- no popout dialogs.
 """
 
-import os
 import threading
 import customtkinter as ctk
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
-from typing import Optional
 
 from widgets import (
-    Section, CollapsibleSection, Tooltip,
-    COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
+    Section, COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
     COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
     COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
     COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
     COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
     COLOR_BORDER_SECTION,
     FONT_TEXT_CONSOLE, FONT_TEXT_BTN_PRIMARY,
-    LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+    BROWSE_BUTTON_WIDTH,
     HEIGHT_ACTION_BAR, HEIGHT_INLINE, HEIGHT_NAV,
 )
 
@@ -334,7 +331,6 @@ def _show_scan_results(app, container, status_label, scan_btn, results):
             app._proj_form_sources.clear()
             for img_dir in r.image_dirs:
                 label = Path(img_dir).name
-                count = r.image_counts.get(img_dir, 0)
                 app._proj_form_sources.append((label, img_dir, "images"))
             for vid in r.video_files:
                 app._proj_form_sources.append((Path(vid).name, vid, "video"))
@@ -783,9 +779,7 @@ def _build_info_panel(app, proj):
     from project_store import STAGE_ORDER
     from widgets import (
         COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
-        COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
-        COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
-        COLOR_TEXT_DIM, RADIUS_PILL,
+        COLOR_ACTION_SECONDARY, COLOR_ACTION_DANGER, COLOR_TEXT_DIM, RADIUS_PILL,
     )
     TOOL_LABELS = {"Metashape", "RealityScan", "COLMAP"}
 
@@ -972,13 +966,11 @@ def _info_field_wide(grid, row, label, value):
 
 def _build_info_panel_edit(app, proj):
     """Build the inline edit mode — mirrors the read-only layout with editable fields."""
-    from project_store import ProjectSource, ProjectWorkDir, STAGE_ORDER
+    from project_store import ProjectSource, STAGE_ORDER
     from widgets import (
         COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
         COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
-        COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
-        COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
-        COLOR_TEXT_MUTED, BROWSE_BUTTON_WIDTH, RADIUS_PILL,
+        COLOR_ACTION_DANGER, COLOR_ACTION_MUTED, BROWSE_BUTTON_WIDTH, RADIUS_PILL,
     )
     TOOL_LABELS = {"Metashape", "RealityScan", "COLMAP"}
 
@@ -1780,9 +1772,7 @@ def _refresh_current_projects_list(app):
     TOOL_LABELS = {"Metashape", "RealityScan", "COLMAP"}
 
     from widgets import (
-        COLOR_ACTION_SECONDARY, COLOR_ACTION_MUTED,
-        COLOR_BORDER_SECTION, COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
-        RADIUS_PILL,
+        COLOR_ACTION_SECONDARY, COLOR_BORDER_SECTION, COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
     )
 
     for proj in projects:
@@ -1952,7 +1942,6 @@ def _do_export(app, proj):
 
 def _export_single_md(proj, path: Path) -> str:
     """Export a single project to markdown."""
-    from project_store import STAGE_ORDER
 
     METHOD_LABELS = ("Metashape", "RealityScan", "COLMAP")
     lines = [

@@ -29,16 +29,15 @@ CLI:
 """
 
 import json
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional
 
 import cv2
 import numpy as np
 
 from .gap_detector import GapReport, SpatialGap
-from .motion_selector import MotionSelector, FrameScore
+from .motion_selector import MotionSelector
 
 
 @dataclass

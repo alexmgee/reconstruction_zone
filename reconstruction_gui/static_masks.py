@@ -55,7 +55,7 @@ class StaticMaskManager:
                 # Prune entries whose PNGs no longer exist
                 before = len(self.layers)
                 self.layers = [
-                    l for l in self.layers
+                    l for l in self.layers  # noqa: E741
                     if (self.static_dir / l.filename).exists()
                 ]
                 if len(self.layers) < before:
@@ -70,7 +70,7 @@ class StaticMaskManager:
     def _save_index(self):
         """Persist layer index to sidecar JSON."""
         self.static_dir.mkdir(parents=True, exist_ok=True)
-        data = {"layers": [asdict(l) for l in self.layers]}
+        data = {"layers": [asdict(l) for l in self.layers]}  # noqa: E741
         self.index_path.write_text(
             json.dumps(data, indent=2), encoding="utf-8"
         )

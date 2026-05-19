@@ -425,7 +425,7 @@ def cmd_pipeline(args):
     if args.blur_filter:
         from .core.blur_filter import BlurFilter, BlurFilterConfig
 
-        print(f"\n=== Step 2.5: Filter Blurry Frames ===")
+        print("\n=== Step 2.5: Filter Blurry Frames ===")
         filtered_dir = output_base / "frames_filtered"
         blur_config = BlurFilterConfig(
             percentile=args.blur_percentile,
@@ -459,11 +459,11 @@ def cmd_pipeline(args):
     )
 
     if not result.success:
-        print(f"Reframing had errors", file=sys.stderr)
+        print("Reframing had errors", file=sys.stderr)
 
     print(f"Created {result.output_count} perspective views")
 
-    print(f"\n=== Complete ===")
+    print("\n=== Complete ===")
     print(f"Output: {output_base}")
     print(f"  frames/: {result.input_count} equirectangular frames")
     print(f"  perspectives/: {result.output_count} perspective views")
@@ -599,7 +599,7 @@ def cmd_colmap(args):
     result = exporter.export(progress_callback=progress)
 
     if result.success:
-        print(f"\nExport complete:")
+        print("\nExport complete:")
         print(f"  Images: {result.images_exported}")
         if result.cameras_written > 0:
             print(f"  COLMAP cameras: {result.cameras_written}")
@@ -615,7 +615,7 @@ def cmd_colmap(args):
             print(f"  COLMAP output: {result.colmap_dir}")
         return 0
     else:
-        print(f"\nExport failed:")
+        print("\nExport failed:")
         for err in result.errors[:10]:
             print(f"  {err}")
         return 1

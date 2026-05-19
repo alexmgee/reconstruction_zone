@@ -20,7 +20,7 @@ import logging
 import os
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -175,7 +175,6 @@ class SAM3VideoClickSession:
         Loads all frames via SAM3's async loader (lazy, CPU-offloaded).
         Blocks until the session is ready for prompts.
         """
-        import torch
         from sam3.model_builder import build_sam3_multiplex_video_predictor
 
         if self.predictor is not None:

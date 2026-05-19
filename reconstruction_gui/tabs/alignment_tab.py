@@ -28,8 +28,6 @@ try:
         COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
         COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
         COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
-        COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
-        FONT_TEXT_MONO_VALUE, FONT_TEXT_CONSOLE,
         LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
     )
 except ImportError:
@@ -40,8 +38,6 @@ except ImportError:
         COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
         COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
         COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
-        COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
-        FONT_TEXT_MONO_VALUE, FONT_TEXT_CONSOLE,
         LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
     )
 
@@ -1211,7 +1207,6 @@ def _load_viewer_model(app, model_dir: str):
 
     except Exception as e:
         app.log(f"Failed to load model: {e}")
-        logger.warning("Failed to load model into viewer: %s", e)
 
 
 def alignment_viewer_pause(app):
@@ -1333,7 +1328,7 @@ def _download_vocab_tree(app):
             app.after(0, lambda: _set_entry_text(app.alignment_vocab_tree_entry, str(dest)))
             app.after(0, lambda: app.log(f"Vocab tree downloaded: {dest}"))
         except Exception as exc:
-            app.after(0, lambda: app.log(f"Vocab tree download failed: {exc}"))
+            app.after(0, lambda e=exc: app.log(f"Vocab tree download failed: {e}"))
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -2156,7 +2151,7 @@ def _alignment_worker(app, snapshot: Dict[str, object], stages_to_run: List[str]
                 )
 
         profile = snapshot["profile"]
-        progress = lambda message: _alignment_log(app, message)
+        progress = lambda message: _alignment_log(app, message)  # noqa: E731
 
         for stage_key in stages_to_run:
             if app._alignment_cancel_event.is_set():

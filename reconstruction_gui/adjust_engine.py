@@ -735,9 +735,9 @@ def adjust_vignette(img: np.ndarray, strength: float) -> np.ndarray:
 # Video utilities
 # ══════════════════════════════════════════════════════════════════════════════
 
-import shutil
-import subprocess
-import json as _json
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import json as _json  # noqa: E402
 
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".mts", ".m4v", ".webm"}
 
@@ -896,7 +896,7 @@ def apply_adjustments_gpu(img: np.ndarray, state: AdjustmentState) -> np.ndarray
         g_m = 1.0 + state.tint * 0.0008
         mn = min(r_m, g_m, b_m)
         if mn > 0:
-            r_m /= mn; g_m /= mn; b_m /= mn
+            r_m /= mn; g_m /= mn; b_m /= mn  # noqa: E702
         t = t.clone()
         t[:, :, 2] *= r_m
         t[:, :, 1] *= g_m

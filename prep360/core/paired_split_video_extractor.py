@@ -227,7 +227,7 @@ class PairedSplitVideoExtractor:
         """
 
         if _log is None:
-            _log = lambda _msg: None
+            _log = lambda _msg: None  # noqa: E731
 
         scene_aware = config.scene_detection
         score_fn = self._tenengrad_sharpness if config.scoring_method == "tenengrad" else self._laplacian_sharpness
@@ -448,7 +448,7 @@ class PairedSplitVideoExtractor:
         import time
 
         if _log is None:
-            _log = lambda _msg: None
+            _log = lambda _msg: None  # noqa: E731
 
         if not SharpestExtractor._gpu_available(SharpestExtractor()):
             return None

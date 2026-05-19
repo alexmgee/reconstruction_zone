@@ -272,7 +272,7 @@ def parse_images_txt(path: Path) -> Dict[int, COLMAPImage]:
     """
     images = {}
     with open(path, 'r') as f:
-        lines = [l.strip() for l in f if l.strip() and not l.strip().startswith('#')]
+        lines = [l.strip() for l in f if l.strip() and not l.strip().startswith('#')]  # noqa: E741
 
     i = 0
     while i < len(lines):

@@ -8,8 +8,7 @@ before photogrammetry processing.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Callable, Dict, Tuple, Set
-import json
+from typing import List, Optional, Callable, Dict, Tuple
 import time
 
 import cv2

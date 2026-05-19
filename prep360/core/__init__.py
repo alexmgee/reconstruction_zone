@@ -38,7 +38,7 @@ from .fisheye_calibration import (
     FisheyeCalibrator, FisheyeCalibration, DualFisheyeCalibration,
 )
 from .motion_selector import MotionSelector, FrameScore, SelectionResult
-from .gap_detector import GapDetector, GapReport, SpatialGap, CameraPosition as GapCameraPosition
+from .gap_detector import GapDetector, GapReport, SpatialGap
 from .fisheye_reframer import (
     FisheyeReframer, FisheyeView, FisheyeViewConfig,
     FISHEYE_PRESETS, batch_extract as fisheye_batch_extract,

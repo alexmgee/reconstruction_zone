@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Callable, List, Dict
 
-from .srt_parser import SrtData, SrtEntry, parse_srt, find_srt_for_video
+from .srt_parser import SrtData, SrtEntry, parse_srt
 
 _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 

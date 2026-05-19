@@ -14,7 +14,7 @@ import sys
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 import argparse
 import logging
 
@@ -169,12 +169,12 @@ class MaskReviewer:
                 self.drawing_lasso = False
                 self.lasso_points = []
                 return
-        
+
         # Cancel lasso if ctrl released during draw
         if self.drawing_lasso and not (flags & cv2.EVENT_FLAG_CTRLKEY):
             self.drawing_lasso = False
             self.lasso_points = []
-        
+
         # Shift + click = flood fill segment
         if event == cv2.EVENT_LBUTTONDOWN and (flags & cv2.EVENT_FLAG_SHIFTKEY):
             ix, iy = self._display_to_image_clamped(x, y)
@@ -186,7 +186,7 @@ class MaskReviewer:
             self._flood_fill_remove(ix, iy)
             self.history.append(self.current_mask.copy())
             return
-        
+
         # Middle click = pan
         if event == cv2.EVENT_MBUTTONDOWN:
             self.panning = True
@@ -196,7 +196,7 @@ class MaskReviewer:
         elif event == cv2.EVENT_MBUTTONUP:
             self.panning = False
             return
-        
+
         # Regular brush
         if event == cv2.EVENT_LBUTTONDOWN:
             self.drawing = True
@@ -243,99 +243,99 @@ class MaskReviewer:
             self.pan_x = ix - x / self.zoom_level
             self.pan_y = iy - y / self.zoom_level
             self._clamp_pan()
-    
+
     def _draw_at(self, x, y):
         """Draw on mask at display position (x, y), transformed to image coords."""
         ix, iy = self._display_to_image(x, y)
         cv2.circle(self.current_mask, (ix, iy), self.brush_size, self.mode, -1)
-    
+
     def _apply_lasso_selection(self):
         """Apply Otsu thresholding within the drawn lasso polygon."""
         if len(self.lasso_points) < 3:
             return
-        
+
         h, w = self.current_image.shape[:2]
-        
+
         # Create polygon mask from lasso points
         polygon = np.array(self.lasso_points, dtype=np.int32)
         lasso_mask = np.zeros((h, w), dtype=np.uint8)
         cv2.fillPoly(lasso_mask, [polygon], 1)
-        
+
         # Convert image to grayscale
         gray = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2GRAY)
-        
+
         # Extract pixels within the lasso region
         lasso_pixels = gray[lasso_mask > 0]
-        
+
         if len(lasso_pixels) < 10:
             return
-        
+
         # Use Otsu's method to find optimal threshold between dark (shadow) and light (surface)
         otsu_threshold, _ = cv2.threshold(lasso_pixels, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
+
         # Adjust threshold based on tolerance setting (lower tolerance = stricter, higher = more permissive)
         # At tolerance=50 (default-ish), use Otsu directly
         # At tolerance=0, use threshold - 20 (stricter)
         # At tolerance=100, use threshold + 20 (more permissive)
         adjustment = (self.flood_tolerance - 50) * 0.4
         threshold = otsu_threshold + adjustment
-        
+
         # Create selection: pixels darker than threshold within the lasso
         dark_pixels = ((gray < threshold) & (lasso_mask > 0)).astype(np.uint8)
-        
+
         # Morphological opening to remove small isolated spots (grass texture)
         kernel = np.ones((5, 5), np.uint8)
         dark_pixels = cv2.morphologyEx(dark_pixels, cv2.MORPH_OPEN, kernel)
-        
+
         # Keep only the largest connected component (the main shadow body)
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(dark_pixels)
-        
+
         if num_labels > 1:  # More than just background
             # Find the largest non-background component
             largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
             dark_pixels = (labels == largest_label).astype(np.uint8)
-        
+
         # Apply to mask based on mode
         if self.mode == 1:  # Add
             self.current_mask = np.maximum(self.current_mask, dark_pixels)
         else:  # Remove
             self.current_mask = np.where(dark_pixels > 0, 0, self.current_mask).astype(np.uint8)
-        
+
         logger.info(f"Lasso: Otsu={otsu_threshold:.0f}, adjusted={threshold:.0f}, selected {dark_pixels.sum()} pixels")
-    
+
     def _flood_fill_add(self, x, y):
         """Flood fill to add a region. Uses brightness-only or LAB color based on mode."""
         h, w = self.current_image.shape[:2]
         gray = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2GRAY)
-        
+
         if self.brightness_mode:
             # RELATIVE darkness mode: compare each pixel to its local neighborhood
             # Shadow = darker than surroundings. Dark texture = similar to surroundings.
-            
+
             # Compute local brightness using a blur (approximation of local context)
             # 51x51 kernel considers ~50px neighborhood
             local_median = cv2.blur(gray, (51, 51))
-            
+
             # A pixel is "in shadow" if it's significantly darker than its local neighborhood
             darkness_ratio = gray.astype(np.float32) / (local_median.astype(np.float32) + 1)
-            
+
             # Threshold: tolerance=30 means pixel must be 30% darker than surroundings
             # At tolerance=100, threshold=0 meaning any darker pixel qualifies
             threshold = 1.0 - (self.flood_tolerance / 100.0)
             shadow_mask = (darkness_ratio < threshold).astype(np.uint8)
-            
+
             # Morphological closing to bridge small gaps (gravel texture, grass blades)
             # This connects nearby shadow regions that are separated by bright texture
             kernel_size = max(5, self.flood_tolerance // 5)  # Larger tolerance = more closing
             kernel = np.ones((kernel_size, kernel_size), np.uint8)
             shadow_mask = cv2.morphologyEx(shadow_mask, cv2.MORPH_CLOSE, kernel)
-            
+
             # Find connected components
             num_labels, labels = cv2.connectedComponents(shadow_mask)
-            
+
             # Get the label at click point
             click_label = labels[y, x]
-            
+
             if click_label > 0:
                 filled_region = (labels == click_label).astype(np.uint8)
             else:
@@ -346,12 +346,12 @@ class MaskReviewer:
             edges = cv2.Canny(gray, 30, 100)
             edges = cv2.dilate(edges, np.ones((2, 2), np.uint8), iterations=1)
             flood_mask[1:-1, 1:-1] = (edges > 0).astype(np.uint8)
-            
+
             lab_image = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2LAB)
             lo_diff = (self.flood_tolerance, self.flood_tolerance // 2, self.flood_tolerance // 2)
             hi_diff = (self.flood_tolerance, self.flood_tolerance // 2, self.flood_tolerance // 2)
             lab_copy = lab_image.copy()
-            
+
             cv2.floodFill(
                 lab_copy,
                 flood_mask,
@@ -361,32 +361,32 @@ class MaskReviewer:
                 hi_diff,
                 cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE
             )
-            
+
             filled_region = flood_mask[1:-1, 1:-1]
             filled_region = np.where(edges > 0, 0, filled_region).astype(np.uint8)
-        
+
         self.current_mask = np.maximum(self.current_mask, filled_region)
-        
+
     def _flood_fill_remove(self, x, y):
         """Flood fill to remove a region. Uses brightness-only or LAB color based on mode."""
         h, w = self.current_image.shape[:2]
         gray = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2GRAY)
-        
+
         if self.brightness_mode:
             # RELATIVE darkness mode: compare each pixel to its local neighborhood
             local_median = cv2.blur(gray, (51, 51))
             darkness_ratio = gray.astype(np.float32) / (local_median.astype(np.float32) + 1)
             threshold = 1.0 - (self.flood_tolerance / 100.0)
             shadow_mask = (darkness_ratio < threshold).astype(np.uint8)
-            
+
             # Morphological closing to bridge small gaps
             kernel_size = max(5, self.flood_tolerance // 5)
             kernel = np.ones((kernel_size, kernel_size), np.uint8)
             shadow_mask = cv2.morphologyEx(shadow_mask, cv2.MORPH_CLOSE, kernel)
-            
+
             num_labels, labels = cv2.connectedComponents(shadow_mask)
             click_label = labels[y, x]
-            
+
             if click_label > 0:
                 filled_region = (labels == click_label).astype(np.uint8)
             else:
@@ -397,12 +397,12 @@ class MaskReviewer:
             edges = cv2.Canny(gray, 30, 100)
             edges = cv2.dilate(edges, np.ones((2, 2), np.uint8), iterations=1)
             flood_mask[1:-1, 1:-1] = (edges > 0).astype(np.uint8)
-            
+
             lab_image = cv2.cvtColor(self.current_image, cv2.COLOR_BGR2LAB)
             lo_diff = (self.flood_tolerance, self.flood_tolerance // 2, self.flood_tolerance // 2)
             hi_diff = (self.flood_tolerance, self.flood_tolerance // 2, self.flood_tolerance // 2)
             lab_copy = lab_image.copy()
-            
+
             cv2.floodFill(
                 lab_copy,
                 flood_mask,
@@ -412,10 +412,10 @@ class MaskReviewer:
                 hi_diff,
                 cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE
             )
-            
+
             filled_region = flood_mask[1:-1, 1:-1]
             filled_region = np.where(edges > 0, 0, filled_region).astype(np.uint8)
-        
+
         self.current_mask = np.where(filled_region > 0, 0, self.current_mask).astype(np.uint8)
 
     def _create_display(self):
@@ -482,7 +482,7 @@ class MaskReviewer:
             # Draw dotted line back to start to show what will be closed
             if len(self.lasso_points) > 2:
                 cv2.line(display, self.lasso_points[-1], self.lasso_points[0], lasso_color, 1, cv2.LINE_AA)
-        
+
         # Apply zoom by cropping and resizing
         if self.zoom_level > 1.0:
             h, w = display.shape[:2]
@@ -510,7 +510,7 @@ class MaskReviewer:
         brush_display_size = int(self.brush_size * self.zoom_level)
         cv2.circle(display, (self.mouse_x, self.mouse_y), brush_display_size, cursor_color, 2)
         cv2.circle(display, (self.mouse_x, self.mouse_y), 2, cursor_color, -1)
-        
+
         # Status bar — appended below image so it doesn't cover the nadir
         zoom_pct = int(self.zoom_level * 100)
         fill_mode = "BRIGHTNESS" if self.brightness_mode else "COLOR"
@@ -538,7 +538,7 @@ class MaskReviewer:
         display = np.vstack([display, bar])
 
         return display
-    
+
     def _draw_help_overlay(self, display, controls=None):
         """Draw a semi-transparent help panel."""
         h, w = display.shape[:2]
@@ -584,18 +584,18 @@ class MaskReviewer:
                 ("b", "Toggle fill mode (color/brightness)"),
                 ("h", "Toggle this help"),
             ]
-        
+
         y_offset = panel_y + 50
         for key, desc in controls:
             if key == "":
                 y_offset += 5
                 continue
-            cv2.putText(display, key, (panel_x + 10, y_offset), 
+            cv2.putText(display, key, (panel_x + 10, y_offset),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 255, 100), 1)
-            cv2.putText(display, desc, (panel_x + 100, y_offset), 
+            cv2.putText(display, desc, (panel_x + 100, y_offset),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
             y_offset += 18
-    
+
     def _load_image_only(self, image_path):
         """Load image and compute display scale. Returns (orig_h, orig_w) or None.
 
@@ -795,21 +795,21 @@ class MaskReviewer:
         if result is None:
             return 'skip'
         orig_h, orig_w = result
-        
+
         # Create window
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(window_name, self.current_image.shape[1], self.current_image.shape[0] + 30)
         if self._last_window_pos:
             cv2.moveWindow(window_name, *self._last_window_pos)
         cv2.setMouseCallback(window_name, self._mouse_callback)
-        
+
         logger.info(f"Reviewing: {image_path.name}")
-        
+
         result = 'skip'
         while True:
             display = self._create_display()
             cv2.imshow(window_name, display)
-            
+
             key = cv2.waitKey(1) & 0xFF
             if 65 <= key <= 90:  # Caps Lock / Shift: normalize A-Z → a-z
                 key += 32
@@ -823,12 +823,12 @@ class MaskReviewer:
                 # Invert back: internal 1=remove → disk black=remove, white=keep
                 cv2.imwrite(str(mask_path), (1 - final_mask) * 255)
                 logger.info(f"Saved: {mask_path.name}")
-                
+
                 # Delete review image if it exists
                 if review_path and review_path.exists():
                     review_path.unlink()
                     logger.info(f"Removed from review: {review_path.name}")
-                
+
                 result = 'save'
                 break
             elif key == ord('n'):
@@ -872,7 +872,7 @@ class MaskReviewer:
                 self.zoom_level = 1.0
                 self.pan_x = 0.0
                 self.pan_y = 0.0
-        
+
         self._save_window_pos(window_name)
         cv2.destroyWindow(window_name)
         return result
@@ -1012,7 +1012,8 @@ class MaskReviewer:
         Returns:
             np.ndarray (0/1 uint8, original resolution) on save, None on cancel.
         """
-        import tempfile, os
+        import tempfile
+        import os
 
         # Read reference image to get dimensions
         ref = cv2.imread(str(reference_image_path))
@@ -1048,8 +1049,6 @@ class MaskReviewer:
         nav_name = reference_image_path.name
 
         # Set custom controls for static mask mode
-        nav_hint = "Left/Right" if nav_images else ""
-        nav_desc = "Prev/next frame" if nav_images else ""
         self._custom_controls = [
             ("Left Click", "Brush ADD to mask"),
             ("Right Click", "Brush REMOVE from mask"),
@@ -1184,11 +1183,11 @@ def main():
     parser.add_argument("masks_dir", type=Path, help="Directory containing masks to review")
     parser.add_argument("--images-dir", type=Path, help="Directory containing original images")
     parser.add_argument("--review-only", action="store_true", help="Only review masks flagged for review")
-    
+
     args = parser.parse_args()
-    
+
     masks_dir = Path(args.masks_dir)
-    
+
     # Find masks folder
     if (masks_dir / "masks").exists():
         actual_masks_dir = masks_dir / "masks"
@@ -1196,7 +1195,7 @@ def main():
     else:
         actual_masks_dir = masks_dir
         review_dir = masks_dir.parent / "review"
-    
+
     # Find original images
     if args.images_dir:
         images_dir = args.images_dir
@@ -1213,10 +1212,10 @@ def main():
         if images_dir is None:
             logger.error("Could not find images directory. Please specify with --images-dir")
             return
-    
+
     logger.info(f"Masks dir: {actual_masks_dir}")
     logger.info(f"Images dir: {images_dir}")
-    
+
     # Get list of masks to review
     if args.review_only and review_dir.exists():
         review_files = list(review_dir.glob("review_*.jpg")) + list(review_dir.glob("review_*.png"))
@@ -1224,15 +1223,15 @@ def main():
     else:
         mask_files = list(actual_masks_dir.glob("mask_*.png")) + list(actual_masks_dir.glob("*_mask.png"))
         mask_stems = [f.stem.replace("mask_", "").replace("_mask", "") for f in mask_files]
-    
+
     logger.info(f"Found {len(mask_stems)} masks to review")
-    
+
     reviewer = MaskReviewer()
     stats = {'saved': 0, 'skipped': 0, 'total': len(mask_stems)}
-    
+
     for i, stem in enumerate(sorted(mask_stems)):
         logger.info(f"\n[{i+1}/{len(mask_stems)}] {stem}")
-        
+
         # Find image
         image_path = None
         for ext in ['.png', '.jpg', '.jpeg']:
@@ -1240,11 +1239,11 @@ def main():
             if candidate.exists():
                 image_path = candidate
                 break
-        
+
         if image_path is None:
             logger.warning(f"Image not found for: {stem}")
             continue
-        
+
         # Find mask
         mask_path = None
         for pattern in [f"mask_{stem}.png", f"{stem}_mask.png"]:
@@ -1252,11 +1251,11 @@ def main():
             if candidate.exists():
                 mask_path = candidate
                 break
-        
+
         if mask_path is None:
             logger.warning(f"Mask not found for: {stem}")
             continue
-        
+
         # Find review file (to delete after save)
         review_path = None
         if review_dir.exists():
@@ -1265,16 +1264,16 @@ def main():
                 if candidate.exists():
                     review_path = candidate
                     break
-        
+
         result = reviewer.review_mask(image_path, mask_path, review_path)
-        
+
         if result == 'save':
             stats['saved'] += 1
         elif result == 'skip':
             stats['skipped'] += 1
         elif result == 'quit':
             break
-    
+
     logger.info(f"\nReview complete: {stats['saved']} saved, {stats['skipped']} skipped out of {stats['total']}")
 
 
@@ -1295,7 +1294,6 @@ def edit_session_subprocess():
     parser.add_argument("--window-name", default="Mask Editor")
     args = parser.parse_args()
 
-    import queue as queue_mod
 
     reviewer = MaskReviewer()
     dims = reviewer._load_and_scale(args.image_path, args.mask_path)

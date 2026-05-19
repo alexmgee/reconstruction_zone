@@ -25,20 +25,19 @@ from widgets import (
     COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
     COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
     COLOR_TEXT_MUTED,
-    FONT_TEXT_SUBTITLE, FONT_TEXT_MONO_VALUE, FONT_TEXT_STATUS,
+    FONT_TEXT_MONO_VALUE, FONT_TEXT_STATUS,
     FONT_TEXT_BTN_PRIMARY, FONT_TEXT_BTN_SECONDARY,
     LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
 )
 
 from adjust_engine import (
     AdjustmentState, RawDevelopState, AdjustDocument,
-    UndoStack, apply_adjustments, load_raw, HAS_RAWPY,
+    UndoStack, load_raw, HAS_RAWPY,
     HAS_COLOUR_SCIENCE, HAS_MCC,
     detect_chart_mcc, get_reference_patches,
     fit_chart_correction, apply_chart_correction, match_histograms,
     DENOISE_METHODS,
-    is_video_file, probe_video, extract_single_frame,
-    normalize_exposures,
+    probe_video, extract_single_frame,
 )
 
 from prep360.core.adjustment_recipe import AdjustmentRecipe
@@ -886,7 +885,6 @@ def _navigate(app, delta: int):
     # Video mode — step by 1 second
     if app._adjust_video_path and app._adjust_video_info:
         dur = app._adjust_video_info["duration"]
-        fps = app._adjust_video_info["fps"]
         step = 1.0  # 1 second per step
         current_time = app._adjust_nav_idx * step
         new_time = current_time + delta * step
@@ -1388,7 +1386,7 @@ def _detect_and_fit_chart(app):
     # Try cv2.mcc detection
     measured = detect_chart_mcc(chart_img)
     if measured is not None:
-        app.log(f"[Adjust] Chart detected via cv2.mcc — 24 patches extracted")
+        app.log("[Adjust] Chart detected via cv2.mcc — 24 patches extracted")
     else:
         if HAS_MCC:
             app.log("[Adjust] cv2.mcc detection failed — chart not found in image")

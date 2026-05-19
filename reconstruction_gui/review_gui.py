@@ -10,7 +10,7 @@ Usage:
 """
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw
+from PIL import Image
 import cv2
 import numpy as np
 from pathlib import Path
@@ -506,7 +506,8 @@ class ReviewApp(ctk.CTk):
                 from review_masks import MaskReviewer
             except ImportError:
                 # Try relative import
-                import sys, os
+                import sys
+                import os
                 sys.path.insert(0, os.path.dirname(__file__))
                 from review_masks import MaskReviewer
 

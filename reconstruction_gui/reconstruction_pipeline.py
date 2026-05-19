@@ -23,7 +23,7 @@ import numpy as np
 import cv2
 import torch
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Union, Any, Callable
+from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 import json
@@ -31,12 +31,10 @@ import yaml
 from abc import ABC, abstractmethod
 import logging
 import warnings
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 import time
 from tqdm import tqdm
-import hashlib
 
 # Setup logging — use NullHandler when stderr is unavailable (pythonw.exe)
 import sys as _sys
@@ -164,7 +162,7 @@ class MaskConfig:
     model: SegmentationModel = SegmentationModel.SAM3
     model_checkpoint: Optional[str] = None
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    
+
     # Text prompts for SAM3 — use simple nouns (compound phrases score poorly)
     remove_prompts: List[str] = field(default_factory=lambda: [
         "person",
@@ -188,13 +186,13 @@ class MaskConfig:
     review_threshold: float = 0.85
     min_mask_area: int = 100  # Minimum pixels
     max_mask_area_ratio: float = 0.5  # Maximum ratio of image
-    
+
     # Processing options
     use_temporal_consistency: bool = True
     temporal_window: int = 5  # Frames for temporal smoothing
     batch_size: int = 4
     num_workers: int = 4
-    
+
     # Geometry-specific settings
     geometry_aware: bool = True
     handle_distortion: bool = True
@@ -202,7 +200,7 @@ class MaskConfig:
     nadir_mask_percent: float = 0.0  # Auto-mask bottom N% of equirect (0=off, 5-15 typical)
     fisheye_circle_mask: bool = True   # Auto-mask corners + periphery of fisheye images
     fisheye_margin_percent: float = 0.0  # % of circle radius to trim inward (0=corners only)
-    
+
     # Shadow detection
     detect_shadows: bool = False  # Run shadow detection after person masking
     shadow_config: Optional[Dict] = None  # Serialized ShadowConfig dict for advanced detection
@@ -271,7 +269,7 @@ class MaskConfig:
     save_review_images: bool = True
     save_reject_review_images: bool = False
     output_format: str = "png"  # png, jpg, npy
-    
+
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
         return {
@@ -331,34 +329,34 @@ class MaskConfig:
             'save_reject_review_images': self.save_reject_review_images,
             'output_format': self.output_format
         }
-    
+
     def save(self, path: Path):
         """Save configuration to file."""
         path = Path(path)
         data = self.to_dict()
-        
+
         if path.suffix == '.yaml':
             with open(path, 'w') as f:
                 yaml.dump(data, f, default_flow_style=False)
         else:
             with open(path, 'w') as f:
                 json.dump(data, f, indent=2)
-    
+
     @classmethod
     def load(cls, path: Path) -> 'MaskConfig':
         """Load configuration from file."""
         path = Path(path)
-        
+
         if path.suffix == '.yaml':
             with open(path) as f:
                 data = yaml.safe_load(f)
         else:
             with open(path) as f:
                 data = json.load(f)
-        
+
         # Convert string back to enum
         data['model'] = SegmentationModel(data['model'])
-        
+
         return cls(**data)
 
 
@@ -369,7 +367,7 @@ class MaskResult:
     confidence: float
     quality: MaskQuality
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     @property
     def needs_review(self) -> bool:
         """Check if mask needs human review."""
@@ -378,7 +376,7 @@ class MaskResult:
     def should_save_review_image(self, include_rejects: bool = False) -> bool:
         """Check whether this result should get a review overlay image."""
         return self.needs_review or (include_rejects and self.quality == MaskQuality.REJECT)
-    
+
     @property
     def is_valid(self) -> bool:
         """Check if mask is usable."""
@@ -387,7 +385,7 @@ class MaskResult:
 
 class BaseSegmenter(ABC):
     """Abstract base class for segmentation models."""
-    
+
     def __init__(self, config: MaskConfig):
         self.config = config
         self.device = config.device
@@ -432,7 +430,7 @@ class BaseSegmenter(ABC):
     def initialize(self):
         """Initialize the model."""
         pass
-    
+
     @abstractmethod
     def segment_image(
         self,
@@ -441,70 +439,70 @@ class BaseSegmenter(ABC):
     ) -> List[MaskResult]:
         """Segment a single image."""
         pass
-    
+
     def preprocess_image(
         self,
         image: np.ndarray,
         geometry: ImageGeometry
     ) -> np.ndarray:
         """Preprocess image based on geometry."""
-        
+
         if geometry == ImageGeometry.EQUIRECTANGULAR and self.config.handle_distortion:
             # Apply adaptive histogram equalization to handle pole distortion
             image = self._enhance_poles(image)
-        
+
         elif geometry == ImageGeometry.FISHEYE and self.config.handle_distortion:
             # Apply radial enhancement for fisheye
             image = self._enhance_fisheye(image)
-        
+
         return image
-    
+
     def _enhance_poles(self, image: np.ndarray) -> np.ndarray:
         """Enhance pole regions in equirectangular images."""
         h, w = image.shape[:2]
-        
+
         # Create weight map (higher weight at poles)
         weights = np.ones((h, 1))
         pole_region = int(h * 0.15)  # Top/bottom 15%
-        
+
         # Gradual weight increase towards poles
         for i in range(pole_region):
             weight = 1.0 + (pole_region - i) / pole_region
             weights[i] = weight
             weights[h - 1 - i] = weight
-        
+
         # Apply weighted CLAHE
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        
+        l, a, b = cv2.split(lab)  # noqa: E741
+
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         l_enhanced = clahe.apply(l)
-        
+
         # Weight blend
         l_blended = (l * (2 - weights) + l_enhanced * weights) / 2
         l_blended = np.clip(l_blended, 0, 255).astype(np.uint8)
-        
+
         enhanced = cv2.merge([l_blended, a, b])
         return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
-    
+
     def _enhance_fisheye(self, image: np.ndarray) -> np.ndarray:
         """Enhance fisheye images with radial correction."""
         h, w = image.shape[:2]
         center = (w // 2, h // 2)
-        
+
         # Create radial gradient mask
         y, x = np.ogrid[:h, :w]
         dist_from_center = np.sqrt((x - center[0])**2 + (y - center[1])**2)
         max_dist = np.sqrt(center[0]**2 + center[1]**2)
         radial_weights = 1.0 + (dist_from_center / max_dist) * 0.5
-        
+
         # Apply radial enhancement
         enhanced = image.astype(np.float32)
         for c in range(3):
             enhanced[:, :, c] *= radial_weights
-        
+
         return np.clip(enhanced, 0, 255).astype(np.uint8)
-    
+
     def postprocess_mask(
         self,
         mask: np.ndarray,
@@ -582,7 +580,7 @@ class BaseSegmenter(ABC):
         mask = self._morphological_cleanup(mask)
 
         return mask
-    
+
     def _evaluate_mask_quality(self, mask: np.ndarray, confidence: float) -> MaskQuality:
         """Multi-metric mask quality evaluation.
 
@@ -706,24 +704,24 @@ class BaseSegmenter(ABC):
         if max_val <= 1:
             return (filled > 0).astype(mask.dtype)
         return filled
-    
+
     def _morphological_cleanup(self, mask: np.ndarray) -> np.ndarray:
         """Clean up mask with morphological operations."""
         # Remove small noise
         kernel_small = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_small)
-        
+
         # Close small gaps
         kernel_medium = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_medium)
-        
+
         # Remove tiny components
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        
+
         for i in range(1, num_labels):
             if stats[i, cv2.CC_STAT_AREA] < self.config.min_mask_area:
                 mask[labels == i] = 0
-        
+
         return mask
 
 
@@ -966,16 +964,16 @@ class SAM3Segmenter(BaseSegmenter):
 
 class FastSAMSegmenter(BaseSegmenter):
     """FastSAM-based segmentation (10-100x faster than SAM)."""
-    
+
     def initialize(self):
         """Initialize FastSAM model."""
         if not HAS_FASTSAM:
             raise ImportError("FastSAM not available")
-        
+
         model_path = self.config.model_checkpoint or "FastSAM-x.pt"
         self.model = FastSAM(model_path)
-        logger.info(f"Initialized FastSAM")
-    
+        logger.info("Initialized FastSAM")
+
     def segment_image(
         self,
         image: np.ndarray,
@@ -983,10 +981,10 @@ class FastSAMSegmenter(BaseSegmenter):
         geometry: ImageGeometry = ImageGeometry.PINHOLE
     ) -> List[MaskResult]:
         """Segment using FastSAM."""
-        
+
         # Preprocess
         image_processed = self.preprocess_image(image, geometry)
-        
+
         # Run inference
         results = self.model(
             image_processed,
@@ -996,23 +994,23 @@ class FastSAMSegmenter(BaseSegmenter):
             conf=0.4,
             iou=0.9
         )
-        
+
         mask_results = []
-        
+
         if results[0].masks is not None:
             masks = results[0].masks.data.cpu().numpy()
             boxes = results[0].boxes
-            
+
             # Process each detected mask
             for i, mask in enumerate(masks):
                 mask = (mask > 0.5).astype(np.uint8)
-                
+
                 # Postprocess
                 mask_processed = self.postprocess_mask(mask, geometry)
-                
+
                 # Get confidence
                 confidence = float(boxes.conf[i]) if boxes is not None else 0.75
-                
+
                 mask_results.append(MaskResult(
                     mask=mask_processed,
                     confidence=confidence,
@@ -1022,9 +1020,9 @@ class FastSAMSegmenter(BaseSegmenter):
                         'model': 'fastsam'
                     }
                 ))
-        
+
         return mask_results
-    
+
 
 
 class YOLO26Segmenter(BaseSegmenter):
@@ -1227,57 +1225,57 @@ class RFDETRSegmenter(BaseSegmenter):
 
 class TemporalConsistency:
     """Handle temporal consistency for video sequences."""
-    
+
     def __init__(self, window_size: int = 5):
         self.window_size = window_size
         self.mask_history = deque(maxlen=window_size)
         self.confidence_history = deque(maxlen=window_size)
-    
+
     def add_frame(self, mask: np.ndarray, confidence: float):
         """Add frame to history."""
         self.mask_history.append(mask)
         self.confidence_history.append(confidence)
-    
+
     def get_smoothed_mask(self) -> np.ndarray:
         """Get temporally smoothed mask."""
         if not self.mask_history:
             return None
-        
+
         if len(self.mask_history) == 1:
             return self.mask_history[0]
-        
+
         # Weighted average based on confidence
         weights = np.array(self.confidence_history)
         weights = weights / weights.sum()
-        
+
         # Weighted voting
         accumulated = np.zeros_like(self.mask_history[0], dtype=np.float32)
         for mask, weight in zip(self.mask_history, weights):
             accumulated += mask.astype(np.float32) * weight
-        
+
         # Threshold
         smoothed = (accumulated > 0.5).astype(np.uint8)
-        
+
         return smoothed
-    
+
     def detect_inconsistency(self, threshold: float = 0.3) -> bool:
         """Detect temporal inconsistency."""
         if len(self.mask_history) < 2:
             return False
-        
+
         # Compare recent masks
         recent = self.mask_history[-1]
         previous = self.mask_history[-2]
-        
+
         # Calculate IoU
         intersection = np.logical_and(recent, previous).sum()
         union = np.logical_or(recent, previous).sum()
-        
+
         if union == 0:
             return False
-        
+
         iou = intersection / union
-        
+
         return iou < threshold
 
 
@@ -1523,7 +1521,7 @@ def resolve_segmentation_model() -> SegmentationModel:
 
 class MaskingPipeline:
     """Main masking pipeline orchestrator."""
-    
+
     def __init__(
         self,
         config: Optional[MaskConfig] = None,
@@ -1531,19 +1529,19 @@ class MaskingPipeline:
     ):
         """
         Initialize masking pipeline.
-        
+
         Args:
             config: Masking configuration
             auto_select_model: Automatically select best available model
         """
         self.config = config or MaskConfig()
-        
+
         if auto_select_model:
             self.config.model = self._auto_select_model()
-        
+
         self.segmenter = self._create_segmenter()
         self.segmenter.initialize()
-        
+
         self.temporal_consistency = None
         if self.config.use_temporal_consistency and not self.config.vos_propagation:
             self.temporal_consistency = TemporalConsistency(
@@ -2009,7 +2007,7 @@ class MaskingPipeline:
         prompts = self.config.remove_prompts or ["person"]
         combined_prompt = " . ".join(prompts)
         try:
-            predictor.handle_request({
+            predictor.handle_request({  # noqa: F821
                 "type": "add_prompt",
                 "session_id": session_id,
                 "frame_index": prompt_idx,
@@ -2022,7 +2020,7 @@ class MaskingPipeline:
         # ── Propagate forward ──
         outputs_per_frame: Dict[int, Any] = {}
         try:
-            for resp in predictor.handle_stream_request({
+            for resp in predictor.handle_stream_request({  # noqa: F821
                 "type": "propagate_in_video",
                 "session_id": session_id,
                 "propagation_direction": "forward",
@@ -2034,7 +2032,7 @@ class MaskingPipeline:
         # ── Propagate backward (if keyframe is not frame 0) ──
         if prompt_idx > 0:
             try:
-                for resp in predictor.handle_stream_request({
+                for resp in predictor.handle_stream_request({  # noqa: F821
                     "type": "propagate_in_video",
                     "session_id": session_id,
                     "propagation_direction": "backward",
@@ -2048,13 +2046,13 @@ class MaskingPipeline:
 
         # ── Close session and release resources ──
         try:
-            predictor.handle_request({
+            predictor.handle_request({  # noqa: F821
                 "type": "close_session",
                 "session_id": session_id,
             })
         except Exception:
             pass
-        del pil_images, predictor
+        del pil_images, predictor  # noqa: F821
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -2084,14 +2082,14 @@ class MaskingPipeline:
 
         # ── Keep prompts: subtract protected objects per frame ──
         if self.config.keep_prompts and isinstance(self.segmenter, SAM3Segmenter):
-            logger.info(f"Temporal tracking: applying keep prompts frame-by-frame")
+            logger.info("Temporal tracking: applying keep prompts frame-by-frame")
             for frame_idx, tracked in tracked_masks.items():
                 if not np.any(tracked):
                     continue
                 image = cv2.imread(str(frame_paths[frame_idx]))
                 if image is None:
                     continue
-                keep_results = self.segmenter.segment_image(
+                self.segmenter.segment_image(
                     image,
                     prompts={'remove': [], 'keep': self.config.keep_prompts},
                     geometry=ImageGeometry.PINHOLE,
@@ -2122,7 +2120,7 @@ class MaskingPipeline:
         intersection = np.logical_and(m1, m2).sum()
         union = np.logical_or(m1, m2).sum()
         return float(intersection) / max(float(union), 1.0)
-    
+
     def process_image(
         self,
         image: np.ndarray,
@@ -2267,7 +2265,7 @@ class MaskingPipeline:
             smoothed_mask = self.temporal_consistency.get_smoothed_mask()
             if smoothed_mask is not None:
                 combined_mask.mask = smoothed_mask
-        
+
         # Shadow detection: extend person masks to include their shadows
         if self.config.detect_shadows and np.any(combined_mask.mask):
             if self.shadow_pipeline is not None:
@@ -2310,11 +2308,11 @@ class MaskingPipeline:
                 logger.warning(f"Alpha matting failed: {e}")
 
         steps_applied = []
-        if combined_mask.metadata.get('sam_refined'): steps_applied.append('SAM-refine')
-        if combined_mask.metadata.get('edge_injected'): steps_applied.append('edge-inject')
-        if combined_mask.metadata.get('vos_keyframe'): steps_applied.append('VOS-keyframe')
-        if combined_mask.metadata.get('shadow_detected'): steps_applied.append('shadow')
-        if combined_mask.metadata.get('matting_applied'): steps_applied.append('matting')
+        if combined_mask.metadata.get('sam_refined'): steps_applied.append('SAM-refine')  # noqa: E701
+        if combined_mask.metadata.get('edge_injected'): steps_applied.append('edge-inject')  # noqa: E701
+        if combined_mask.metadata.get('vos_keyframe'): steps_applied.append('VOS-keyframe')  # noqa: E701
+        if combined_mask.metadata.get('shadow_detected'): steps_applied.append('shadow')  # noqa: E701
+        if combined_mask.metadata.get('matting_applied'): steps_applied.append('matting')  # noqa: E701
         if steps_applied:
             logger.info(f"  Post-steps: {', '.join(steps_applied)}")
 
@@ -2589,20 +2587,20 @@ class MaskingPipeline:
         """Combine multiple mask results."""
         if len(results) == 1:
             return results[0]
-        
+
         # Initialize combined mask
         h, w = results[0].mask.shape[:2]
         combined = np.zeros((h, w), dtype=np.uint8)
-        
+
         # Weight by confidence
         weights = []
         valid_results = []
-        
+
         for result in results:
             if result.is_valid:
                 valid_results.append(result)
                 weights.append(result.confidence)
-        
+
         if not valid_results:
             return MaskResult(
                 mask=combined,
@@ -2610,7 +2608,7 @@ class MaskingPipeline:
                 quality=MaskQuality.REJECT,
                 metadata={'message': 'All masks rejected'}
             )
-        
+
         # Normalize weights
         weights = np.array(weights)
         weights = weights / weights.sum()
@@ -2620,10 +2618,10 @@ class MaskingPipeline:
         for result, weight in zip(valid_results, weights):
             accumulated += result.mask.astype(np.float32) * weight
         combined = (accumulated > 0.3).astype(np.uint8)
-        
+
         # Average confidence
         avg_confidence = np.mean([r.confidence for r in valid_results])
-        
+
         return MaskResult(
             mask=combined,
             confidence=avg_confidence,
@@ -2633,7 +2631,7 @@ class MaskingPipeline:
                 'method': 'weighted_union'
             }
         )
-    
+
     def process_batch(
         self,
         images: List[np.ndarray],
@@ -2643,17 +2641,17 @@ class MaskingPipeline:
     ) -> List[MaskResult]:
         """
         Process batch of images.
-        
+
         Args:
             images: List of images
             geometry: Image geometry type
             custom_prompts: Optional custom prompts
             parallel: Use parallel processing
-        
+
         Returns:
             List of mask results
         """
-        
+
         if parallel and self.config.num_workers > 1:
             with ThreadPoolExecutor(max_workers=self.config.num_workers) as executor:
                 futures = []
@@ -2663,16 +2661,16 @@ class MaskingPipeline:
                         image, geometry, custom_prompts
                     )
                     futures.append(future)
-                
+
                 results = [f.result() for f in futures]
         else:
             results = []
             for image in tqdm(images, desc="Processing images"):
                 result = self.process_image(image, geometry, custom_prompts)
                 results.append(result)
-        
+
         return results
-    
+
     def process_video(
         self,
         video_path: Path,
@@ -2687,7 +2685,7 @@ class MaskingPipeline:
     ) -> Dict[str, Any]:
         """
         Process video file.
-        
+
         Args:
             video_path: Path to video
             output_dir: Output directory
@@ -2698,15 +2696,15 @@ class MaskingPipeline:
             save_review: Save frames needing review
             mask_dir: Override mask output directory (default: output_dir/masks)
             review_dir: Override review output directory (default: output_dir/review)
-        
+
         Returns:
             Processing statistics
         """
-        
+
         video_path = Path(video_path)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create output structure — use overrides if provided, otherwise
         # default to subdirs inside output_dir.
         if mask_dir is None:
@@ -2719,16 +2717,16 @@ class MaskingPipeline:
                 review_dir = output_dir / "review"
             review_dir = Path(review_dir)
             review_dir.mkdir(exist_ok=True)
-        
+
         # Open video
         cap = cv2.VideoCapture(str(video_path))
-        
+
         # Get video info
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS)
-        
+
         logger.info(f"Processing video: {total_frames} frames @ {fps:.2f} FPS")
-        
+
         # Set frame range
         end_frame = end_frame or total_frames
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -2804,51 +2802,51 @@ class MaskingPipeline:
             # Process frame — pass precomputed tracked mask if available
             precomputed = tracked_masks.get(frame_idx) if tracked_masks is not None else None
             result = self.process_image(frame, geometry, precomputed_mask=precomputed)
-            
+
             stats['processing_time'] += time.time() - start_time
             stats['total_frames'] += 1
-            
+
             # Save mask
             mask_path = mask_dir / f"{frame_idx:06d}.{self.config.output_format}"
-            
+
             if self.config.output_format == 'npy':
                 np.save(mask_path, result.mask)
             else:
                 cv2.imwrite(str(mask_path), (1 - result.mask) * 255)
-            
+
             # Handle review
             if result.should_save_review_image(self.config.save_reject_review_images) and save_review:
                 review_path = review_dir / f"review_{frame_idx:06d}.jpg"
-                
+
                 # Create review image with mask overlay
                 review_img = self._create_review_image(frame, result.mask)
                 cv2.imwrite(str(review_path), review_img)
-                
+
                 stats['review_frames'] += 1
-            
+
             if result.quality == MaskQuality.REJECT:
                 stats['rejected_frames'] += 1
             else:
                 stats['processed_frames'] += 1
-            
+
             frame_idx += 1
-            
+
             # Log progress
             if frame_idx % 100 == 0:
                 logger.info(f"Processed {frame_idx}/{end_frame} frames")
-        
+
         cap.release()
-        
+
         # Save statistics
         stats['average_time'] = stats['processing_time'] / max(stats['total_frames'], 1)
-        
+
         with open(output_dir / "statistics.json", 'w') as f:
             json.dump(stats, f, indent=2)
-        
+
         logger.info(f"Processing complete: {stats}")
-        
+
         return stats
-    
+
     def _create_review_image(
         self,
         image: np.ndarray,
@@ -2856,14 +2854,14 @@ class MaskingPipeline:
         alpha: float = 0.5
     ) -> np.ndarray:
         """Create review image with mask overlay."""
-        
+
         # Create colored mask
         colored_mask = np.zeros_like(image)
         colored_mask[:, :, 2] = mask * 255  # Red channel
-        
+
         # Blend
         review = cv2.addWeighted(image, 1-alpha, colored_mask, alpha, 0)
-        
+
         return review
 
     @staticmethod
@@ -2932,11 +2930,11 @@ class MaskingPipeline:
         Returns:
             Processing statistics
         """
-        
+
         input_dir = Path(input_dir)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Find images (supports space-separated multi-patterns, e.g. "*.jpg *.png")
         files = []
         for pat in pattern.split():
@@ -2951,9 +2949,9 @@ class MaskingPipeline:
                 image_files = sorted(input_dir.rglob(ext) if recursive else input_dir.glob(ext))
                 if image_files:
                     break
-        
+
         logger.info(f"Found {len(image_files)} images")
-        
+
         # Create output structure — use overrides if provided, otherwise
         # default to subdirs inside output_dir
         if mask_dir is None:
@@ -2969,7 +2967,7 @@ class MaskingPipeline:
         review_dir = Path(review_dir)
         if self.config.save_review_images:
             review_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Process images
         stats = {
             'total_images': len(image_files),
@@ -2978,7 +2976,7 @@ class MaskingPipeline:
             'rejected_images': 0,
             'processing_time': 0
         }
-        
+
         # Pre-compute tracked masks if temporal tracking enabled
         tracked_masks = None
         if self.config.temporal_tracking:
@@ -3045,7 +3043,7 @@ class MaskingPipeline:
                 np.save(mask_path, result.mask)
             else:
                 cv2.imwrite(str(mask_path), (1 - result.mask) * 255)
-            
+
             # Save confidence map if requested
             if self.config.save_confidence_maps:
                 conf_path = mask_dir / f"conf_{img_path.stem}.npy"
@@ -3071,7 +3069,7 @@ class MaskingPipeline:
                 review_img = self._create_review_image(image, result.mask)
                 cv2.imwrite(str(review_path), review_img)
                 stats['review_images'] += 1
-            
+
             if result.quality == MaskQuality.REJECT:
                 stats['rejected_images'] += 1
             else:
@@ -3079,7 +3077,7 @@ class MaskingPipeline:
 
             if result_callback:
                 result_callback(img_path.stem, result)
-        
+
         # Save statistics
         stats['skipped_existing'] = skipped
         if skipped:
@@ -3088,7 +3086,7 @@ class MaskingPipeline:
 
         with open(output_dir / "statistics.json", 'w') as f:
             json.dump(stats, f, indent=2)
-        
+
         logger.info(f"Masking complete: {stats['processed_images']}/{stats['total_images']} images "
                      f"in {stats['processing_time']:.1f}s ({stats['average_time']:.1f}s/image)")
         logger.info(f"  Review: {stats.get('review_images', 0)}, Rejected: {stats['rejected_images']}")
@@ -3149,13 +3147,13 @@ class MaskingPipeline:
 
 class InteractiveMaskRefiner:
     """Interactive tool for mask refinement."""
-    
+
     def __init__(self, pipeline: MaskingPipeline):
         self.pipeline = pipeline
         self.current_image = None
         self.current_mask = None
         self.history = []
-    
+
     def refine_mask(
         self,
         image: np.ndarray,
@@ -3164,7 +3162,7 @@ class InteractiveMaskRefiner:
     ) -> np.ndarray:
         """
         Interactive mask refinement interface.
-        
+
         Controls:
         - Left click: Add to mask
         - Right click: Remove from mask
@@ -3174,29 +3172,29 @@ class InteractiveMaskRefiner:
         - 'u': Undo last change
         - '+/-': Adjust brush size
         """
-        
+
         self.current_image = image.copy()
         self.current_mask = initial_mask.copy()
         self.history = [initial_mask.copy()]
-        
+
         # Create window
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(window_name, self._mouse_callback)
-        
+
         # Drawing parameters
         self.drawing = False
         self.brush_size = 10
         self.mode = 1  # 1: add, 0: remove
-        
+
         logger.info("Interactive refinement started. Press 's' to save, 'q' to cancel")
-        
+
         while True:
             # Create display
             display = self._create_display()
             cv2.imshow(window_name, display)
-            
+
             key = cv2.waitKey(1) & 0xFF
-            
+
             if key == ord('s'):
                 # Save
                 logger.info("Mask saved")
@@ -3220,13 +3218,13 @@ class InteractiveMaskRefiner:
             elif key == ord('-'):
                 self.brush_size = max(1, self.brush_size - 5)
                 logger.info(f"Brush size: {self.brush_size}")
-        
+
         cv2.destroyWindow(window_name)
         return self.current_mask
-    
+
     def _mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events."""
-        
+
         if event == cv2.EVENT_LBUTTONDOWN:
             self.drawing = True
             self.mode = 1  # Add
@@ -3249,18 +3247,18 @@ class InteractiveMaskRefiner:
                 self.history.append(self.current_mask.copy())
                 if len(self.history) > 20:
                     self.history.pop(0)
-    
+
     def _create_display(self) -> np.ndarray:
         """Create display image with mask overlay."""
-        
+
         # Create colored mask
         colored_mask = np.zeros_like(self.current_image)
         colored_mask[:, :, 1] = self.current_mask * 200  # Green
         colored_mask[:, :, 2] = self.current_mask * 100  # Red
-        
+
         # Blend
         display = cv2.addWeighted(self.current_image, 0.7, colored_mask, 0.3, 0)
-        
+
         # Add text
         cv2.putText(
             display, f"Brush: {self.brush_size}px",
@@ -3270,19 +3268,19 @@ class InteractiveMaskRefiner:
             display, "LMB: Add | RMB: Remove | S: Save | Q: Cancel",
             (10, display.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
         )
-        
+
         return display
 
 
 def main():
     """Command-line interface."""
-    
+
     import argparse
-    
+
     parser = argparse.ArgumentParser(
         description="Advanced masking system for 360° reconstruction pipelines"
     )
-    
+
     parser.add_argument(
         "input", type=Path,
         help="Input image, video, or directory"
@@ -3291,7 +3289,7 @@ def main():
         "output", type=Path,
         help="Output directory for masks"
     )
-    
+
     # Model selection
     parser.add_argument(
         "--model", choices=["sam3", "yolo26", "rfdetr", "fastsam", "auto"],
@@ -3302,14 +3300,14 @@ def main():
         "--checkpoint", type=Path,
         help="Model checkpoint path"
     )
-    
+
     # Geometry
     parser.add_argument(
         "--geometry", choices=["pinhole", "fisheye", "dual_fisheye", "equirect", "cubemap"],
         default="pinhole",
         help="Image geometry type"
     )
-    
+
     # Prompts
     parser.add_argument(
         "--remove", nargs="+",
@@ -3320,7 +3318,7 @@ def main():
         "--keep", nargs="+", default=[],
         help="Objects to keep"
     )
-    
+
     # Quality control
     parser.add_argument(
         "--confidence", type=float, default=0.7,
@@ -3330,7 +3328,7 @@ def main():
         "--review-threshold", type=float, default=0.85,
         help="Review threshold"
     )
-    
+
     # Processing options
     parser.add_argument(
         "--batch-size", type=int, default=4,
@@ -3344,7 +3342,7 @@ def main():
         "--temporal", action="store_true",
         help="Use temporal consistency"
     )
-    
+
     # Video options
     parser.add_argument(
         "--start-frame", type=int, default=0,
@@ -3358,7 +3356,7 @@ def main():
         "--skip-frames", type=int, default=0,
         help="Frames to skip"
     )
-    
+
     # Output options
     parser.add_argument(
         "--format", choices=["png", "jpg", "npy"],
@@ -3373,7 +3371,7 @@ def main():
         "--save-confidence", action="store_true",
         help="Save confidence maps"
     )
-    
+
     # Other
     parser.add_argument(
         "--config", type=Path,
@@ -3388,9 +3386,9 @@ def main():
         default="auto",
         help="Device to use"
     )
-    
+
     args = parser.parse_args()
-    
+
     # Load or create config
     if args.config:
         config = MaskConfig.load(args.config)
@@ -3403,13 +3401,13 @@ def main():
             'fastsam': SegmentationModel.FASTSAM,
             'auto': None
         }
-        
+
         # Set device
         if args.device == 'auto':
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         else:
             device = args.device
-        
+
         config = MaskConfig(
             model=model_map[args.model] if args.model != 'auto' else None,
             model_checkpoint=str(args.checkpoint) if args.checkpoint else None,
@@ -3425,10 +3423,10 @@ def main():
             save_review_images=args.save_review,
             output_format=args.format
         )
-    
+
     # Save config
     config.save(args.output / "mask_config.yaml")
-    
+
     # Map geometry
     geometry_map = {
         'pinhole': ImageGeometry.PINHOLE,
@@ -3438,19 +3436,19 @@ def main():
         'cubemap': ImageGeometry.CUBEMAP
     }
     geometry = geometry_map[args.geometry]
-    
+
     # Create pipeline
     pipeline = MaskingPipeline(
         config=config,
         auto_select_model=(args.model == 'auto')
     )
-    
+
     # Process input
     if args.input.is_file():
         # Check if video or image
         if args.input.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
             # Video
-            stats = pipeline.process_video(
+            pipeline.process_video(
                 video_path=args.input,
                 output_dir=args.output,
                 geometry=geometry,
@@ -3465,37 +3463,37 @@ def main():
             if image is None:
                 logger.error(f"Failed to load: {args.input}")
                 return
-            
+
             # Process
             result = pipeline.process_image(image, geometry)
-            
+
             # Interactive refinement if requested
             if args.interactive and result.needs_review:
                 refiner = InteractiveMaskRefiner(pipeline)
                 result.mask = refiner.refine_mask(image, result.mask)
-            
+
             # Save
             args.output.mkdir(parents=True, exist_ok=True)
             mask_path = args.output / f"mask.{args.format}"
-            
+
             if args.format == 'npy':
                 np.save(mask_path, result.mask)
             else:
                 cv2.imwrite(str(mask_path), (1 - result.mask) * 255)
-            
+
             logger.info(f"Saved mask to: {mask_path}")
             logger.info(f"Quality: {result.quality.value}, Confidence: {result.confidence:.3f}")
-    
+
     else:
         # Directory
-        stats = pipeline.process_directory(
+        pipeline.process_directory(
             input_dir=args.input,
             output_dir=args.output,
             geometry=geometry,
             pattern="*.jpg",
             recursive=False
         )
-    
+
     logger.info("Processing complete!")
 
 
