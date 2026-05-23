@@ -312,6 +312,35 @@ FISHEYE_PRESETS: Dict[str, FisheyeViewConfig] = {
         ),
         crop_size=1600,
     ),
+
+    # 16 views at 90° FOV — ring layout for 3DGS training
+    # 8 per lens: 1 top + 6 ring (horizon) + 1 bottom
+    # Geometry from fisheye-perspective-planner.html
+    "osv-pinhole-f90-dual-16": FisheyeViewConfig(
+        views=(
+            _make_views("front", [
+                (0, -30),                                              # top center
+                (-55, 0),                                              # ring left
+                (-35.53, 50),                                          # ring lower-left
+                (35.53, 50),                                           # ring lower-right
+                (55, 0),                                               # ring right
+                (35.53, -50),                                          # ring upper-right
+                (-35.53, -50),                                         # ring upper-left
+                (0, 30),                                               # bottom center
+            ], fov=90.0)
+            + _make_views("back", [
+                (0, -30),
+                (-55, 0),
+                (-35.53, 50),
+                (35.53, 50),
+                (55, 0),
+                (35.53, -50),
+                (-35.53, -50),
+                (0, 30),
+            ], fov=90.0)
+        ),
+        crop_size=1920,
+    ),
 }
 
 

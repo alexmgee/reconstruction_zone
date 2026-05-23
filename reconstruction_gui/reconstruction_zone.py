@@ -603,8 +603,74 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             if sm_dir.exists():
                 self._init_static_mask_manager(output_dir)
 
+        # Fisheye subsection prefs (Metashape tab)
+        for pref_key, attr_name in [
+            ("fisheye_xml_path", "fisheye_xml_entry"),
+            ("fisheye_cubeface_output_dir", "fisheye_output_entry"),
+            ("fisheye_images_dir", "fisheye_images_entry"),
+            ("fisheye_masks_dir", "fisheye_masks_entry"),
+        ]:
+            entry = getattr(self, attr_name, None)
+            val = self._prefs.get(pref_key, "")
+            if entry is not None and val:
+                entry.delete(0, "end")
+                entry.insert(0, val)
+        if hasattr(self, "fisheye_face_width_var") and self._prefs.get("fisheye_face_width"):
+            self.fisheye_face_width_var.set(self._prefs["fisheye_face_width"])
+        if hasattr(self, "fisheye_format_var") and self._prefs.get("fisheye_format"):
+            self.fisheye_format_var.set(self._prefs["fisheye_format"])
+        if hasattr(self, "fisheye_layout_var") and self._prefs.get("fisheye_layout"):
+            self.fisheye_layout_var.set(self._prefs["fisheye_layout"])
+        if hasattr(self, "fisheye_force_var") and "fisheye_force_reprocess" in self._prefs:
+            self.fisheye_force_var.set(bool(self._prefs["fisheye_force_reprocess"]))
+        # Fisheye subsection prefs (Standard tab)
+        for pref_key, attr_name in [
+            ("fisheye_std_images_dir", "fisheye_std_images_entry"),
+            ("fisheye_std_masks_dir", "fisheye_std_masks_entry"),
+            ("fisheye_std_output_dir", "fisheye_std_output_entry"),
+        ]:
+            entry = getattr(self, attr_name, None)
+            val = self._prefs.get(pref_key, "")
+            if entry is not None and val:
+                entry.delete(0, "end")
+                entry.insert(0, val)
+        if hasattr(self, "fisheye_std_crop_var") and self._prefs.get("fisheye_std_crop"):
+            self.fisheye_std_crop_var.set(self._prefs["fisheye_std_crop"])
+        if hasattr(self, "fisheye_std_layout_var") and self._prefs.get("fisheye_std_layout"):
+            self.fisheye_std_layout_var.set(self._prefs["fisheye_std_layout"])
+        # Restore active tab
+        if hasattr(self, "_fisheye_tab_var") and self._prefs.get("fisheye_active_tab"):
+            from tabs.source_tab import _switch_fisheye_tab
+            _switch_fisheye_tab(self, self._prefs["fisheye_active_tab"])
+
     def _on_close(self):
         """Fast shutdown — kill subprocesses, clear caches, destroy widgets."""
+        # Persist fisheye subsection prefs
+        for pref_key, attr_name in [
+            ("fisheye_xml_path", "fisheye_xml_entry"),
+            ("fisheye_cubeface_output_dir", "fisheye_output_entry"),
+            ("fisheye_images_dir", "fisheye_images_entry"),
+            ("fisheye_masks_dir", "fisheye_masks_entry"),
+            ("fisheye_std_images_dir", "fisheye_std_images_entry"),
+            ("fisheye_std_masks_dir", "fisheye_std_masks_entry"),
+            ("fisheye_std_output_dir", "fisheye_std_output_entry"),
+        ]:
+            entry = getattr(self, attr_name, None)
+            if entry is not None:
+                self._prefs[pref_key] = entry.get().strip()
+        for pref_key, attr_name in [
+            ("fisheye_face_width", "fisheye_face_width_var"),
+            ("fisheye_format", "fisheye_format_var"),
+            ("fisheye_layout", "fisheye_layout_var"),
+            ("fisheye_std_crop", "fisheye_std_crop_var"),
+            ("fisheye_std_layout", "fisheye_std_layout_var"),
+            ("fisheye_active_tab", "_fisheye_tab_var"),
+        ]:
+            var = getattr(self, attr_name, None)
+            if var is not None:
+                self._prefs[pref_key] = var.get()
+        if hasattr(self, "fisheye_force_var"):
+            self._prefs["fisheye_force_reprocess"] = self.fisheye_force_var.get()
         # Persist tracker store path
         if hasattr(self, '_project_store') and self._project_store:
             self._prefs["tracker_store_path"] = str(self._project_store.store_path)

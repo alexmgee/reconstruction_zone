@@ -39,12 +39,9 @@ try:
     from prep360.core import (
         VideoAnalyzer,
         FrameExtractor, ExtractionConfig, ExtractionMode,
-        LUTProcessor,
-        SkyFilter, SkyFilterConfig,
         OSVHandler,
         FisheyeViewConfig, FISHEYE_PRESETS,
         DualFisheyeCalibration,
-        MotionSelector,
         SharpestExtractor, SharpestConfig,
     )
     from prep360.core.fisheye_reframer import (
@@ -116,7 +113,7 @@ _PRESET_LABEL_TO_KEY, _PRESET_KEY_TO_LABEL = _build_preset_labels()
 
 def _get_preset_key(app) -> str:
     """Map the display label back to the internal preset key."""
-    return _PRESET_LABEL_TO_KEY.get(app.fisheye_preset_var.get(), "osv-full-f90-dual-26")
+    return _PRESET_LABEL_TO_KEY.get(app.fisheye_preset_var.get(), "osv-pinhole-f90-dual-16")
 
 
 # ── helper dataclass ──────────────────────────────────────────────────
@@ -178,19 +175,6 @@ def _snapshot_settings(app) -> "ExtractionSettings":
         format=app.extract_format_var.get(),
         start_sec=_parse_time(start) if start else None,
         end_sec=_parse_time(end) if end else None,
-        blur_filter=app.extract_blur_enabled_var.get(),
-        blur_percentile=app.extract_blur_percentile_var.get(),
-        sky_filter=app.extract_sky_enabled_var.get(),
-        lut_enabled=app.extract_lut_enabled_var.get(),
-        lut_path=app.extract_lut_file_entry.get().strip(),
-        lut_strength=app.extract_lut_strength_var.get(),
-        shadow=app.extract_shadow_var.get(),
-        highlight=app.extract_highlight_var.get(),
-        sky_brightness=app.extract_sky_brightness_var.get(),
-        sky_keypoints=app.extract_sky_keypoints_var.get(),
-        motion_enabled=app.extract_motion_enabled_var.get(),
-        motion_sharpness=app.extract_sharpness_var.get(),
-        motion_flow=app.extract_flow_var.get(),
         sharpness_method=sharpness,
         scene_detection=_get_scene_detection(app),
     )
@@ -209,15 +193,6 @@ def _update_sharpness_ui(app):
         else:
             scene_cb.configure(state="disabled")
             app.extract_scene_var.set(False)
-
-    # Grey out blur filter when sharpness is active
-    blur_sec = getattr(app, "_blur_filter_section", None)
-    if blur_sec:
-        for child in blur_sec.content.winfo_children():
-            try:
-                child.configure(state="disabled" if is_sharpest else "normal")
-            except Exception:
-                pass
 
     _update_estimate(app)
 
@@ -440,19 +415,12 @@ def _update_estimate(app, *_args):
 
     total_bytes = frames * bytes_per_frame * (2 if getattr(info, "pair_mode", False) else 1)
 
-    # blur/sky filter caveat
     caveats = []
     if sharpness != "none":
         parts_s = [sharpness]
         if scene:
             parts_s.append("scene-aware")
         caveats.append(f"sharpest per window ({', '.join(parts_s)})")
-    if app.extract_blur_enabled_var.get() and sharpness == "none":
-        pct = app.extract_blur_percentile_var.get()
-        kept = max(1, int(frames * pct / 100))
-        caveats.append(f"~{kept:,} after blur filter")
-    if app.extract_sky_enabled_var.get():
-        caveats.append("before sky filter")
 
     parts = [frame_str, f"~{_format_size(total_bytes)} ({fmt_label})", _format_duration(eff_dur)]
     text = "  ·  ".join(parts)
@@ -475,7 +443,6 @@ def build_source_tab(app, parent):
 
     _build_video_selection_section(app, scroll)
     _build_extract_section(app, scroll)
-    _build_fisheye_section(app, scroll)
     _build_metadata_section(app, scroll)
     # Metashape Session section archived to legacy/ (2026-03-24)
     _update_source_mode_ui(app)
@@ -945,197 +912,8 @@ def _build_extract_section(app, parent):
             "Install CUDA OpenCV for GPU-accelerated extraction.\n"
             "See benchmarks/BENCHMARK_RESULTS.md for setup.")
 
-    # -- Post-Processing (collapsible, collapsed by default) --
-    pp_sec = CollapsibleSection(c, "Post-Processing",
-                                subtitle="filters applied after frame extraction",
-                                expanded=False, core=True)
-    pp_sec.pack(fill="x", pady=(16, 0), padx=2)
-    pp = pp_sec.content
-
-    # -- Color & LUT (collapsible) --
-    lut_sec = CollapsibleSection(pp, "Color & LUT",
-                                 subtitle=".cube LUT, shadow/highlight adjustment",
-                                 expanded=False)
-    lut_sec.pack(fill="x", pady=(6, 0), padx=(10, 2))
-    app.extract_lut_section = lut_sec
-
-    app.extract_lut_enabled_var = ctk.BooleanVar(value=False)
-    def _on_lut_toggle():
-        lut_sec.set_active(app.extract_lut_enabled_var.get())
-        if app.extract_lut_enabled_var.get():
-            lut_sec.expand()
-    ctk.CTkCheckBox(lut_sec.content, text="Apply LUT after extraction",
-                    variable=app.extract_lut_enabled_var,
-                    command=_on_lut_toggle,
-                    ).pack(pady=3, anchor="w")
-    lut_sec.set_active(False)
-
-    lut_file_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
-    lut_file_frame.pack(fill="x", pady=3)
-    ctk.CTkLabel(lut_file_frame, text="LUT:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    app.extract_lut_file_entry = ctk.CTkEntry(lut_file_frame, placeholder_text=".cube file...")
-    app.extract_lut_file_entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
-    ctk.CTkButton(lut_file_frame, text="...", width=BROWSE_BUTTON_WIDTH,
-                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-                  command=lambda: app._browse_file_for(
-                      app.extract_lut_file_entry, "Select LUT File",
-                      [("CUBE Files", "*.cube"), ("All Files", "*.*")]
-                  )).pack(side="left")
-
-    lut_str_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
-    lut_str_frame.pack(fill="x", pady=3)
-    ctk.CTkLabel(lut_str_frame, text="Strength:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    app.extract_lut_strength_var = ctk.DoubleVar(value=1.0)
-    app.extract_lut_strength_label = ctk.CTkLabel(lut_str_frame, text="100%", width=45,
-                                                  font=FONT_TEXT_MONO_VALUE)
-    app.extract_lut_strength_label.pack(side="right")
-    ctk.CTkSlider(lut_str_frame, from_=0, to=1, variable=app.extract_lut_strength_var,
-                  command=lambda v: app.extract_lut_strength_label.configure(
-                      text=f"{int(float(v)*100)}%")
-                  ).pack(side="left", fill="x", expand=True, padx=(4, 4))
-
-    shadow_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
-    shadow_frame.pack(fill="x", pady=3)
-    _shd_lbl = ctk.CTkLabel(shadow_frame, text="Shadows:", width=LABEL_FIELD_WIDTH, anchor="e")
-    _shd_lbl.pack(side="left")
-    Tooltip(_shd_lbl, "Lift or crush shadow detail. 50 = neutral.")
-    app.extract_shadow_var = ctk.IntVar(value=50)
-    app.extract_shadow_label = ctk.CTkLabel(shadow_frame, text="50", width=35,
-                                            font=FONT_TEXT_MONO_VALUE)
-    app.extract_shadow_label.pack(side="right")
-    ctk.CTkSlider(shadow_frame, from_=0, to=100, variable=app.extract_shadow_var,
-                  command=lambda v: app.extract_shadow_label.configure(text=f"{int(v)}")
-                  ).pack(side="left", fill="x", expand=True, padx=(4, 4))
-
-    hl_frame = ctk.CTkFrame(lut_sec.content, fg_color="transparent")
-    hl_frame.pack(fill="x", pady=3)
-    _hl_lbl = ctk.CTkLabel(hl_frame, text="Highlights:", width=LABEL_FIELD_WIDTH, anchor="e")
-    _hl_lbl.pack(side="left")
-    Tooltip(_hl_lbl, "Lift or crush highlight detail. 50 = neutral.")
-    app.extract_highlight_var = ctk.IntVar(value=50)
-    app.extract_highlight_label = ctk.CTkLabel(hl_frame, text="50", width=35,
-                                               font=FONT_TEXT_MONO_VALUE)
-    app.extract_highlight_label.pack(side="right")
-    ctk.CTkSlider(hl_frame, from_=0, to=100, variable=app.extract_highlight_var,
-                  command=lambda v: app.extract_highlight_label.configure(text=f"{int(v)}")
-                  ).pack(side="left", fill="x", expand=True, padx=(4, 4))
-
-    # -- Sky Filter (collapsible) --
-    sky_sec = CollapsibleSection(pp, "Sky Filter",
-                                 subtitle="remove frames that are mostly sky",
-                                 expanded=False)
-    sky_sec.pack(fill="x", pady=(4, 0), padx=(10, 2))
-
-    app.extract_sky_enabled_var = ctk.BooleanVar(value=False)
-    ctk.CTkCheckBox(sky_sec.content, text="Remove sky-dominated images",
-                    variable=app.extract_sky_enabled_var,
-                    command=lambda: sky_sec.set_active(app.extract_sky_enabled_var.get()),
-                    ).pack(pady=3, anchor="w")
-    sky_sec.set_active(False)
-
-    sky_br = ctk.CTkFrame(sky_sec.content, fg_color="transparent")
-    sky_br.pack(fill="x", pady=3)
-    ctk.CTkLabel(sky_br, text="Brightness:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    app.extract_sky_brightness_var = ctk.DoubleVar(value=0.85)
-    app.extract_sky_brightness_label = ctk.CTkLabel(sky_br, text="0.85", width=40,
-                                                    font=FONT_TEXT_MONO_VALUE)
-    app.extract_sky_brightness_label.pack(side="right")
-    ctk.CTkSlider(sky_br, from_=0.5, to=1.0, variable=app.extract_sky_brightness_var,
-                  command=lambda v: app.extract_sky_brightness_label.configure(
-                      text=f"{float(v):.2f}")
-                  ).pack(side="left", fill="x", expand=True, padx=(4, 4))
-
-    sky_kp = ctk.CTkFrame(sky_sec.content, fg_color="transparent")
-    sky_kp.pack(fill="x", pady=3)
-    ctk.CTkLabel(sky_kp, text="Keypoints:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    app.extract_sky_keypoints_var = ctk.IntVar(value=50)
-    app.extract_sky_keypoints_label = ctk.CTkLabel(sky_kp, text="50", width=40,
-                                                   font=FONT_TEXT_MONO_VALUE)
-    app.extract_sky_keypoints_label.pack(side="right")
-    ctk.CTkSlider(sky_kp, from_=10, to=200, variable=app.extract_sky_keypoints_var,
-                  command=lambda v: app.extract_sky_keypoints_label.configure(text=f"{int(v)}")
-                  ).pack(side="left", fill="x", expand=True, padx=(4, 4))
-
-    # -- Blur Filter (collapsible, disabled in Sharpest Frame mode) --
-    blur_sec = CollapsibleSection(pp, "Blur Filter",
-                                  subtitle="remove the blurriest frames by sharpness score",
-                                  expanded=False)
-    blur_sec.pack(fill="x", pady=(4, 0), padx=(10, 2))
-    app._blur_filter_section = blur_sec
-
-    app.extract_blur_enabled_var = ctk.BooleanVar(value=False)
-    ctk.CTkCheckBox(blur_sec.content, text="Filter blurry frames after extraction",
-                    variable=app.extract_blur_enabled_var,
-                    command=lambda: blur_sec.set_active(app.extract_blur_enabled_var.get()),
-                    ).pack(pady=3, anchor="w")
-    blur_sec.set_active(False)
-
-    blur_pct = ctk.CTkFrame(blur_sec.content, fg_color="transparent")
-    blur_pct.pack(fill="x", pady=3)
-    _keep_lbl = ctk.CTkLabel(blur_pct, text="Keep:", width=LABEL_FIELD_WIDTH, anchor="e")
-    _keep_lbl.pack(side="left")
-    Tooltip(_keep_lbl, "Percent of sharpest frames to keep.\n"
-            "80% removes the worst 20%.\n"
-            "Skipped when using Sharpest Frame mode.")
-    app.extract_blur_percentile_var = ctk.IntVar(value=80)
-    app.extract_blur_pct_label = ctk.CTkLabel(blur_pct, text="80%", width=40,
-                                              font=FONT_TEXT_MONO_VALUE)
-    app.extract_blur_pct_label.pack(side="right")
-    ctk.CTkSlider(blur_pct, from_=50, to=100, variable=app.extract_blur_percentile_var,
-                  command=lambda v: app.extract_blur_pct_label.configure(text=f"{int(v)}%")
-                  ).pack(side="left", fill="x", expand=True, padx=(4, 4))
-
-    # -- Motion Selection (inside Post-Processing) --
-    motion_sec = CollapsibleSection(pp, "Motion Selection",
-                                     subtitle="filter by camera movement between frames",
-                                     expanded=False)
-    motion_sec.pack(fill="x", pady=(4, 0), padx=(10, 2))
-    mc = motion_sec.content
-
-    app.extract_motion_enabled_var = ctk.BooleanVar(value=False)
-    motion_cb = ctk.CTkCheckBox(mc, text="Filter by sharpness + optical flow",
-                    variable=app.extract_motion_enabled_var,
-                    command=lambda: motion_sec.set_active(app.extract_motion_enabled_var.get()))
-    motion_cb.pack(pady=3, padx=6, anchor="w")
-    motion_sec.set_active(False)
-    Tooltip(motion_cb,
-            "After extraction, filter frames to keep only sharp\n"
-            "frames with sufficient camera motion between them.\n"
-            "Removes redundant near-identical frames.")
-
-    sharp_frame = ctk.CTkFrame(mc, fg_color="transparent")
-    sharp_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(sharp_frame, text="Sharpness:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    app.extract_sharpness_var = ctk.DoubleVar(value=50.0)
-    app.extract_sharpness_label = ctk.CTkLabel(sharp_frame, text="50", width=35,
-                                               font=FONT_TEXT_MONO_VALUE)
-    app.extract_sharpness_label.pack(side="right")
-    ctk.CTkSlider(sharp_frame, from_=10, to=200,
-                  variable=app.extract_sharpness_var,
-                  command=lambda v: app.extract_sharpness_label.configure(
-                      text=f"{int(v)}")
-                  ).pack(side="left", fill="x", expand=True, padx=(6, 4))
-    Tooltip(sharp_frame,
-            "Minimum Laplacian sharpness score.\n"
-            "Frames below this are discarded as blurry.\n"
-            "50 is a safe default; raise for high-quality datasets.")
-
-    flow_frame = ctk.CTkFrame(mc, fg_color="transparent")
-    flow_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(flow_frame, text="Target Flow:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    app.extract_flow_var = ctk.DoubleVar(value=10.0)
-    app.extract_flow_label = ctk.CTkLabel(flow_frame, text="10", width=35,
-                                          font=("Consolas", 11))
-    app.extract_flow_label.pack(side="right")
-    ctk.CTkSlider(flow_frame, from_=2, to=30,
-                  variable=app.extract_flow_var,
-                  command=lambda v: app.extract_flow_label.configure(
-                      text=f"{int(v)}")
-                  ).pack(side="left", fill="x", expand=True, padx=(6, 4))
-    Tooltip(flow_frame,
-            "Target optical flow magnitude between kept frames.\n"
-            "Higher = more camera movement required between frames.\n"
-            "10 works well for typical walking/driving captures.")
+    # -- 360 Processing (collapsible, inside Frame Extraction) --
+    _build_fisheye_section(app, c)
 
     # -- Primary action: Extract / Add to Queue / Stop --
     action_row = ctk.CTkFrame(c, fg_color="transparent")
@@ -1225,9 +1003,6 @@ def _build_extract_section(app, parent):
     app.extract_interval_var.trace_add("write", _est)
     app.extract_quality_var.trace_add("write", _est)
     app.extract_format_var.trace_add("write", _est)
-    app.extract_blur_enabled_var.trace_add("write", _est)
-    app.extract_blur_percentile_var.trace_add("write", _est)
-    app.extract_sky_enabled_var.trace_add("write", _est)
     # Start/end entries don't have trace — use KeyRelease instead
     app.extract_start_entry.bind("<KeyRelease>", _est)
     app.extract_end_entry.bind("<KeyRelease>", _est)
@@ -1373,217 +1148,6 @@ def _extract_split_pair_worker(app, front_video, back_video, clip_root):
         app.after(0, lambda: _extract_single_done(app))
 
 
-class PostProcessingError(RuntimeError):
-    """Raised when optional post-extraction processing fails."""
-
-
-def _run_post_processing(app, settings, output_dir):
-    """Run post-processing filters on extracted frames in output_dir.
-
-    Applies: LUT, shadow/highlight, sky filter, blur filter, motion selection.
-    Reads settings from the ExtractionSettings object (not app GUI vars).
-    Deletes rejected frames in-place.
-
-    Returns dict with pipeline stats:
-        {"initial": N, "after_sky": N, "after_blur": N, "after_motion": N,
-         "steps": [("step_name", duration_sec), ...]}
-    """
-    import time
-    import cv2
-    from pathlib import Path
-
-    ext_patterns = ("*.jpg", "*.jpeg", "*.png")
-
-    def _count():
-        return len([p for pat in ext_patterns for p in Path(output_dir).glob(pat)])
-
-    def _images():
-        return sorted(p for pat in ext_patterns for p in Path(output_dir).glob(pat))
-
-    initial_count = _count()
-    if initial_count == 0:
-        return {"initial": 0, "steps": []}
-
-    ext = _images()[0].suffix.lstrip(".")
-    quality = settings.quality
-    used_sharpest = (settings.mode == "sharpest")
-    stats = {"initial": initial_count, "steps": []}
-
-    # Log which filters are active
-    parts = []
-    if settings.lut_enabled and settings.lut_path:
-        parts.append(f"LUT={Path(settings.lut_path).name}")
-    else:
-        parts.append("LUT=off")
-    if settings.shadow != 50 or settings.highlight != 50:
-        parts.append(f"Shadow/HL={settings.shadow}/{settings.highlight}")
-    else:
-        parts.append("Shadow/HL=off")
-    parts.append(f"Sky={'on' if settings.sky_filter else 'off'}")
-    if settings.blur_filter and not used_sharpest:
-        parts.append(f"Blur=on({settings.blur_percentile}%)")
-    else:
-        parts.append("Blur=off" if not used_sharpest else "Blur=skip(sharpest)")
-    if settings.motion_enabled:
-        parts.append(f"Motion=on(sharp\u2265{settings.motion_sharpness:.0f}, flow\u2265{settings.motion_flow:.0f})")
-    else:
-        parts.append("Motion=off")
-    app.log(f"Post-processing: {', '.join(parts)}")
-
-    # LUT
-    if settings.lut_enabled:
-        if not settings.lut_path:
-            raise PostProcessingError("LUT post-processing is enabled but no LUT path is set")
-        if not Path(settings.lut_path).exists():
-            raise PostProcessingError(f"LUT file not found: {settings.lut_path}")
-        t0 = time.perf_counter()
-        app.log(f"  Applying LUT: {Path(settings.lut_path).name} (strength {settings.lut_strength:.0%})")
-        processor = LUTProcessor()
-        try:
-            lut_3d, _lut_info = processor.load_cube(settings.lut_path)
-        except Exception as e:
-            raise PostProcessingError(f"Could not load LUT '{settings.lut_path}': {e}") from e
-        count = 0
-        for img_path in _images():
-            if app.cancel_flag.is_set():
-                return stats
-            img = cv2.imread(str(img_path))
-            if img is not None:
-                processed = processor.apply_uint8(img, lut_3d, settings.lut_strength)
-                params = [cv2.IMWRITE_JPEG_QUALITY, quality] if ext in ("jpg", "jpeg") else []
-                cv2.imwrite(str(img_path), processed, params)
-                count += 1
-        elapsed = time.perf_counter() - t0
-        app.log(f"  LUT applied to {count} frames ({elapsed:.1f}s)")
-        stats["after_lut"] = _count()
-        stats["steps"].append(("lut", elapsed))
-
-    # Shadow / highlight
-    if settings.shadow != 50 or settings.highlight != 50:
-        t0 = time.perf_counter()
-        app.log(f"  Applying shadow={settings.shadow}, highlight={settings.highlight}...")
-        from prep360.core.adjustments import apply_shadow_highlight
-        count = 0
-        for img_path in _images():
-            if app.cancel_flag.is_set():
-                return stats
-            img = cv2.imread(str(img_path))
-            if img is not None:
-                adjusted = apply_shadow_highlight(img, settings.shadow, settings.highlight)
-                params = [cv2.IMWRITE_JPEG_QUALITY, quality] if ext in ("jpg", "jpeg") else []
-                cv2.imwrite(str(img_path), adjusted, params)
-                count += 1
-        elapsed = time.perf_counter() - t0
-        app.log(f"  Shadow/highlight applied to {count} frames ({elapsed:.1f}s)")
-        stats["steps"].append(("shadow_hl", elapsed))
-
-    # Sky filter
-    if settings.sky_filter:
-        t0 = time.perf_counter()
-        app.log(f"  Sky filter: brightness\u2265{settings.sky_brightness:.2f}, keypoints\u2264{settings.sky_keypoints}...")
-        sky_cfg = SkyFilterConfig(
-            brightness_threshold=settings.sky_brightness,
-            keypoint_threshold=settings.sky_keypoints,
-        )
-        sky = SkyFilter(sky_cfg)
-        removed = 0
-        sky_metrics = {}
-        for img_path in _images():
-            if app.cancel_flag.is_set():
-                return stats
-            m = sky.analyze_image(str(img_path))
-            sky_metrics[img_path.name] = m
-            if m.is_sky:
-                img_path.unlink()
-                removed += 1
-        after = _count()
-        elapsed = time.perf_counter() - t0
-        app.log(f"  Sky filter: removed {removed}, kept {after} ({elapsed:.1f}s)")
-        # Voting diagnostic
-        if sky_metrics:
-            from collections import Counter
-            vote_counts = Counter()
-            borderline = []
-            for name, m in sky_metrics.items():
-                votes = sum([
-                    m.brightness > sky_cfg.brightness_threshold,
-                    m.saturation < sky_cfg.saturation_threshold,
-                    m.keypoint_count < sky_cfg.keypoint_threshold,
-                    m.edge_density < sky_cfg.edge_threshold,
-                ])
-                vote_counts[votes] += 1
-                if votes == 2:
-                    borderline.append((name, m))
-            app.log(f"    Votes (criteria met): {', '.join(f'{k}/4={v}' for k, v in sorted(vote_counts.items()))}")
-            if borderline:
-                app.log(f"    Borderline (2/4 \u2014 one vote from sky): {len(borderline)}")
-                for name, m in borderline[:3]:
-                    app.log(f"      {name}: bright={m.brightness:.2f} sat={m.saturation:.2f} "
-                            f"kp={m.keypoint_count} edge={m.edge_density:.3f}")
-        stats["after_sky"] = after
-        stats["steps"].append(("sky", elapsed))
-
-    # Blur filter (skip if sharpest mode was used — already pre-filtered)
-    if settings.blur_filter and not used_sharpest and not app.cancel_flag.is_set():
-        t0 = time.perf_counter()
-        from prep360.core.blur_filter import BlurFilter, BlurFilterConfig
-        bf = BlurFilter(BlurFilterConfig(percentile=float(settings.blur_percentile), workers=4))
-        scores = bf.analyze_batch(str(output_dir), log=app.log)
-        if scores:
-            import numpy as np
-            vals = [s.score for s in scores]
-            cutoff = float(np.percentile(vals, 100 - settings.blur_percentile))
-            removed = 0
-            for s in scores:
-                if s.score < cutoff:
-                    p = Path(output_dir) / s.image_name
-                    if p.exists():
-                        p.unlink()
-                        removed += 1
-            after = _count()
-            elapsed = time.perf_counter() - t0
-            app.log(f"  Blur filter: scored {len(scores)} frames, "
-                    f"cutoff={cutoff:.1f}, removed {removed} (kept {after}) ({elapsed:.1f}s)")
-            app.log(f"    Scores: min={min(vals):.1f} max={max(vals):.1f} "
-                    f"mean={np.mean(vals):.1f} median={np.median(vals):.1f}")
-            stats["after_blur"] = after
-            stats["steps"].append(("blur", elapsed))
-
-    # Motion selection
-    if settings.motion_enabled and not app.cancel_flag.is_set():
-        t0 = time.perf_counter()
-        from prep360.core.motion_selector import MotionSelector
-        selector = MotionSelector(
-            min_sharpness=settings.motion_sharpness,
-            target_flow=settings.motion_flow,
-        )
-        images = sorted(str(p) for pat in ext_patterns for p in Path(output_dir).glob(pat))
-        sel_result = selector.select_from_paths(images, log=app.log)
-        selected_set = {f.path for f in sel_result.selected_frames}
-        removed = 0
-        for p in images:
-            if p not in selected_set:
-                Path(p).unlink()
-                removed += 1
-        after = _count()
-        elapsed = time.perf_counter() - t0
-        app.log(f"  Motion selection: {sel_result.total_candidates} candidates, "
-                f"{sel_result.sharpness_rejected} rejected blur, "
-                f"selected {sel_result.selected_count} ({elapsed:.1f}s)")
-        if sel_result.selected_frames:
-            sharp_vals = [f.sharpness for f in sel_result.selected_frames]
-            flow_vals = [f.flow_from_prev for f in sel_result.selected_frames if f.flow_from_prev > 0]
-            app.log(f"    Sharpness: min={min(sharp_vals):.1f} max={max(sharp_vals):.1f} "
-                    f"mean={sum(sharp_vals)/len(sharp_vals):.1f}")
-            if flow_vals:
-                app.log(f"    Flow: min={min(flow_vals):.1f} max={max(flow_vals):.1f} "
-                        f"mean={sum(flow_vals)/len(flow_vals):.1f}")
-        stats["after_motion"] = after
-        stats["steps"].append(("motion", elapsed))
-
-    return stats
-
-
 def _extract_single_worker(app, video_path, base_output):
     """Run extraction for a single video directly — no queue involvement."""
     try:
@@ -1702,28 +1266,14 @@ def _extract_single_worker(app, video_path, base_output):
         if result.success:
             app.log(f"  {result.frame_count} frames extracted ({extract_elapsed:.1f}s)")
 
-            settings = _snapshot_settings(app)
-            pp_stats = _run_post_processing(app, settings, output_dir)
+            final_count = result.frame_count
 
-            # Recount after filtering
-            ext = fmt
-            final_count = len(list(output_dir.glob(f"*.{ext}")))
-
-            # SRT geotag (after all filters so we only tag surviving frames)
+            # SRT geotag
             _maybe_geotag(app, video_path, output_dir)
 
             total_elapsed = time.perf_counter() - t_start
 
-            # Pipeline breakdown: "95 extracted → blur→76 → motion→68"
-            trail = [f"{result.frame_count} extracted"]
-            if pp_stats:
-                for key in ("after_sky", "after_blur", "after_motion"):
-                    if key in pp_stats:
-                        label = key.replace("after_", "")
-                        trail.append(f"{label}\u2192{pp_stats[key]}")
-
-            app.log(f"\nDone: {final_count} frames "
-                    f"({' \u2192 '.join(trail)}) in {total_elapsed:.1f}s")
+            app.log(f"\nDone: {final_count} frames in {total_elapsed:.1f}s")
             app.log(f"{'='*50}")
 
             # Record activity for Recent Activity view
@@ -2063,25 +1613,15 @@ def _extract_queue_worker(app):
                 if result.success:
                     app.log(f"  {result.frame_count} frames extracted ({extract_elapsed:.1f}s)")
 
-                    pp_stats = _run_post_processing(app, s, output_dir)
-                    ext = s.format
-                    final_count = len(list(output_dir.glob(f"*.{ext}")))
+                    final_count = result.frame_count
 
-                    # SRT geotag (after all filters)
+                    # SRT geotag
                     _maybe_geotag(app, item.video_path, output_dir)
 
                     item_elapsed = time.perf_counter() - t_item
                     app.video_queue.set_done(item.id, final_count)
 
-                    trail = [f"{result.frame_count} extracted"]
-                    if pp_stats:
-                        for key in ("after_sky", "after_blur", "after_motion"):
-                            if key in pp_stats:
-                                label = key.replace("after_", "")
-                                trail.append(f"{label}\u2192{pp_stats[key]}")
-
-                    app.log(f"\nDone: {final_count} frames "
-                            f"({' \u2192 '.join(trail)}) in {item_elapsed:.1f}s")
+                    app.log(f"\nDone: {final_count} frames in {item_elapsed:.1f}s")
 
                     # Record activity for Recent Activity view
                     app.record_activity(
@@ -2724,7 +2264,7 @@ def _geotag_standalone_worker(app, frames_dir, srt_path):
 # ======================================================================
 
 def _build_fisheye_section(app, parent):
-    sec = CollapsibleSection(parent, "360 Processing", expanded=True, core=True)
+    sec = CollapsibleSection(parent, "360 Processing", expanded=False, core=True)
     sec.pack(fill="x", pady=(0, 6), padx=4)
     c = sec.content
 
@@ -2750,69 +2290,303 @@ def _build_fisheye_section(app, parent):
 
     reframe_sec = CollapsibleSection(
         c, "Reframing",
-        subtitle="extract pinhole perspectives from a 360 file or existing ERP frames",
+        subtitle="convert 360\u00b0 or fisheye to pinhole perspectives",
         expanded=False, scroll_on_expand=True,
     )
     reframe_sec.pack(fill="x", padx=2, pady=(4, 0))
     rc = reframe_sec.content
 
-    osv_frame = ctk.CTkFrame(rc, fg_color="transparent")
-    osv_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(osv_frame, text="Video:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    # ── Fisheye subsection ─────────────────────────────────────────
+    fish_sec = CollapsibleSection(
+        rc, "Fisheye",
+        subtitle="dual-fisheye \u2192 pinhole perspectives",
+        expanded=False, scroll_on_expand=True,
+    )
+    fish_sec.pack(fill="x", padx=2, pady=(4, 0))
+    fc = fish_sec.content
+
+    # ── Tab strip: Metashape | Standard ──
+    app._fisheye_tab_var = ctk.StringVar(value="metashape")
+    tab_frame = ctk.CTkFrame(fc, fg_color="transparent")
+    tab_frame.pack(fill="x", padx=6, pady=(4, 2))
+
+    app._fisheye_meta_tab_btn = ctk.CTkButton(
+        tab_frame, text="Metashape", width=100, height=28,
+        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+        font=ctk.CTkFont(size=12, weight="bold"),
+        command=lambda: _switch_fisheye_tab(app, "metashape"),
+    )
+    app._fisheye_meta_tab_btn.pack(side="left")
+
+    app._fisheye_std_tab_btn = ctk.CTkButton(
+        tab_frame, text="Standard", width=100, height=28,
+        fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
+        font=ctk.CTkFont(size=12),
+        command=lambda: _switch_fisheye_tab(app, "standard"),
+    )
+    app._fisheye_std_tab_btn.pack(side="left", padx=(2, 0))
+
+    # ── Metashape tab content ──────────────────────────────────────
+    app._fisheye_meta_frame = ctk.CTkFrame(fc, fg_color="transparent")
+    app._fisheye_meta_frame.pack(fill="x")
+    mc = app._fisheye_meta_frame
+
+    # Input (cameras.xml)
+    _row = ctk.CTkFrame(mc, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Input:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.fisheye_xml_entry = ctk.CTkEntry(
+        _row, placeholder_text="cameras.xml...",
+    )
+    app.fisheye_xml_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: _browse_xml(app)).pack(side="left")
+
+    # Output (pinhole output dir)
+    _row = ctk.CTkFrame(mc, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Output:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.fisheye_output_entry = ctk.CTkEntry(
+        _row, placeholder_text="pinhole output directory...",
+    )
+    app.fisheye_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: app._browse_folder_for(app.fisheye_output_entry)).pack(side="left")
+
+    # Images directory
+    _row = ctk.CTkFrame(mc, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Images:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.fisheye_images_entry = ctk.CTkEntry(
+        _row, placeholder_text="fisheye images directory...",
+    )
+    app.fisheye_images_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: app._browse_folder_for(app.fisheye_images_entry)).pack(side="left")
+
+    # Masks directory
+    _row = ctk.CTkFrame(mc, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Masks:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.fisheye_masks_entry = ctk.CTkEntry(
+        _row, placeholder_text="masks directory (optional)...",
+    )
+    app.fisheye_masks_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: app._browse_folder_for(app.fisheye_masks_entry)).pack(side="left")
+
+    # Face width + Format
+    settings_row = ctk.CTkFrame(mc, fg_color="transparent")
+    settings_row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(settings_row, text="Face width", font=ctk.CTkFont(size=11)).pack(side="left")
+    app.fisheye_face_width_var = ctk.StringVar(value="0")
+    ctk.CTkEntry(settings_row, textvariable=app.fisheye_face_width_var,
+                 width=50, placeholder_text="0").pack(side="left", padx=(4, 0))
+    ctk.CTkLabel(settings_row, text="(auto)", font=ctk.CTkFont(size=10),
+                 text_color=COLOR_TEXT_DIM).pack(side="left", padx=(2, 8))
+    ctk.CTkLabel(settings_row, text="Format:", font=ctk.CTkFont(size=11)).pack(side="left")
+    app.fisheye_format_var = ctk.StringVar(value="png")
+    for fmt in ("png", "tiff", "jpg"):
+        ctk.CTkRadioButton(settings_row, text=fmt, variable=app.fisheye_format_var,
+                           value=fmt, width=50, font=ctk.CTkFont(size=11),
+                           radiobutton_width=14, radiobutton_height=14,
+                           ).pack(side="left", padx=(4, 0))
+
+    # Force reprocess + Station/Rig
+    opts_row = ctk.CTkFrame(mc, fg_color="transparent")
+    opts_row.pack(fill="x", pady=3, padx=6)
+    app.fisheye_force_var = ctk.BooleanVar(value=False)
+    ctk.CTkCheckBox(opts_row, text="Force reprocess",
+                    variable=app.fisheye_force_var, width=130,
+                    font=ctk.CTkFont(size=11),
+                    checkbox_width=16, checkbox_height=16).pack(side="left")
+
+    app.fisheye_layout_var = ctk.StringVar(value="rig")
+    ctk.CTkRadioButton(opts_row, text="Station", variable=app.fisheye_layout_var,
+                       value="station", width=70, font=ctk.CTkFont(size=11),
+                       radiobutton_width=14, radiobutton_height=14,
+                       ).pack(side="left", padx=(16, 0))
+    ctk.CTkRadioButton(opts_row, text="Rig", variable=app.fisheye_layout_var,
+                       value="rig", width=50, font=ctk.CTkFont(size=11),
+                       radiobutton_width=14, radiobutton_height=14,
+                       ).pack(side="left", padx=(4, 0))
+
+    # Convert button
+    app.fisheye_convert_btn = ctk.CTkButton(
+        mc, text="Convert to Cubefaces",
+        command=lambda: _run_cubeface_convert(app),
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
+        font=ctk.CTkFont(size=13, weight="bold"), height=36,
+    )
+    app.fisheye_convert_btn.pack(fill="x", padx=6, pady=(6, 2))
+
+    # ── Standard tab content ──────────────────────────────────────
+    app._fisheye_std_frame = ctk.CTkFrame(fc, fg_color="transparent")
+    # Hidden initially — Metashape tab is default
+    sc = app._fisheye_std_frame
+
+    # Images directory
+    _row = ctk.CTkFrame(sc, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Images:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.fisheye_std_images_entry = ctk.CTkEntry(
+        _row, placeholder_text="fisheye frames directory...",
+    )
+    app.fisheye_std_images_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: app._browse_folder_for(app.fisheye_std_images_entry)).pack(side="left")
+
+    # Masks directory
+    _row = ctk.CTkFrame(sc, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Masks:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.fisheye_std_masks_entry = ctk.CTkEntry(
+        _row, placeholder_text="masks directory (optional)...",
+    )
+    app.fisheye_std_masks_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: app._browse_folder_for(app.fisheye_std_masks_entry)).pack(side="left")
+
+    # Output directory
+    _row = ctk.CTkFrame(sc, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Output:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.fisheye_std_output_entry = ctk.CTkEntry(
+        _row, placeholder_text="perspective output directory...",
+    )
+    app.fisheye_std_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: app._browse_folder_for(app.fisheye_std_output_entry)).pack(side="left")
+
+    # Preset dropdown
+    preset_frame = ctk.CTkFrame(sc, fg_color="transparent")
+    preset_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(preset_frame, text="Preset:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    preset_labels = list(_PRESET_KEY_TO_LABEL.values()) if HAS_PREP360 else ["Pinhole 90\u00b0 \u2014 16 views"]
+    # Default to the 8-view-per-lens preset
+    default_label = _PRESET_KEY_TO_LABEL.get("osv-pinhole-f90-dual-16", preset_labels[0]) if HAS_PREP360 else preset_labels[0]
+    app.fisheye_preset_var = ctk.StringVar(value=default_label)
+    preset_combo = ctk.CTkComboBox(preset_frame, variable=app.fisheye_preset_var,
+                    values=preset_labels, state="readonly")
+    preset_combo.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+    # Crop + Quality
+    cq_frame = ctk.CTkFrame(sc, fg_color="transparent")
+    cq_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(cq_frame, text="Crop:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.fisheye_std_crop_var = ctk.StringVar(value="1920")
+    ctk.CTkComboBox(cq_frame, variable=app.fisheye_std_crop_var,
+                    values=["1280", "1600", "1920"],
+                    state="readonly", width=80).pack(side="left", padx=(6, 0))
+    ctk.CTkLabel(cq_frame, text="Quality:").pack(side="left", padx=(12, 2))
+    app.fisheye_std_quality_var = ctk.IntVar(value=95)
+    app.fisheye_std_quality_label = ctk.CTkLabel(cq_frame, text="95", width=30,
+                                                  font=FONT_TEXT_MONO_VALUE)
+    ctk.CTkSlider(cq_frame, from_=70, to=100, variable=app.fisheye_std_quality_var,
+                  width=80,
+                  command=lambda v: app.fisheye_std_quality_label.configure(text=f"{int(v)}")
+                  ).pack(side="left", padx=2)
+    app.fisheye_std_quality_label.pack(side="left")
+
+    # Station / Rig
+    layout_row = ctk.CTkFrame(sc, fg_color="transparent")
+    layout_row.pack(fill="x", pady=3, padx=6)
+    app.fisheye_std_layout_var = ctk.StringVar(value="station")
+    ctk.CTkRadioButton(layout_row, text="Station", variable=app.fisheye_std_layout_var,
+                       value="station", width=70, font=ctk.CTkFont(size=11),
+                       radiobutton_width=14, radiobutton_height=14).pack(side="left")
+    ctk.CTkRadioButton(layout_row, text="Rig", variable=app.fisheye_std_layout_var,
+                       value="rig", width=50, font=ctk.CTkFont(size=11),
+                       radiobutton_width=14, radiobutton_height=14).pack(side="left", padx=(4, 0))
+
+    # Reframe button
+    app.fisheye_std_reframe_btn = ctk.CTkButton(
+        sc, text="Reframe",
+        command=lambda: _run_std_reframe(app),
+        fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
+        font=ctk.CTkFont(size=13, weight="bold"), height=36,
+    )
+    app.fisheye_std_reframe_btn.pack(fill="x", padx=6, pady=(6, 2))
+
+    # Info
+    ctk.CTkLabel(sc, text="8 views per lens \u00b7 90\u00b0 FOV \u00b7 built-in equidistant calibration",
+                 font=ctk.CTkFont(size=10), text_color=COLOR_TEXT_DIM,
+                 anchor="w").pack(fill="x", padx=12, pady=(0, 4))
+
+    # ── Shared stop button for Fisheye subsection ──
+    app.fisheye_stop_btn = ctk.CTkButton(
+        fc, text="Stop", command=app.stop_operation,
+        fg_color=COLOR_ACTION_DANGER, hover_color=COLOR_ACTION_DANGER_H,
+        font=ctk.CTkFont(size=12), height=32,
+    )
+    # hidden initially — shown via _start_operation
+
+    # ── Equirectangular / Spherical subsection ───────────────────────
+    erp_sec = CollapsibleSection(
+        rc, "Equirectangular / Spherical",
+        subtitle="split 360\u00b0 panoramas into perspectives",
+        expanded=False, scroll_on_expand=True,
+    )
+    erp_sec.pack(fill="x", padx=2, pady=(4, 0))
+    ec = erp_sec.content
+
+    # Video input (optional — for extracting ERP frames from 360 video)
+    _row = ctk.CTkFrame(ec, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Video:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_osv_entry = ctk.CTkEntry(
-        osv_frame,
-        placeholder_text=".osv / .360 / .insv file (optional)...",
+        _row, placeholder_text=".osv / .360 / .insv file (optional)...",
     )
     app.fisheye_osv_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(osv_frame, text="...", width=BROWSE_BUTTON_WIDTH,
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
                   fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                   command=lambda: _browse_osv(app)).pack(side="left")
 
-    reframe_frames_frame = ctk.CTkFrame(rc, fg_color="transparent")
-    reframe_frames_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(reframe_frames_frame, text="Frames:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    # Frames input
+    _row = ctk.CTkFrame(ec, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Frames:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_reframe_frames_entry = ctk.CTkEntry(
-        reframe_frames_frame,
-        placeholder_text="Existing ERP frames folder (optional)...",
+        _row, placeholder_text="Existing ERP frames folder (optional)...",
     )
     app.fisheye_reframe_frames_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(
-        reframe_frames_frame, text="...", width=BROWSE_BUTTON_WIDTH,
-        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-        command=lambda: app._browse_folder_for(app.fisheye_reframe_frames_entry)
-    ).pack(side="left")
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: app._browse_folder_for(app.fisheye_reframe_frames_entry)).pack(side="left")
 
-    reframe_masks_frame = ctk.CTkFrame(rc, fg_color="transparent")
-    reframe_masks_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(reframe_masks_frame, text="Masks:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    # Masks input
+    _row = ctk.CTkFrame(ec, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Masks:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_reframe_masks_entry = ctk.CTkEntry(
-        reframe_masks_frame,
-        placeholder_text="Masks for ERP or fisheye frames (optional)...",
+        _row, placeholder_text="Masks for ERP or fisheye frames (optional)...",
     )
     app.fisheye_reframe_masks_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(
-        reframe_masks_frame, text="...", width=BROWSE_BUTTON_WIDTH,
-        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-        command=lambda: app._browse_folder_for(app.fisheye_reframe_masks_entry)
-    ).pack(side="left")
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: app._browse_folder_for(app.fisheye_reframe_masks_entry)).pack(side="left")
 
-    reframe_out_frame = ctk.CTkFrame(rc, fg_color="transparent")
-    reframe_out_frame.pack(fill="x", pady=3, padx=6)
-    ctk.CTkLabel(reframe_out_frame, text="Output:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    # Output
+    _row = ctk.CTkFrame(ec, fg_color="transparent")
+    _row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(_row, text="Output:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_reframe_output_entry = ctk.CTkEntry(
-        reframe_out_frame,
-        placeholder_text="Perspective output directory...",
+        _row, placeholder_text="Perspective output directory...",
     )
     app.fisheye_reframe_output_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-    ctk.CTkButton(
-        reframe_out_frame, text="...", width=BROWSE_BUTTON_WIDTH,
-        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
-        command=lambda: app._browse_folder_for(app.fisheye_reframe_output_entry)
-    ).pack(side="left")
+    ctk.CTkButton(_row, text="...", width=BROWSE_BUTTON_WIDTH,
+                  fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                  command=lambda: app._browse_folder_for(app.fisheye_reframe_output_entry)).pack(side="left")
 
-    # ── Custom Calibration (collapsible, inside Reframe) ─────────────
-
-    adv_sec = CollapsibleSection(rc, "Custom Calibration",
+    # Custom Calibration (collapsible)
+    adv_sec = CollapsibleSection(ec, "Custom Calibration",
                                   subtitle="override built-in lens model",
                                   expanded=False)
     adv_sec.pack(fill="x", padx=2, pady=(4, 0))
@@ -2821,7 +2595,6 @@ def _build_fisheye_section(app, parent):
     app.fisheye_calib_default_var = ctk.BooleanVar(value=True)
     app.fisheye_calib_entry = ctk.CTkEntry(ac, width=0)  # hidden storage
 
-    # Calibration file row
     calib_row = ctk.CTkFrame(ac, fg_color="transparent")
     calib_row.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(calib_row, text="File:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
@@ -2845,36 +2618,34 @@ def _build_fisheye_section(app, parent):
     reset_btn.pack(side="left", padx=(4, 0))
     Tooltip(reset_btn, "Revert to the built-in equidistant fisheye model.")
 
-    # Status label
     app._fisheye_calib_label = ctk.CTkLabel(
         ac, text="Using built-in calibration",
-        font=ctk.CTkFont(family="Consolas", size=10),
+        font=ctk.CTkFont(size=10),
         text_color="#9ca3af", anchor="w")
     app._fisheye_calib_label.pack(fill="x", padx=12, pady=(0, 2))
 
     # Preset
-    preset_frame = ctk.CTkFrame(rc, fg_color="transparent")
+    preset_frame = ctk.CTkFrame(ec, fg_color="transparent")
     preset_frame.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(preset_frame, text="Preset:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    preset_labels = list(_PRESET_KEY_TO_LABEL.values()) if HAS_PREP360 else ["Full 90\u00b0 \u2014 26 views"]
-    app.fisheye_preset_var = ctk.StringVar(value=preset_labels[0])
-    preset_combo = ctk.CTkComboBox(preset_frame, variable=app.fisheye_preset_var,
-                    values=preset_labels, state="readonly",
+    erp_preset_labels = list(_PRESET_KEY_TO_LABEL.values()) if HAS_PREP360 else ["Full 90\u00b0 \u2014 26 views"]
+    app.fisheye_erp_preset_var = ctk.StringVar(value=erp_preset_labels[0])
+    erp_preset_combo = ctk.CTkComboBox(preset_frame, variable=app.fisheye_erp_preset_var,
+                    values=erp_preset_labels, state="readonly",
                     command=lambda v: _on_preset_change(app, v))
-    preset_combo.pack(side="left", fill="x", expand=True, padx=(6, 0))
-    Tooltip(preset_combo,
-            "View layout preset — controls how many pinhole\n"
-            "perspectives are extracted from each fisheye frame.\n"
-            "More views = better 3D coverage but more images.")
+    erp_preset_combo.pack(side="left", fill="x", expand=True, padx=(6, 0))
+    Tooltip(erp_preset_combo,
+            "View layout preset \u2014 controls how many pinhole\n"
+            "perspectives are extracted from each fisheye frame.")
 
-    # Preset description (multi-line, structured)
-    app.fisheye_preset_desc = ctk.CTkLabel(rc, text="", text_color="#9ca3af",
-                                            font=ctk.CTkFont(family="Consolas", size=10),
+    # Preset description
+    app.fisheye_preset_desc = ctk.CTkLabel(ec, text="", text_color="#9ca3af",
+                                            font=ctk.CTkFont(size=10),
                                             anchor="w", justify="left")
     app.fisheye_preset_desc.pack(fill="x", pady=(0, 2), padx=12)
 
-    # Crop + Quality + Interval on compact rows
-    cq_frame = ctk.CTkFrame(rc, fg_color="transparent")
+    # Crop + Quality
+    cq_frame = ctk.CTkFrame(ec, fg_color="transparent")
     cq_frame.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(cq_frame, text="Crop:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_crop_var = ctk.StringVar(value="1600")
@@ -2883,9 +2654,7 @@ def _build_fisheye_section(app, parent):
                     state="readonly", width=80,
                     command=lambda v: _update_fisheye_estimate(app))
     crop_combo.pack(side="left", padx=(6, 0))
-    Tooltip(crop_combo, "Output resolution per pinhole crop (square).\n"
-            "1600 is a good balance of detail and file size.\n"
-            "1920 for maximum quality, 1280 for faster processing.")
+    Tooltip(crop_combo, "Output resolution per pinhole crop (square).")
 
     ctk.CTkLabel(cq_frame, text="Quality:").pack(side="left", padx=(12, 2))
     app.fisheye_quality_var = ctk.IntVar(value=95)
@@ -2895,11 +2664,9 @@ def _build_fisheye_section(app, parent):
                   width=80, command=lambda v: app.fisheye_quality_label.configure(text=f"{int(v)}"))
     qual_slider.pack(side="left", padx=2)
     app.fisheye_quality_label.pack(side="left")
-    Tooltip(qual_slider, "JPEG quality for output crops.\n"
-            "95 = near-lossless, recommended for photogrammetry.\n"
-            "Lower values save disk space but lose detail.")
 
-    int_frame = ctk.CTkFrame(rc, fg_color="transparent")
+    # Interval
+    int_frame = ctk.CTkFrame(ec, fg_color="transparent")
     int_frame.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(int_frame, text="Interval:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
     app.fisheye_interval_var = ctk.DoubleVar(value=2.0)
@@ -2918,40 +2685,40 @@ def _build_fisheye_section(app, parent):
             "Lower = more frames, longer processing, bigger dataset.\n"
             "2.0s is a good default for walking-speed capture.")
 
-    # Station-aware output checkbox
-    app.station_dirs_var = ctk.BooleanVar(value=True)
-    app.fisheye_station_cb = ctk.CTkCheckBox(rc, text="Station dirs (for Metashape)",
-                    variable=app.station_dirs_var, width=200)
-    app.fisheye_station_cb.pack(pady=(6, 2), padx=6, anchor="w")
-    Tooltip(app.fisheye_station_cb,
-            "Organize output into per-source subdirectories.\n"
-            "Each subdirectory becomes a Metashape station\n"
-            "(shared camera position). Drag all subdirs into\n"
-            "an empty chunk, then set group type to Station.\n\n"
-            "Also writes reframe_metadata.json with pinhole\n"
-            "intrinsics and station-to-view mapping.")
+    # Station / Rig layout
+    erp_layout_row = ctk.CTkFrame(ec, fg_color="transparent")
+    erp_layout_row.pack(fill="x", pady=3, padx=6)
+    app.erp_layout_var = ctk.StringVar(value="station")
+    ctk.CTkRadioButton(erp_layout_row, text="Station", variable=app.erp_layout_var,
+                       value="station", width=70, font=ctk.CTkFont(size=11),
+                       radiobutton_width=14, radiobutton_height=14).pack(side="left")
+    ctk.CTkRadioButton(erp_layout_row, text="Rig", variable=app.erp_layout_var,
+                       value="rig", width=50, font=ctk.CTkFont(size=11),
+                       radiobutton_width=14, radiobutton_height=14).pack(side="left", padx=(4, 0))
+    Tooltip(erp_layout_row,
+            "Station: one subdirectory per source image.\n"
+            "Rig: one subdirectory per view direction.")
 
-    # Output estimate label (dynamic — updates with preset/interval/crop changes)
-    app.fisheye_estimate_label = ctk.CTkLabel(rc, text="",
-                                               font=("Consolas", 10),
+    # Output estimate
+    app.fisheye_estimate_label = ctk.CTkLabel(ec, text="",
+                                               font=ctk.CTkFont(size=10),
                                                text_color="#9ca3af",
                                                anchor="w", justify="left")
     app.fisheye_estimate_label.pack(fill="x", padx=12, pady=(0, 4))
 
+    # Extract & Reframe button
     app.fisheye_reframe_btn = ctk.CTkButton(
-        rc, text="Extract & Reframe", command=lambda: _run_reframe(app),
+        ec, text="Extract & Reframe", command=lambda: _run_reframe(app),
         fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
         font=ctk.CTkFont(size=13, weight="bold"), height=36,
     )
     app.fisheye_reframe_btn.pack(fill="x", padx=6, pady=(6, 2))
-    Tooltip(
-        app.fisheye_reframe_btn,
-        "Extract from video and/or reframe ERP frames into perspectives.\n"
-        "Use only for pinhole-perspective workflows.",
-    )
+    Tooltip(app.fisheye_reframe_btn,
+            "Extract from video and/or reframe ERP frames into perspectives.")
 
-    app.fisheye_stop_btn = ctk.CTkButton(
-        c, text="Stop", command=app.stop_operation,
+    # ERP stop button
+    app.fisheye_erp_stop_btn = ctk.CTkButton(
+        ec, text="Stop", command=app.stop_operation,
         fg_color=COLOR_ACTION_DANGER, hover_color=COLOR_ACTION_DANGER_H,
         font=ctk.CTkFont(size=12), height=32,
     )
@@ -2959,7 +2726,235 @@ def _build_fisheye_section(app, parent):
 
     # Init preset display
     if HAS_PREP360:
-        _on_preset_change(app, app.fisheye_preset_var.get())
+        _on_preset_change(app, app.fisheye_erp_preset_var.get())
+
+
+def _switch_fisheye_tab(app, tab_name):
+    """Switch between Metashape and Standard tabs in the Fisheye subsection."""
+    app._fisheye_tab_var.set(tab_name)
+    if tab_name == "metashape":
+        app._fisheye_meta_frame.pack(fill="x")
+        app._fisheye_std_frame.pack_forget()
+        app._fisheye_meta_tab_btn.configure(
+            fg_color=COLOR_ACTION_SECONDARY, font=ctk.CTkFont(size=12, weight="bold"))
+        app._fisheye_std_tab_btn.configure(
+            fg_color=COLOR_ACTION_MUTED, font=ctk.CTkFont(size=12))
+    else:
+        app._fisheye_std_frame.pack(fill="x")
+        app._fisheye_meta_frame.pack_forget()
+        app._fisheye_std_tab_btn.configure(
+            fg_color=COLOR_ACTION_SECONDARY, font=ctk.CTkFont(size=12, weight="bold"))
+        app._fisheye_meta_tab_btn.configure(
+            fg_color=COLOR_ACTION_MUTED, font=ctk.CTkFont(size=12))
+
+
+def _browse_xml(app):
+    """Browse for a Metashape cameras.xml file."""
+    path = filedialog.askopenfilename(
+        title="Select Metashape cameras.xml",
+        filetypes=[("XML Files", "*.xml"), ("All Files", "*.*")],
+    )
+    if path:
+        app.fisheye_xml_entry.delete(0, "end")
+        app.fisheye_xml_entry.insert(0, path)
+
+
+def _run_cubeface_convert(app):
+    """Validate inputs and launch cubeface conversion thread."""
+    if not HAS_PREP360:
+        app.log("Error: prep360 core not available")
+        return
+
+    xml_path = app.fisheye_xml_entry.get().strip()
+    output_dir = app.fisheye_output_entry.get().strip()
+    images_dir = app.fisheye_images_entry.get().strip()
+    masks_dir = app.fisheye_masks_entry.get().strip()
+
+    if not xml_path or not Path(xml_path).is_file():
+        app.log("Error: Select a cameras.xml file")
+        return
+    if not output_dir:
+        app.log("Error: Select a pinhole output directory")
+        return
+    if not images_dir or not Path(images_dir).is_dir():
+        app.log("Error: Select a fisheye images directory")
+        return
+    if masks_dir and not Path(masks_dir).is_dir():
+        app.log(f"Error: Masks directory not found: {masks_dir}")
+        return
+
+    face_width = int(app.fisheye_face_width_var.get() or "0")
+    output_format = app.fisheye_format_var.get()
+    force = app.fisheye_force_var.get()
+
+    app._start_operation(app.fisheye_convert_btn, app.fisheye_stop_btn)
+    threading.Thread(
+        target=_cubeface_worker,
+        args=(app, xml_path, images_dir, masks_dir or None,
+              output_dir, face_width, output_format, force),
+        daemon=True,
+    ).start()
+
+
+def _cubeface_worker(app, xml_path, images_dir, masks_dir,
+                     output_dir, face_width, output_format, force):
+    """Thread target: runs process_cubeface_sensor."""
+    try:
+        from prep360.core.cubeface_processing import process_cubeface_sensor
+
+        app.log("Converting fisheye \u2192 cubefaces")
+        app.log(f"  Input XML:  {xml_path}")
+        app.log(f"  Images:     {images_dir}")
+        if masks_dir:
+            app.log(f"  Masks:      {masks_dir}")
+        app.log(f"  Output:     {output_dir}")
+        app.log(f"  Face width: {face_width}, Format: {output_format}")
+
+        result = process_cubeface_sensor(
+            calibration_xml=Path(xml_path),
+            image_dirs=[Path(images_dir)],
+            output_dir=Path(output_dir),
+            face_width=face_width,
+            mask_dirs=[Path(masks_dir)] if masks_dir else None,
+            output_format=output_format,
+            force=force,
+            progress_callback=lambda msg: app.log(msg),
+        )
+
+        app.log("\nConversion complete")
+        app.log(f"  Processed: {result['processed_count']}")
+        app.log(f"  Skipped:   {result['skipped_count']}")
+        app.log(f"  Face width: {result['face_width']}")
+        app.log(f"  Output:    {result['output_dir']}")
+
+        app.record_activity(
+            operation="cubeface_convert",
+            input_path=images_dir,
+            output_path=output_dir,
+            details={
+                "processed": result["processed_count"],
+                "skipped": result["skipped_count"],
+                "face_width": result["face_width"],
+            },
+        )
+    except Exception as e:
+        import traceback
+        app.log(f"Cubeface conversion error: {e}")
+        app.log(traceback.format_exc())
+    finally:
+        app.after(0, lambda: app._stop_operation(
+            app.fisheye_convert_btn, app.fisheye_stop_btn))
+
+
+def _run_std_reframe(app):
+    """Validate inputs and launch standard fisheye reframe thread."""
+    if not HAS_PREP360:
+        app.log("Error: prep360 core not available")
+        return
+
+    images_dir = app.fisheye_std_images_entry.get().strip()
+    masks_dir = app.fisheye_std_masks_entry.get().strip()
+    output_dir = app.fisheye_std_output_entry.get().strip()
+
+    if not images_dir or not Path(images_dir).is_dir():
+        app.log("Error: Select a fisheye images directory")
+        return
+    if not output_dir:
+        app.log("Error: Select an output directory")
+        return
+    if masks_dir and not Path(masks_dir).is_dir():
+        app.log(f"Error: Masks directory not found: {masks_dir}")
+        return
+
+    preset_key = _get_preset_key(app)
+    preset_config = FISHEYE_PRESETS.get(preset_key)
+    if preset_config is None:
+        app.log(f"Error: Unknown preset '{preset_key}'")
+        return
+
+    crop_size = int(app.fisheye_std_crop_var.get())
+    quality = app.fisheye_std_quality_var.get()
+    config = FisheyeViewConfig(
+        views=list(preset_config.views),
+        crop_size=crop_size,
+        quality=quality,
+    )
+    station_dirs = app.fisheye_std_layout_var.get() == "station"
+
+    app._start_operation(app.fisheye_std_reframe_btn, app.fisheye_stop_btn)
+    threading.Thread(
+        target=_std_reframe_worker,
+        args=(app, images_dir, masks_dir or None, output_dir,
+              config, station_dirs, preset_key),
+        daemon=True,
+    ).start()
+
+
+def _std_reframe_worker(app, images_dir, masks_dir, output_dir,
+                        config, station_dirs, preset_key):
+    """Thread target: standard fisheye reframe using FisheyeReframer."""
+    try:
+        calib = default_osmo360_calibration()
+        app.log(f"Reframing fisheye \u2192 perspectives")
+        app.log(f"  Preset: {preset_key} ({config.total_views()} views)")
+        app.log(f"  Crop: {config.crop_size}x{config.crop_size}")
+        app.log(f"  Images: {images_dir}")
+        if masks_dir:
+            app.log(f"  Masks: {masks_dir}")
+        app.log(f"  Output: {output_dir}")
+
+        frames_path = Path(images_dir)
+        front = sorted(str(f) for f in frames_path.glob("front_*.jpg"))
+        back = sorted(str(f) for f in frames_path.glob("back_*.jpg"))
+        if not front or not back:
+            app.log("Error: Need both front_*.jpg and back_*.jpg frames")
+            return
+        app.log(f"Found {len(front)} front + {len(back)} back frames")
+
+        if app.cancel_flag.is_set():
+            app.log("Cancelled")
+            return
+
+        pairs = list(zip(front, back))
+        reframe_out = output_dir if station_dirs else str(Path(output_dir) / "images")
+
+        app.log(f"\nReframing {len(pairs)} pairs \u2192 {config.total_views()} views each...")
+
+        def rf_progress(current, total, msg):
+            if not app.cancel_flag.is_set():
+                app.log(f"  [{current}/{total}] {msg}")
+
+        total_crops, errors = fisheye_batch_extract(
+            pairs, config, calib, reframe_out,
+            mask_dir=masks_dir,
+            num_workers=1, progress_callback=rf_progress,
+            station_dirs=station_dirs,
+            log=app.log,
+        )
+
+        app.log(f"\nReframe complete")
+        app.log(f"  Frame pairs: {len(pairs)}")
+        app.log(f"  Total crops: {total_crops}")
+        if errors:
+            app.log(f"  Errors: {len(errors)}")
+
+        app.record_activity(
+            operation="fisheye_reframe",
+            input_path=images_dir,
+            output_path=output_dir,
+            details={
+                "frame_pairs": len(pairs),
+                "total_crops": total_crops,
+                "crop_size": config.crop_size,
+            },
+        )
+    except Exception as e:
+        import traceback
+        app.log(f"Reframe error: {e}")
+        app.log(traceback.format_exc())
+    finally:
+        app.after(0, lambda: app._stop_operation(
+            app.fisheye_std_reframe_btn, app.fisheye_stop_btn))
 
 
 def _browse_osv(app):
@@ -3289,16 +3284,6 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
     else:
         app.log("  Acceleration: CPU")
 
-    # Run post-processing on both front and back frame directories
-    settings = _snapshot_settings(app)
-    for lens_label, lens_dir in [("front", clip_root / "front" / "frames"),
-                                  ("back", clip_root / "back" / "frames")]:
-        if lens_dir.exists() and any(lens_dir.iterdir()):
-            app.log(f"\nPost-processing {lens_label} frames...")
-            pp_stats = _run_post_processing(app, settings, lens_dir)
-            final = len(list(lens_dir.glob("*.*")))
-            app.log(f"  {lens_label}: {final} frames after post-processing")
-
     total_elapsed = time.perf_counter() - t_start
 
     summary = "\n".join([
@@ -3345,8 +3330,8 @@ def _run_reframe(app):
         app.log(f"Error: Masks folder not found: {masks_dir}")
         return
 
-    station_dirs = app.station_dirs_var.get()
-    app._start_operation(app.fisheye_reframe_btn, app.fisheye_stop_btn)
+    station_dirs = app.erp_layout_var.get() == "station"
+    app._start_operation(app.fisheye_reframe_btn, app.fisheye_erp_stop_btn)
     threading.Thread(
         target=_fisheye_worker,
         args=(
@@ -3444,20 +3429,6 @@ def _fisheye_worker(
             app.log("Cancelled")
             return
 
-        # Optional motion selection (only when extracting from video)
-        if has_video and app.extract_motion_enabled_var.get():
-            app.log("\nRunning motion-aware selection...")
-            selector = MotionSelector(
-                min_sharpness=app.extract_sharpness_var.get(),
-                target_flow=app.extract_flow_var.get(),
-            )
-            sel_result = selector.select_from_paths(front, max_frames=len(front), log=app.log)
-            app.log(sel_result.summary())
-            idx_set = {fs.index for fs in sel_result.selected_frames}
-            front = [f for i, f in enumerate(front) if i in idx_set]
-            back = [b for i, b in enumerate(back) if i in idx_set]
-            app.log(f"After selection: {len(front)} frame pairs")
-
         if app.cancel_flag.is_set():
             app.log("Cancelled")
             return
@@ -3521,8 +3492,8 @@ def _fisheye_worker(
         app.log(traceback.format_exc())
     finally:
         btn = action_button or app.fisheye_reframe_btn
-        app.after(0, lambda: app._stop_operation(
-            btn, app.fisheye_stop_btn))
+        stop_btn = getattr(app, 'fisheye_erp_stop_btn', app.fisheye_stop_btn)
+        app.after(0, lambda: app._stop_operation(btn, stop_btn))
 
 
 def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config, station_dirs=False):
