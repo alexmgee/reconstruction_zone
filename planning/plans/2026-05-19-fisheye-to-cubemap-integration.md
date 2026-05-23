@@ -1,633 +1,485 @@
-# Fisheye-to-Cubemap Integration Plan
+# Fisheye-to-Cubemap Integration into Reconstruction Zone
 
-> **Scope:** Absorb the full capability of `D:\Projects\Fisheye-to-Cubemap` into Reconstruction Zone. This includes the cubeface conversion engine, adaptive undistortion, ERP reframing, Metashape sensor discovery, lens mapping resolution, and Metashape→COLMAP scene export. The Coverage tab is removed and replaced with an Export tab for the Metashape→COLMAP workflow.
+> **Branch:** `release/v1`
+> **Source:** `D:\Projects\Fisheye-to-Cubemap` (~18,774 lines across 14 modules)
+> **Target:** `D:\Projects\reconstruction-zone`
+> **Visual reference:** `pencil-new.pen` (Pencil design file, node `wDhnY`)
 
-**Source project:** `D:\Projects\Fisheye-to-Cubemap` (~18,774 lines across 14 modules + 4,345 lines GUI)
-**Target project:** `D:\Projects\reconstruction-zone` (main branch)
+## Goal
 
----
+Integrate the Fisheye-to-Cubemap cubeface conversion pipeline into Reconstruction Zone's Extract tab, inside the 360 Processing > Reframing > Fisheye subsection. The conversion is driven entirely by a Metashape `cameras.xml` file — no separate lens calibration XMLs.
 
-## Table of Contents
-
-1. [Current State](#1-current-state)
-2. [Target State](#2-target-state)
-3. [Module Inventory & Disposition](#3-module-inventory--disposition)
-4. [Phase 1: Foundation — Core Engine Import](#phase-1-foundation--core-engine-import)
-5. [Phase 2: Extract Tab — Cubeface & Adaptive Conversion](#phase-2-extract-tab--cubeface--adaptive-conversion)
-6. [Phase 3: Export Tab — Metashape→COLMAP Workflow](#phase-3-export-tab--metashapecolmap-workflow)
-7. [Phase 4: Coverage Tab Removal](#phase-4-coverage-tab-removal)
-8. [Phase 5: Cross-Tab Integration](#phase-5-cross-tab-integration)
-9. [Phase 6: Cleanup & Validation](#phase-6-cleanup--validation)
-10. [Dependency Map](#dependency-map)
-11. [Risk Register](#risk-register)
-12. [Open Questions](#open-questions)
+This plan covers the cubeface conversion integration only. The Metashape→COLMAP scene export (Export tab) is a separate future phase.
 
 ---
 
-## 1. Current State
+## Scope
 
-### Reconstruction Zone tab bar (main)
-```
-Projects → Adjust → Extract → Mask → Review → Align → Coverage
-```
+**In scope:**
+- Copy F2C library modules into `prep360/core/`
+- Add a Fisheye subsection inside Reframing with cubeface conversion UI
+- Add an Equirectangular/Spherical subsection inside Reframing (placeholder for existing ERP workflow)
+- Wire up cubeface conversion worker driven by `cameras.xml`
 
-### Extract tab — existing 360° Processing section
-- **Split Lenses**: Demux .osv/.360/.insv → front/back raw lens videos
-- **Reframing**: Pinhole perspective extraction from OSV or existing ERP frames
-  - Input: .osv file OR existing ERP frames folder + optional masks
-  - Preset dropdown (4 presets: 10/14/22/26 views, all dual-fisheye Osmo 360)
-  - Custom calibration (JSON override for built-in equidistant model)
-  - Output: 1600×1600 JPEG perspective crops
-- **Projection model**: Equidistant only (cv2.fisheye)
-- **Camera support**: DJI Osmo 360 dual-fisheye only (hardcoded calibration)
-
-### Coverage tab (being removed)
-- Gap Analysis: spatial gap detection from COLMAP/Metashape/XMP reconstructions
-- Bridge Extraction: extract frames from video at gap timestamps
-- 437 lines UI + 843 lines gap_detector + 563 lines bridge_extractor
-- No downstream consumers — leaf node in the pipeline
-
-### Align tab
-- Full COLMAP/SphereSfM runner (feature extraction → matching → reconstruction)
-- Rig presets (DJI Osmo 360 dual-fisheye)
-- 3D point cloud viewer
-- 2,711 lines
-
-### What Reconstruction Zone CANNOT do today
-- No equisolid projection model (the primary model for DJI/Insta360 fisheye)
-- No Metashape XML calibration parsing (limited to hardcoded Osmo 360)
-- No single-fisheye support (only dual pairs)
-- No Fourier distortion corrections
-- No RBF-interpolated remapping (uses cv2.fisheye remap)
-- No adaptive single-pinhole routing (cubemap-or-nothing)
-- No Metashape→COLMAP scene export (must run COLMAP from scratch)
-- No mixed-sensor scene support (fisheye + frame + equirect in one export)
+**Out of scope:**
+- Adaptive pinhole mode (future — may become a tab within the Fisheye subsection)
+- ERP cubemap/16-view modes (future)
+- Export tab / COLMAP scene packaging
+- Sensor discovery, mapping resolver, COLMAP exporter
+- Coverage tab removal
+- Cross-tab handoffs
 
 ---
 
-## 2. Target State
+## Part 1: Module Foundation
 
-### Tab bar after integration
+### 1.1 Dependency Graph
+
 ```
-Projects → Adjust → Extract → Mask → Review → Align → Export
+Layer 0 — Standalone (no F2C internal deps)
+  processing_stamp.py    (143 lines)  — hashlib, json, pathlib
+  scene_manifest.py      (295 lines)  — json, dataclasses, pathlib
+
+Layer 1 — Depends on cubeface_engine only
+  fourier_corrections.py (344 lines)  — hashlib, xml, numpy
+  solid_angle.py         (133 lines)  → cubeface_engine
+
+Layer 2 — Depends on Layer 1
+  corrected_rays.py      (150 lines)  → fourier_corrections, cubeface_engine
+
+Layer 3 — Orchestration
+  cubeface_processing.py (634 lines)  → cubeface_engine, fourier_corrections,
+                                        corrected_rays, processing_stamp
+
+The cubeface engine:
+  cubeface_engine.py     (2332 lines) — numpy, cv2, scipy (standalone)
 ```
 
-### Extract tab — expanded 360° Processing section
-Everything it does today, plus:
-- **Cubeface conversion**: Metashape-calibrated fisheye → 5 pinhole cubefaces (equisolid, equidistant, pinhole, equirect)
-- **Adaptive undistort**: Fisheye → single tighter pinhole (automatic routing based on lens characteristics)
-- **ERP reframing**: F2C's equirect → perspective crops (cubemap 6-view or reframe 16-view modes)
-- **Fourier corrections**: 96-coefficient distortion corrections from Metashape calibration
-- **Calibration source**: Metashape XML (any sensor) in addition to existing JSON/hardcoded
-- **Routing intelligence**: Automatic cubemap-vs-single-pinhole decision per sensor
+Only the modules needed for cubeface conversion are copied in this phase. Modules for adaptive pinhole (`adaptive_undistort.py`, `conversion_routing.py`), ERP reframe (`erp_reframe.py`), and the COLMAP exporter are deferred.
 
-### New Export tab (replaces Coverage)
-- **Sensor discovery**: Parse Metashape cameras.xml → enumerate sensors with calibration details
-- **Lens mapping**: Resolve which images belong to which sensor/lens (5-tier automatic + manual override)
-- **Mapping validation**: Structured diagnostics (INFO/WARNING/BLOCKER) before export
-- **Scene export**: Metashape alignment → COLMAP sparse model (all PINHOLE cameras)
-  - Fisheye sensors → cubeface or adaptive pinhole conversion + pose composition
-  - Frame sensors → passthrough with undistortion
-  - Equirect sensors → perspective split + pose composition
-  - Mixed scenes (multiple sensor types in one export)
-- **Scene diagnostics**: Scale normalization, conversion reports, validation reports
-- **Processing stamps**: Cache invalidation for incremental re-export
 
-### Align tab — new opportunities
-- "Import COLMAP Scene" button that loads an Export tab output as a starting point
-- Ability to refine an exported scene with additional COLMAP BA passes
-- No structural changes required — just cross-tab handoff
+### 1.2 Files to Copy
 
----
-
-## 3. Module Inventory & Disposition
-
-### F2C modules → where they land in Reconstruction Zone
-
-| F2C Module | Lines | New Location | Action |
-|---|---|---|---|
-| `AM_ImageAndMask_to_cubemap_v4.py` | 2,332 | `prep360/core/cubeface_engine.py` | Copy + rename, preserve as stable engine |
-| `gui/cubeface_processing.py` | 634 | `prep360/core/cubeface_processing.py` | Copy, update imports |
-| `gui/adaptive_undistort.py` | 845 | `prep360/core/adaptive_undistort.py` | Copy, update imports |
-| `gui/erp_reframe.py` | 530 | `prep360/core/erp_reframe.py` | Copy, update imports |
-| `gui/routing.py` | 295 | `prep360/core/conversion_routing.py` | Copy, update imports |
-| `gui/sensor_discovery.py` | 390 | `prep360/core/sensor_discovery.py` | Copy, update imports |
-| `gui/mapping_resolver.py` | 1,656 | `prep360/core/mapping_resolver.py` | Copy, update imports |
-| `gui/fourier_corrections.py` | 344 | `prep360/core/fourier_corrections.py` | Copy, update imports |
-| `gui/corrected_rays.py` | 150 | `prep360/core/corrected_rays.py` | Copy, update imports |
-| `gui/scene_manifest.py` | 295 | `prep360/core/scene_manifest.py` | Copy, update imports |
-| `gui/processing_stamp.py` | 143 | `prep360/core/processing_stamp.py` | Copy, update imports |
-| `gui/solid_angle.py` | 133 | `prep360/core/solid_angle.py` | Copy, update imports |
-| `metashape_cameras_to_colmap.py` | 6,682 | `prep360/core/colmap_exporter.py` | Copy + rename, update imports |
-| `gui/gui.py` | 4,345 | NOT imported | GUI rebuilt natively in RZ tabs |
-
-### F2C tests → imported alongside modules
-
-| F2C Test | Lines | New Location |
+| F2C Source | RZ Destination | Import Changes |
 |---|---|---|
-| `tests/test_cubeface_processing.py` | ~800 | `tests/test_cubeface_processing.py` |
-| `tests/test_routing.py` | ~170 | `tests/test_conversion_routing.py` |
-| `tests/test_erp_reframe.py` | ~560 | `tests/test_erp_reframe.py` |
-| `tests/test_sensor_discovery.py` | ~440 | `tests/test_sensor_discovery.py` |
-| `tests/test_fourier_corrections.py` | ~440 | `tests/test_fourier_corrections.py` |
-| `tests/test_camera_records.py` | ~760 | `tests/test_colmap_exporter.py` |
-| `tests/test_scene_manifest.py` | ~260 | `tests/test_scene_manifest.py` |
-| `tests/test_solid_angle.py` | ~120 | `tests/test_solid_angle.py` |
-| `tests/test_corrected_rays.py` | ~140 | `tests/test_corrected_rays.py` |
-| `tests/fixtures/` | — | `tests/fixtures/` (merge) |
+| `AM_ImageAndMask_to_cubemap_v4.py` | `prep360/core/cubeface_engine.py` | None — standalone. Copy as-is, rename only. |
+| `gui/processing_stamp.py` | `prep360/core/processing_stamp.py` | None — stdlib only |
+| `gui/scene_manifest.py` | `prep360/core/scene_manifest.py` | None — stdlib only |
+| `gui/fourier_corrections.py` | `prep360/core/fourier_corrections.py` | None — stdlib + numpy only |
+| `gui/solid_angle.py` | `prep360/core/solid_angle.py` | `AM_ImageAndMask_to_cubemap_v4` → `prep360.core.cubeface_engine` |
+| `gui/corrected_rays.py` | `prep360/core/corrected_rays.py` | `gui.fourier_corrections` → `prep360.core.fourier_corrections`; `AM_ImageAndMask_to_cubemap_v4` → `prep360.core.cubeface_engine` |
+| `gui/cubeface_processing.py` | `prep360/core/cubeface_processing.py` | `AM_ImageAndMask_to_cubemap_v4` → `prep360.core.cubeface_engine`; `gui.fourier_corrections` → `prep360.core.fourier_corrections`; `gui.corrected_rays` → `prep360.core.corrected_rays`; `gui.processing_stamp` → `prep360.core.processing_stamp` |
+| `gui/sensor_discovery.py` | `prep360/core/sensor_discovery.py` | `gui.fourier_corrections` → `prep360.core.fourier_corrections` |
 
-### Reconstruction Zone files removed
+**8 modules total.** The cubeface engine is copied as a stable black box — do not refactor its internals.
 
-| File | Lines | Reason |
-|---|---|---|
-| `reconstruction_gui/tabs/gaps_tab.py` | 437 | Coverage tab removed |
-| `prep360/core/gap_detector.py` | 843 | Coverage backend removed |
-| `prep360/core/bridge_extractor.py` | 563 | Coverage backend removed |
+### 1.3 SystemExit Audit
 
----
+F2C modules use `raise SystemExit(...)` for CLI error handling. In a GUI context, SystemExit kills the application. After copying, replace every `raise SystemExit(...)` with `raise ValueError(...)` or `raise RuntimeError(...)`.
 
-## Phase 1: Foundation — Core Engine Import
-
-**Goal:** Get all F2C library modules into `prep360/core/` with passing imports and tests. No GUI changes yet.
-
-### Step 1.1: Copy the cubeface engine
-- [ ] Copy `AM_ImageAndMask_to_cubemap_v4.py` → `prep360/core/cubeface_engine.py`
-- [ ] The file is a stable, self-contained script. Do NOT refactor internals.
-- [ ] Verify it has no imports from `gui/` — it should be standalone (numpy, cv2, scipy, argparse, pathlib)
-- [ ] Add `cubeface_engine` to `prep360/core/__init__.py` lazy imports if needed
-- [ ] Verify: `python -c "from prep360.core.cubeface_engine import compute_rays, compute_interpolation_function"`
-
-### Step 1.2: Copy support modules (no inter-dependency)
-These modules depend only on stdlib + numpy, not on each other or the engine:
-- [ ] `gui/processing_stamp.py` → `prep360/core/processing_stamp.py` (hashlib, json, pathlib only)
-- [ ] `gui/scene_manifest.py` → `prep360/core/scene_manifest.py` (json, dataclasses, pathlib only)
-- [ ] Verify: `python -c "from prep360.core.processing_stamp import compute_stamp_digest; from prep360.core.scene_manifest import RoutingDecision"`
-
-### Step 1.3: Copy modules that depend on cubeface_engine
-These import from `AM_ImageAndMask_to_cubemap_v4` — update to `prep360.core.cubeface_engine`:
-- [ ] `gui/fourier_corrections.py` → `prep360/core/fourier_corrections.py`
-  - Update: no engine imports (only hashlib, xml, numpy) — verify
-- [ ] `gui/solid_angle.py` → `prep360/core/solid_angle.py`
-  - Update: `from AM_ImageAndMask_to_cubemap_v4 import ...` → `from prep360.core.cubeface_engine import ...`
-- [ ] `gui/corrected_rays.py` → `prep360/core/corrected_rays.py`
-  - Update: `from gui.fourier_corrections import ...` → `from prep360.core.fourier_corrections import ...`
-  - Update: `from AM_ImageAndMask_to_cubemap_v4 import ...` → `from prep360.core.cubeface_engine import ...`
-- [ ] Verify: `python -c "from prep360.core.corrected_rays import compute_rays_with_corrections"`
-
-### Step 1.4: Copy orchestration modules
-These import from the support modules above:
-- [ ] `gui/adaptive_undistort.py` → `prep360/core/adaptive_undistort.py`
-  - Update: `from AM_ImageAndMask_to_cubemap_v4 import ...` → `from prep360.core.cubeface_engine import ...`
-  - Update: `from gui.corrected_rays import ...` → `from prep360.core.corrected_rays import ...`
-- [ ] `gui/cubeface_processing.py` → `prep360/core/cubeface_processing.py`
-  - Update: `from AM_ImageAndMask_to_cubemap_v4 import ...` → `from prep360.core.cubeface_engine import ...`
-  - Update: `from gui.fourier_corrections import ...` → `from prep360.core.fourier_corrections import ...`
-  - Update: `from gui.corrected_rays import ...` → `from prep360.core.corrected_rays import ...`
-  - Update: `from gui.processing_stamp import ...` → `from prep360.core.processing_stamp import ...`
-- [ ] `gui/erp_reframe.py` → `prep360/core/erp_reframe.py`
-  - No engine imports — pure numpy + cv2. Verify and copy.
-- [ ] `gui/routing.py` → `prep360/core/conversion_routing.py`
-  - Update: `from gui.fourier_corrections import ...` → `from prep360.core.fourier_corrections import ...`
-  - Update: `from gui.adaptive_undistort import ...` → `from prep360.core.adaptive_undistort import ...`
-  - Update: `from gui.scene_manifest import ...` → `from prep360.core.scene_manifest import ...`
-- [ ] Verify all: `python -c "from prep360.core.cubeface_processing import process_cubeface_sensor; from prep360.core.adaptive_undistort import process_sensor_adaptive; from prep360.core.erp_reframe import process_equirect_sensor; from prep360.core.conversion_routing import get_routing"`
-
-### Step 1.5: Copy discovery & mapping modules
-- [ ] `gui/sensor_discovery.py` → `prep360/core/sensor_discovery.py`
-  - Update: `from gui.fourier_corrections import ...` → `from prep360.core.fourier_corrections import ...`
-- [ ] `gui/mapping_resolver.py` → `prep360/core/mapping_resolver.py`
-  - Check: imports `metashape_cameras_to_colmap.parse_lens_camera_map()` — this will need updating after the exporter is copied (Step 1.6)
-  - Temporary: comment out or stub the cross-reference until Step 1.6
-- [ ] Verify: `python -c "from prep360.core.sensor_discovery import discover_sensors"`
-
-### Step 1.6: Copy the COLMAP exporter
-- [ ] Copy `metashape_cameras_to_colmap.py` → `prep360/core/colmap_exporter.py`
-- [ ] Update: `from gui.erp_reframe import register_erp_face_entries` → `from prep360.core.erp_reframe import register_erp_face_entries`
-- [ ] Resolve mapping_resolver cross-reference from Step 1.5
-- [ ] Verify: `python -c "from prep360.core.colmap_exporter import parse_metashape_cameras_xml, write_colmap_training_scene"`
-
-### Step 1.7: Copy and adapt tests
-- [ ] Copy `tests/` directory from F2C to `tests/` in reconstruction-zone
-  - Merge fixtures into existing `tests/fixtures/` if any
-  - Update all import paths (`from gui.X import ...` → `from prep360.core.X import ...`)
-  - Update `from AM_ImageAndMask_to_cubemap_v4 import ...` → `from prep360.core.cubeface_engine import ...`
-  - Rename test files per disposition table above
-- [ ] Run: `python -m pytest tests/test_cubeface_processing.py tests/test_conversion_routing.py tests/test_erp_reframe.py tests/test_sensor_discovery.py tests/test_fourier_corrections.py -v`
-- [ ] Fix any import or path failures
-
-### Step 1.8: Dependency check
-- [ ] Verify scipy is already in reconstruction-zone's dependency list (needed by adaptive_undistort for KDTree)
-  - If not, document it as a new required dependency
-- [ ] No new required dependencies beyond numpy, opencv-python, scipy
-- [ ] Optional: colour-science (for chart correction in Adjust tab — already optional there)
-
-**Phase 1 verification:** All 12 library modules importable from `prep360.core.*`, all copied tests pass, no GUI changes.
-
----
-
-## Phase 2: Extract Tab — Cubeface & Adaptive Conversion
-
-**Goal:** Extend the Extract tab's "360 Processing" section to support Metashape-calibrated fisheye conversion alongside the existing Osmo 360 workflow.
-
-### Step 2.1: Understand the existing fisheye section structure
-
-Current "360 Processing" section in `source_tab.py` (line 2898):
-```
-CollapsibleSection "360 Processing" (core=True)
-  ├─ CollapsibleSection "Split Lenses" (demux .osv → front/back)
-  └─ CollapsibleSection "Reframing" (pinhole extraction)
-       ├─ Video: .osv/.360/.insv file input
-       ├─ Frames: existing ERP frames folder
-       ├─ Masks: masks for ERP or fisheye frames
-       ├─ Output: perspective output directory
-       ├─ CollapsibleSection "Custom Calibration" (JSON override)
-       ├─ Preset dropdown (4 Osmo 360 presets)
-       └─ Reframe button
+```bash
+grep -n "SystemExit" prep360/core/cubeface_engine.py prep360/core/cubeface_processing.py
 ```
 
-### Step 2.2: Add Metashape calibration input to Reframing section
-- [ ] Add a new input row after "Custom Calibration": **Metashape XML** file browser
-  - Label: "Metashape Cal:"
-  - Placeholder: "Metashape sensor calibration .xml (optional)..."
-  - Browse button filters for `.xml`
-  - Store as `app.fisheye_metashape_cal_entry`
-- [ ] When a Metashape XML is loaded:
-  - Parse with `sensor_discovery.classify_sensor_element()` to detect projection type
-  - Display detected projection type and FOV next to the input (info label)
-  - The Metashape calibration takes precedence over the JSON custom calibration and the built-in Osmo 360 defaults
-- [ ] Add tooltip explaining when to use Metashape XML vs JSON calibration
+### 1.4 Dependency Check: scipy
 
-### Step 2.3: Add conversion mode selector
-- [ ] Add a segmented button or radio group below the calibration inputs:
-  - **Dual-Fisheye Reframe** (existing behavior — presets, dual lens pairs)
-  - **Cubeface Conversion** (new — Metashape-calibrated → 5 pinhole faces)
-  - **Adaptive Pinhole** (new — Metashape-calibrated → single tighter pinhole)
-  - **ERP Reframe** (existing behavior, but now also supports F2C's 6-view cubemap and 16-view reframe modes)
-- [ ] Mode selection shows/hides relevant controls:
-  - Dual-Fisheye Reframe: preset dropdown, OSV input (existing UI)
-  - Cubeface Conversion: face width input, output format dropdown, layout radio (Station/Rig)
-  - Adaptive Pinhole: theta-max threshold, stretch threshold, output width budget
-  - ERP Reframe: split mode radio (cubemap 6-view / reframe 16-view / existing prep360 presets), split width input
-- [ ] Default mode: Dual-Fisheye Reframe (preserves current behavior)
+The cubeface engine uses `scipy.spatial.KDTree` for RBF remapping:
 
-### Step 2.4: Add Cubeface Conversion mode controls
-- [ ] Face width input (0 = auto-calculate from lens FOV)
-  - Default: 0 (auto)
-  - Tooltip: "Output resolution per cubeface. 0 = auto-calculate from calibration FOV."
-- [ ] Output format dropdown: PNG / TIFF / JPEG
-  - Default: PNG (masks always PNG regardless)
-- [ ] Layout radio: Station (per-image subdirs) / Rig (per-face subdirs)
-  - Default: Station
-  - Tooltip explaining when each is appropriate
-- [ ] Lens label input (optional, for multi-lens datasets)
-- [ ] Force reprocess checkbox
-- [ ] Lens-only mask input (single mask applied to all images)
-
-### Step 2.5: Add Adaptive Pinhole mode controls
-- [ ] Theta-max threshold slider (30°–80°, default 55°)
-  - Tooltip: "Maximum half-angle before switching to cubemap split. Higher = more distortion tolerance."
-- [ ] Stretch threshold slider (1.5–5.0, default 3.0)
-  - Tooltip: "Maximum edge stretch factor. Projection-aware; accounts for lens model."
-- [ ] Output width budget input (2000–8000, default 6000)
-  - Tooltip: "Maximum output image dimension in pixels. Memory safety limit."
-- [ ] Routing decision display: after loading calibration + mask, show the computed routing:
-  - "Routing: SINGLE_PINHOLE (θ_max=48°, f=1240px, w_out=3600px)" or
-  - "Routing: CUBEMAP_SPLIT (θ_max=72° exceeds 55° threshold)"
-
-### Step 2.6: Add ERP Reframe mode enhancements
-- [ ] Split mode radio: "Cubemap (6 views)" / "Reframe (16 views)" / "prep360 presets"
-  - Cubemap and Reframe modes use `erp_reframe.process_equirect_sensor()`
-  - prep360 presets mode uses existing `prep360.core.reframer` (current behavior)
-- [ ] Split width input (applies to Cubemap/Reframe modes)
-  - Default: auto-calculated from `sensor_discovery.recommended_equirect_width()`
-
-### Step 2.7: Wire up conversion workers
-- [ ] **Cubeface worker**: Thread that calls `cubeface_processing.process_cubeface_sensor()`
-  - Input: Metashape XML path, image dirs, mask dirs, face width, format, layout, force flag
-  - Progress: callback → `app.log()` + progress bar
-  - Output: cubeface directory tree
-  - On completion: auto-populate output path, log summary
-- [ ] **Adaptive worker**: Thread that calls `adaptive_undistort.process_sensor_adaptive()`
-  - Input: calibration dict, image dir, mask dir, threshold overrides
-  - Progress: callback → `app.log()`
-  - Output: single-pinhole directory
-- [ ] **ERP worker**: Thread that calls `erp_reframe.process_equirect_sensor()`
-  - Input: image dirs, mask dirs, split mode, split width
-  - Progress: callback → `app.log()`
-  - Output: view directory tree
-- [ ] All workers follow existing source_tab threading pattern:
-  - Snapshot settings before thread start
-  - `app.after(0, ...)` for UI updates
-  - Cancellation via `app.cancel_flag`
-  - Activity recording on completion
-
-### Step 2.8: Preserve backward compatibility
-- [ ] Existing Dual-Fisheye Reframe workflow must work identically to current behavior
-- [ ] Existing ERP reframe via prep360 presets must work identically
-- [ ] No changes to the existing `FisheyeReframer`, `FISHEYE_PRESETS`, or `DualFisheyeCalibration` code
-- [ ] New modes are purely additive
-
----
-
-## Phase 3: Export Tab — Metashape→COLMAP Workflow
-
-**Goal:** Build a new Export tab (replacing Coverage) that packages a Metashape alignment as a COLMAP training scene.
-
-### Step 3.1: Create the Export tab file
-- [ ] Create `reconstruction_gui/tabs/export_tab.py`
-- [ ] Follow existing tab patterns:
-  - `def build_export_tab(app, parent):` entry point
-  - Left-column scrollable settings, right-column status/preview
-  - `Section` and `CollapsibleSection` from `widgets.py`
-  - All widget refs stored on `app` with `export_` prefix
-  - Preferences persistence via `app._prefs`
-
-### Step 3.2: Input Section
-- [ ] **cameras.xml** file browser
-  - Label: "Cameras XML:"
-  - On load: trigger sensor discovery (Step 3.3)
-- [ ] **pointcloud.ply** file browser (optional — needed for 3D points in COLMAP output)
-  - Label: "Point Cloud:"
-- [ ] **Output directory** browser
-  - Label: "Output:"
-  - Auto-suggest: `{cameras_xml_parent}/colmap_export/`
-
-### Step 3.3: Sensor Discovery Section
-- [ ] Triggered automatically when cameras.xml is loaded
-- [ ] Calls `sensor_discovery.discover_sensors(xml_path)`
-- [ ] Displays discovered sensors as **sensor cards** (one per unique sensor):
-  - Each card shows:
-    - Sensor label (from Metashape)
-    - Projection type badge: `equisolid` / `equidistant` / `frame` / `equirectangular`
-    - Resolution: `{width}×{height}`
-    - Focal length and distortion summary
-    - Camera count: "N aligned cameras"
-    - Fourier corrections indicator (if present)
-  - Each card has:
-    - Image directory browser (required)
-    - Mask directory browser (optional)
-    - Per-sensor routing display: "→ Cubemap (5 faces)" or "→ Single Pinhole" or "→ Passthrough" or "→ ERP Split (16 views)"
-    - Face width / output width override (0 = auto)
-- [ ] Sensor cards are dynamically generated — number and content depend on the XML
-
-### Step 3.4: Lens Mapping Section
-- [ ] **Check Mapping** button
-  - Calls `mapping_resolver.resolve_mapping(xml_data, lens_jobs)`
-  - Displays structured diagnostics:
-    - INFO items (green): confirmations
-    - WARNING items (amber): potential issues
-    - BLOCKER items (red): must fix before export
-  - If heuristic mapping found: "Use Proposed Map" button
-- [ ] Manual mapping override text field
-  - Format: `lens1=1-50 lens2=51-100`
-  - Validated on change via `mapping_resolver.validate_manual_map()`
-- [ ] Only visible when multiple equisolid/equidistant sensors share overlapping image directories
-
-### Step 3.5: Export Settings Section (collapsible)
-- [ ] Scene normalization checkbox (recenter + rescale camera poses)
-- [ ] Keep processing files checkbox (retain intermediate cubefaces/remaps after export)
-- [ ] Output format for converted images: PNG / TIFF / JPEG
-- [ ] Force reprocess checkbox (ignore processing stamps)
-
-### Step 3.6: Export Actions & Progress
-- [ ] **Export** button (large, primary style)
-  - Validates all inputs (sensors have image directories, no BLOCKER diagnostics)
-  - Snapshots settings
-  - Spawns export worker thread
-- [ ] **Cancel** button (appears during export)
-- [ ] Progress console (real-time log with PROGRESS line parsing)
-- [ ] Status section showing:
-  - Export phase: "Discovering sensors..." → "Converting sensor 1/3..." → "Writing COLMAP scene..." → "Complete"
-  - Output summary: # cameras, # images, # points, all-PINHOLE confirmation
-
-### Step 3.7: Export worker implementation
-- [ ] Worker thread orchestrates the full pipeline:
-  1. Parse cameras.xml via `colmap_exporter.parse_metashape_cameras_xml()`
-  2. For each sensor, based on routing:
-     - **Equisolid/equidistant** → `cubeface_processing.process_cubeface_sensor()` or `adaptive_undistort.process_sensor_adaptive()`
-     - **Frame** → passthrough (optional undistortion via `adaptive_undistort`)
-     - **Equirectangular** → `erp_reframe.process_equirect_sensor()`
-  3. Compose poses: `colmap_exporter.face_world_to_camera_pose()` for each virtual pinhole
-  4. Write COLMAP scene: `colmap_exporter.write_colmap_training_scene()` or `write_colmap_mixed_scene()`
-  5. Generate reports: conversion_report.txt, validation_report.txt, run_summary.txt
-- [ ] Progress callbacks from each sub-step → console
-- [ ] On completion: log summary, record activity, optionally auto-fill Align tab inputs
-
-### Step 3.8: Right-side status panel
-- [ ] Sensor overview: compact visualization of discovered sensors + their routing
-- [ ] Export status: phase indicator, timing, completion badge
-- [ ] Output summary: camera count, image count, all-PINHOLE badge
-- [ ] Model path display (clickable to open in file explorer)
-
----
-
-## Phase 4: Coverage Tab Removal
-
-**Goal:** Cleanly remove the Coverage tab and its supporting modules.
-
-### Step 4.1: Remove tab registration
-- [ ] In `reconstruction_zone.py`: remove `self.tabs.add("Coverage")`
-- [ ] In `reconstruction_zone.py`: remove `build_gaps_tab(self, self.tabs.tab("Coverage"))`
-- [ ] In `reconstruction_zone.py`: remove `from tabs.gaps_tab import build_gaps_tab`
-
-### Step 4.2: Add Export tab registration
-- [ ] In `reconstruction_zone.py`: add `self.tabs.add("Export")` in Coverage's former position
-- [ ] In `reconstruction_zone.py`: add `build_export_tab(self, self.tabs.tab("Export"))`
-- [ ] In `reconstruction_zone.py`: add `from tabs.export_tab import build_export_tab`
-
-### Step 4.3: Remove Coverage files
-- [ ] Delete `reconstruction_gui/tabs/gaps_tab.py` (437 lines)
-- [ ] Delete `prep360/core/gap_detector.py` (843 lines)
-- [ ] Delete `prep360/core/bridge_extractor.py` (563 lines)
-- [ ] Remove any gap_detector / bridge_extractor imports from `prep360/core/__init__.py`
-- [ ] Remove any gap_detector / bridge_extractor references from `prep360/cli.py` if present
-
-### Step 4.4: Clean up cross-references
-- [ ] Search for `"Coverage"` string references across the codebase
-- [ ] Search for `gap_detector`, `bridge_extractor`, `build_gaps_tab` references
-- [ ] Search for `gaps_tab` imports
-- [ ] Remove or update any documentation references (CLAUDE.md architecture diagram, docstrings)
-
----
-
-## Phase 5: Cross-Tab Integration
-
-**Goal:** Wire up handoffs between the new/expanded capabilities and existing tabs.
-
-### Step 5.1: Export → Align handoff
-- [ ] Add "Send to Align" button on Export tab (appears after successful export)
-  - Auto-populates Align tab's image directory with export output's `images/` path
-  - Auto-populates Align tab's mask directory with export output's `masks/` path
-  - Switches to Align tab
-- [ ] This enables the workflow: "I exported from Metashape, now I want to refine with additional COLMAP BA"
-
-### Step 5.2: Extract → Export handoff
-- [ ] After cubeface/adaptive conversion in Extract, offer "Send to Export" if the user has a Metashape XML
-  - Pre-populates Export tab's sensor image directories with conversion output
-- [ ] This enables: "I converted my fisheye images, now I want to package the Metashape alignment as COLMAP"
-
-### Step 5.3: Extract → Mask handoff (existing, verify still works)
-- [ ] Cubeface output (5 pinhole faces per image) should be maskable in the Mask tab
-  - Verify the Mask tab handles the Station layout directory structure
-  - Verify mask naming conventions are compatible
-
-### Step 5.4: Preference persistence for new controls
-- [ ] Add all new `export_*` prefs keys to `_save_prefs()` / `_restore_prefs()`
-- [ ] Add all new `fisheye_metashape_*`, conversion mode, cubeface, adaptive prefs
-- [ ] Verify prefs roundtrip (save → restart → restore)
-
-### Step 5.5: Update CLAUDE.md architecture diagram
-- [ ] Update the architecture tree in project CLAUDE.md:
-  - Add new files under `prep360/core/`
-  - Update tab list (Coverage → Export)
-  - Add F2C-origin modules to the key abstractions section
-  - Update masking pipeline data flow if needed
-
----
-
-## Phase 6: Cleanup & Validation
-
-### Step 6.1: Import audit
-- [ ] `grep -r "from gui\." prep360/core/` — must return zero hits (no F2C gui imports surviving)
-- [ ] `grep -r "AM_ImageAndMask_to_cubemap_v4" prep360/core/` — must return zero hits (all updated to cubeface_engine)
-- [ ] `grep -r "gap_detector\|bridge_extractor\|gaps_tab" reconstruction_gui/` — must return zero hits
-
-### Step 6.2: Test suite
-- [ ] All imported F2C tests pass with updated imports
-- [ ] Existing reconstruction-zone tests still pass (if any)
-- [ ] Manual smoke test: launch GUI, verify all 7 tabs load without errors
-- [ ] Manual smoke test: Extract tab → each conversion mode → verify controls show/hide correctly
-- [ ] Manual smoke test: Export tab → load a cameras.xml → verify sensor cards populate
-
-### Step 6.3: Functional validation
-- [ ] End-to-end: Load Metashape XML in Extract → Cubeface conversion → verify output images
-- [ ] End-to-end: Load cameras.xml in Export → export COLMAP scene → verify cameras.txt/images.txt
-- [ ] End-to-end: Export → Send to Align → verify Align tab populates correctly
-- [ ] Regression: Existing Osmo 360 dual-fisheye workflow in Extract → verify unchanged behavior
-- [ ] Regression: Existing ERP reframe workflow in Extract → verify unchanged behavior
-
-### Step 6.4: Documentation update
-- [ ] Update `reconstruction_gui/docs/` if present (per-tab guides, QUICKSTART)
-- [ ] Update project CLAUDE.md (architecture, commands, key abstractions)
-- [ ] Update `docs/` (project-level docs)
-
----
-
-## Dependency Map
-
-### F2C internal dependency graph (→ = imports from)
-
-```
-cubeface_engine (standalone — numpy, cv2, scipy, argparse)
-  ↑
-  ├── solid_angle → cubeface_engine
-  ├── corrected_rays → cubeface_engine, fourier_corrections
-  ├── adaptive_undistort → cubeface_engine, corrected_rays
-  └── cubeface_processing → cubeface_engine, fourier_corrections, corrected_rays, processing_stamp
-
-fourier_corrections (standalone — hashlib, xml, numpy)
-  ↑
-  ├── corrected_rays → fourier_corrections
-  ├── sensor_discovery → fourier_corrections
-  ├── routing → fourier_corrections
-  └── cubeface_processing → fourier_corrections
-
-scene_manifest (standalone — json, dataclasses)
-  ↑
-  └── routing → scene_manifest
-
-processing_stamp (standalone — hashlib, json, pathlib)
-  ↑
-  └── cubeface_processing → processing_stamp
-
-erp_reframe (standalone — numpy, cv2)
-
-routing → adaptive_undistort, fourier_corrections, scene_manifest
-
-mapping_resolver → colmap_exporter (cross-reference for validation)
-
-colmap_exporter → erp_reframe (optional registration)
+```bash
+python -c "from scipy.spatial import KDTree; print('scipy OK')"
 ```
 
-### External dependencies
+If not installed, add to requirements. Only new external dependency.
 
-| Package | Required by | Already in RZ? |
-|---|---|---|
-| numpy | All modules | Yes |
-| opencv-python | cubeface_engine, adaptive_undistort, erp_reframe, cubeface_processing | Yes |
-| scipy (KDTree) | adaptive_undistort, cubeface_engine (RBF) | Needs verification |
+### 1.5 prep360/core/__init__.py
 
----
+Do NOT add these modules to eager imports. They are imported lazily by the GUI code that needs them. The cubeface engine alone is 2,332 lines — importing it at package level would slow every `from prep360.core import ...`.
 
-## Risk Register
+### 1.6 Import Verification
 
-| Risk | Severity | Mitigation |
-|---|---|---|
-| **cubeface_engine is 2,332 lines of stable code** — refactoring could introduce regressions | High | Copy as-is, rename only. Do not refactor internals. Treat as a black-box engine. |
-| **colmap_exporter is 6,682 lines** — largest single module | Medium | Copy as-is initially. Refactoring is a future concern, not part of this integration. |
-| **Import path changes across 12+ modules** | Medium | Systematic find-replace with test verification at each step. Phase 1 is entirely about this. |
-| **Extract tab source_tab.py is already 3,773 lines** — adding conversion modes increases complexity | Medium | New controls are in collapsible sub-sections. Mode selector hides irrelevant controls. Consider extracting the 360° section to its own module if it exceeds ~500 new lines. |
-| **Mixed-sensor COLMAP export is complex (6,682 lines of exporter)** | Medium | Phase 3 wraps it as a worker — the exporter's internal complexity is encapsulated. |
-| **Processing stamps / cache invalidation** assumes specific directory layouts | Low | Stamps are path-relative; verify they work under RZ's output directory conventions. |
-| **mapping_resolver has a circular-ish dependency on colmap_exporter** | Low | Only for validation of manual mapping specs. Can be stubbed during Phase 1 and wired in Phase 3. |
-| **F2C tests depend on fixture files** | Low | Copy fixtures alongside tests. Verify paths in test assertions. |
+After copying all 8 modules:
 
----
+```bash
+python -c "
+from prep360.core.cubeface_engine import compute_rays
+from prep360.core.fourier_corrections import FourierCorrections
+from prep360.core.corrected_rays import compute_rays_with_corrections
+from prep360.core.solid_angle import compute_optimal_width
+from prep360.core.processing_stamp import compute_stamp_digest
+from prep360.core.scene_manifest import RoutingDecision
+from prep360.core.cubeface_processing import process_cubeface_sensor
+from prep360.core.sensor_discovery import discover_sensors
+print('All imports OK')
+"
+```
 
-## Open Questions
+### 1.7 Grep Audit
 
-1. **scipy dependency**: Is scipy already installed in the RZ environment? The cubeface engine and adaptive undistort need `scipy.spatial.KDTree`. If not, it becomes a new required dependency.
+```bash
+# No stale F2C gui imports
+grep -rn "from gui\." prep360/core/cubeface_engine.py prep360/core/fourier_corrections.py prep360/core/corrected_rays.py prep360/core/solid_angle.py prep360/core/processing_stamp.py prep360/core/scene_manifest.py prep360/core/cubeface_processing.py prep360/core/sensor_discovery.py
+# Should return zero results
 
-2. **Adjust tab interaction**: Should cubeface/adaptive conversion output go through the Adjust tab for color correction before Export? This would mean Extract → Adjust → Export as a workflow. Currently the plan treats them independently.
-
-3. **Naming — "Export" tab**: Is "Export" the right name? Alternatives: "Convert", "Scene", "Training", "Package". "Export" is clear but generic. "Convert" emphasizes the transformation. "Scene Export" is more specific but longer.
-
-4. **Gap detection — relocate or remove?**: The plan removes gap_detector entirely. If gap analysis is still valuable, it could move to the Align tab (analyze an alignment's coverage) or become a CLI-only tool. The bridge_extractor is tightly coupled to the Extract tab's video state and would be harder to relocate.
-
-5. **F2C's browser demo**: The Vite+Three.js interactive preview is not included in this plan. It could be valuable as a standalone validation tool but doesn't fit naturally in the CustomTkinter GUI.
-
-6. **cubeface_engine CLI**: The original script has argparse CLI support. Should `python -m prep360 cubeface ...` be added as a CLI subcommand in prep360, or is GUI-only sufficient?
-
-7. **F2C test fixtures**: Some test fixtures include real Metashape XML snippets and calibration data. Verify these don't contain sensitive project-specific data before committing to reconstruction-zone.
+# No old script name references
+grep -rn "AM_ImageAndMask_to_cubemap_v4" prep360/core/
+# Should return zero results
+```
 
 ---
 
-## Line Count Summary
+## Part 2: GUI — Fisheye Subsection
 
-### Added to prep360/core/
-| Module | Lines |
-|---|---|
-| cubeface_engine.py | 2,332 |
-| colmap_exporter.py | 6,682 |
-| cubeface_processing.py | 634 |
-| adaptive_undistort.py | 845 |
-| erp_reframe.py | 530 |
-| conversion_routing.py | 295 |
-| sensor_discovery.py | 390 |
-| mapping_resolver.py | 1,656 |
-| fourier_corrections.py | 344 |
-| corrected_rays.py | 150 |
-| scene_manifest.py | 295 |
-| processing_stamp.py | 143 |
-| solid_angle.py | 133 |
-| **Subtotal** | **~14,429** |
+### 2.1 Current Reframing Structure (release/v1, source_tab.py:2291)
 
-### Added to reconstruction_gui/tabs/
-| Module | Lines (estimated) |
-|---|---|
-| export_tab.py (new) | ~800–1,200 |
-| source_tab.py (modifications) | ~300–500 added |
-| **Subtotal** | **~1,100–1,700** |
+```
+CollapsibleSection "Reframing"
+  subtitle="extract pinhole perspectives from a 360 file or existing ERP frames"
+  ├─ Video:   .osv/.360/.insv file
+  ├─ Frames:  existing ERP frames folder
+  ├─ Masks:   masks folder
+  ├─ Output:  perspective output dir
+  ├─ CollapsibleSection "Custom Calibration"
+  ├─ Preset dropdown (4 Osmo 360 presets)
+  ├─ Preset description, Crop, Quality, Interval
+  ├─ Station dirs checkbox
+  └─ "Extract & Reframe" button
+```
 
-### Removed
-| Module | Lines |
-|---|---|
-| gaps_tab.py | 437 |
-| gap_detector.py | 843 |
-| bridge_extractor.py | 563 |
-| **Subtotal** | **~1,843** |
+Everything lives in one flat section. Dual-fisheye vs ERP is auto-detected at runtime by filename patterns.
 
-### Net change
-- **prep360/core/**: +14,429 lines (library modules, copied not written)
-- **reconstruction_gui/**: +~600–900 net (new Export tab + Extract mods – Coverage removal)
-- **tests/**: +~3,500 lines (copied F2C tests)
+### 2.2 Target Structure
+
+The Fisheye subsection contains two tabs: **Metashape** and **Standard**.
+
+```
+CollapsibleSection "Reframing"
+  subtitle="convert 360° or fisheye to pinhole perspectives"
+  │
+  ├─ CollapsibleSection "Fisheye"
+  │    subtitle="dual-fisheye → pinhole perspectives"
+  │    │
+  │    ├─ Tab: "Metashape" | "Standard"
+  │    │
+  │    ├─ ── Metashape tab ──────────────────────────────────────────
+  │    │    Calibration-aware cubeface conversion using cameras.xml.
+  │    │    Produces 5 cubefaces per image via RBF-interpolated remapping.
+  │    │    │
+  │    │    ├─ Input:    cameras.xml file picker      (app.fisheye_xml_entry)
+  │    │    ├─ Output:   pinhole output directory     (app.fisheye_output_entry)
+  │    │    ├─ Images:   fisheye images directory     (app.fisheye_images_entry)
+  │    │    ├─ Masks:    masks directory (optional)   (app.fisheye_masks_entry)
+  │    │    │
+  │    │    ├─ Face width:  entry (default 0 = auto)  (app.fisheye_face_width_var)
+  │    │    │   Format:     radio (png/tiff/jpg)      (app.fisheye_format_var)
+  │    │    ├─ Force reprocess checkbox               (app.fisheye_force_var)
+  │    │    ├─ Station / Rig radio                    (app.fisheye_layout_var)
+  │    │    │
+  │    │    └─ "Convert to Cubefaces" button          (app.fisheye_convert_btn)
+  │    │
+  │    └─ ── Standard tab ──────────────────────────────────────────
+  │         Preset-driven perspective reframing using cv2.fisheye.
+  │         No Metashape XML required — uses built-in equidistant
+  │         calibration. No video input.
+  │         │
+  │         ├─ Images:  fisheye frames directory         (app.fisheye_std_images_entry)
+  │         ├─ Masks:   masks directory (optional)       (app.fisheye_std_masks_entry)
+  │         ├─ Output:  perspective output directory     (app.fisheye_std_output_entry)
+  │         │
+  │         ├─ Preset:  dropdown                         (app.fisheye_std_preset_var)
+  │         │    Default: "Pinhole 90° — 16 views (8/lens)"
+  │         ├─ Crop / Quality                            (app.fisheye_std_crop_var, etc.)
+  │         ├─ Station / Rig radio                       (app.fisheye_std_layout_var)
+  │         │
+  │         └─ "Reframe" button                          (app.fisheye_std_reframe_btn)
+  │
+  └─ CollapsibleSection "Equirectangular / Spherical"
+       subtitle="split 360° panoramas into perspectives"
+       (contains existing ERP reframe controls, moved here from the
+        parent Reframing section — no new functionality)
+```
+
+**Metashape tab:** Driven by `cameras.xml`. Uses the F2C cubeface engine (`process_cubeface_sensor`) which produces 5 cubeface images per fisheye image (+Z, ±X, ±Y) via Metashape-calibrated RBF remapping. Supports equisolid, equidistant, and pinhole projection models. Supports Fourier corrections. Face width auto-calculated from calibration.
+
+**Standard tab:** Uses the existing `FisheyeReframer` engine (`prep360/core/fisheye_reframer.py`) with `cv2.fisheye.initUndistortRectifyMap`. No Metashape XML required — uses built-in Osmo 360 equidistant calibration. Produces 8 views per lens (16 total for dual-fisheye) at 90° FOV using a ring layout. Takes fisheye image directories as input (no video input, no interval, no custom calibration). Preset dropdown for future preset additions. Station/Rig output layout choice.
+
+### 2.3 The 8-View Preset
+
+A new preset `"osv-pinhole-f90-dual-16"` is added to `FISHEYE_PRESETS` in `prep360/core/fisheye_reframer.py`. It uses the ring layout from the lichtfeld-360-plugin's `FISHEYE_PINHOLE_PRESET`:
+
+```python
+# 8 views per lens at 90° FOV — ring layout for 3DGS training
+# Optimized geometry from fisheye-perspective-planner.html
+_PINHOLE_VIEWS = [
+    ("ctr_hi",  0,      -30),    # top center
+    ("ring_l",  -55,    0),      # left
+    ("ring_ll", -35.53, 50),     # lower-left
+    ("ring_lr", 35.53,  50),     # lower-right
+    ("ring_r",  55,     0),      # right
+    ("ring_ur", 35.53,  -50),    # upper-right
+    ("ring_ul", -35.53, -50),    # upper-left
+    ("ctr_lo",  0,      30),     # bottom center
+]
+```
+
+Default crop size: 1920 (vs 1600 for existing presets). The view geometry was designed for optimal 3DGS training coverage — a central ring of 6 views at the horizon with upper and lower center views.
+
+This preset uses the same `FisheyeViewConfig` / `FisheyeReframer` / `batch_extract` API as the existing 4 presets. No engine changes needed — just a new entry in the `FISHEYE_PRESETS` dict.
+
+### 2.4 Widget References
+
+All existing fisheye widget references are contained within `source_tab.py` — no external files reference them. Confirmed via grep. The existing widget names (`app.fisheye_osv_entry`, `app.fisheye_reframe_frames_entry`, etc.) are preserved as-is in the Standard tab. New Metashape tab widgets use new names (`app.fisheye_xml_entry`, etc.).
+
+### 2.5 Preference Keys
+
+New keys for the Metashape tab:
+
+```
+fisheye_active_tab            # "metashape" | "standard"
+fisheye_xml_path              # str — cameras.xml location
+fisheye_cubeface_output_dir   # str — pinhole output directory
+fisheye_images_dir            # str — fisheye images directory
+fisheye_masks_dir             # str — masks directory
+fisheye_face_width            # str ("0" = auto, computed from calibration)
+fisheye_format                # "png" | "tiff" | "jpg"
+fisheye_layout                # "station" | "rig"
+fisheye_force_reprocess       # bool
+```
+
+Existing Standard tab preference keys are unchanged (already persisted by the current code).
+
+---
+
+## Part 3: Worker Function
+
+### 3.1 Cubeface Conversion Worker
+
+The `process_cubeface_sensor` API accepts a `calibration_xml` path. This is the `cameras.xml` — `get_calibration_with_corrections()` in `fourier_corrections.py` parses the sensor calibration from it.
+
+```python
+def _run_cubeface_convert(app):
+    """Validate inputs and launch cubeface conversion thread."""
+    xml_path = app.fisheye_xml_entry.get().strip()
+    output_dir = app.fisheye_output_entry.get().strip()
+    images_dir = app.fisheye_images_entry.get().strip()
+    masks_dir = app.fisheye_masks_entry.get().strip()
+
+    # Validation
+    if not xml_path or not Path(xml_path).is_file():
+        app.log("Error: Select a cameras.xml file")
+        return
+    if not output_dir:
+        app.log("Error: Select a pinhole output directory")
+        return
+    if not images_dir or not Path(images_dir).is_dir():
+        app.log("Error: Select a fisheye images directory")
+        return
+    if masks_dir and not Path(masks_dir).is_dir():
+        app.log(f"Error: Masks directory not found: {masks_dir}")
+        return
+
+    face_width = int(app.fisheye_face_width_var.get() or "0")
+    output_format = app.fisheye_format_var.get()
+    force = app.fisheye_force_var.get()
+
+    app._start_operation(app.fisheye_convert_btn, app.fisheye_stop_btn)
+    threading.Thread(
+        target=_cubeface_worker,
+        args=(app, xml_path, images_dir, masks_dir or None,
+              output_dir, face_width, output_format, force),
+        daemon=True,
+    ).start()
+
+
+def _cubeface_worker(app, xml_path, images_dir, masks_dir,
+                     output_dir, face_width, output_format, force):
+    """Thread target: runs process_cubeface_sensor."""
+    try:
+        from prep360.core.cubeface_processing import process_cubeface_sensor
+
+        app.log(f"Converting fisheye → cubefaces")
+        app.log(f"  Input XML:  {xml_path}")
+        app.log(f"  Images:     {images_dir}")
+        if masks_dir:
+            app.log(f"  Masks:      {masks_dir}")
+        app.log(f"  Output:     {output_dir}")
+        app.log(f"  Face width: {face_width}, Format: {output_format}")
+
+        result = process_cubeface_sensor(
+            calibration_xml=Path(xml_path),
+            image_dirs=[Path(images_dir)],
+            output_dir=Path(output_dir),
+            face_width=face_width,
+            mask_dirs=[Path(masks_dir)] if masks_dir else None,
+            output_format=output_format,
+            force=force,
+            progress_callback=lambda msg: app.log(msg),
+        )
+
+        app.log(f"\nConversion complete")
+        app.log(f"  Processed: {result['processed_count']}")
+        app.log(f"  Skipped:   {result['skipped_count']}")
+        app.log(f"  Face width: {result['face_width']}")
+        app.log(f"  Output:    {result['output_dir']}")
+
+        app.record_activity(
+            operation="cubeface_convert",
+            input_path=images_dir,
+            output_path=output_dir,
+            details={
+                "processed": result["processed_count"],
+                "skipped": result["skipped_count"],
+                "face_width": result["face_width"],
+            },
+        )
+    except Exception as e:
+        import traceback
+        app.log(f"Cubeface conversion error: {e}")
+        app.log(traceback.format_exc())
+    finally:
+        app.after(0, lambda: app._stop_operation(
+            app.fisheye_convert_btn, app.fisheye_stop_btn))
+```
+
+### 3.2 Stop Button
+
+The Fisheye subsection gets its own stop button (`app.fisheye_stop_btn`), separate from the Split Lenses stop button. Both use `app.cancel_flag` for cancellation (the existing shared mechanism), but have independent button show/hide state.
+
+### 3.3 Threading Pattern
+
+Follows the existing source_tab pattern exactly:
+1. Validate inputs in main thread
+2. `app._start_operation(action_btn, stop_btn)` — disables action, shows stop
+3. `threading.Thread(target=worker, daemon=True).start()`
+4. Worker calls `app.log(msg)` for progress
+5. Worker checks `app.cancel_flag.is_set()` for cancellation
+6. `finally:` calls `app.after(0, lambda: app._stop_operation(...))`
+
+---
+
+## Part 4: Existing Controls — What Changes
+
+The Standard tab is a **simplified version** of the existing Reframing section, not a direct relocation. The following are dropped:
+- Video input (.osv/.360/.insv) and interval slider — Standard tab takes image directories, not video
+- Custom Calibration collapsible section — Standard uses built-in calibration only
+- Preset description multi-line label — unnecessary with a simpler preset list
+
+The following are kept:
+- Images/Masks/Output directory inputs (renamed from Frames/Masks/Output)
+- Preset dropdown (with the new 8-view preset as default, existing presets available)
+- Crop size and quality controls
+- Station/Rig output layout radio (replaces the Station dirs checkbox)
+- Action button (renamed from "Extract & Reframe" to "Reframe")
+
+The existing video-based extraction workflow (OSV → extract frames → reframe) remains in the Extract tab's main extraction sections above 360 Processing. It is not part of the Fisheye subsection.
+
+The Equirectangular/Spherical subsection is created as a collapsed placeholder with a subtitle, ready for future ERP-specific controls.
+
+---
+
+## Part 5: Implementation Steps
+
+```
+Step 1:  Copy cubeface_engine.py → prep360/core/cubeface_engine.py
+         Fix SystemExit → ValueError/RuntimeError
+         Verify: python -c "from prep360.core.cubeface_engine import compute_rays"
+
+Step 2:  Copy Layer 0 (processing_stamp.py, scene_manifest.py)
+         Verify imports
+
+Step 3:  Copy Layer 1 (fourier_corrections.py, solid_angle.py)
+         Fix solid_angle.py imports
+         Verify imports
+
+Step 4:  Copy Layer 2 (corrected_rays.py)
+         Fix imports
+         Verify import
+
+Step 5:  Copy cubeface_processing.py
+         Fix imports, SystemExit
+         Verify: python -c "from prep360.core.cubeface_processing import process_cubeface_sensor"
+
+Step 6:  Copy sensor_discovery.py
+         Fix imports
+         Verify: python -c "from prep360.core.sensor_discovery import discover_sensors"
+
+Step 7:  Run full import verification + grep audit (Section 1.6, 1.7)
+
+Step 8:  Add 8-view preset to prep360/core/fisheye_reframer.py
+         - Add _PINHOLE_VIEWS list and "osv-pinhole-f90-dual-16" preset to FISHEYE_PRESETS
+         - Verify: python -c "from prep360.core.fisheye_reframer import FISHEYE_PRESETS; print('osv-pinhole-f90-dual-16' in FISHEYE_PRESETS)"
+
+Step 9:  Restructure source_tab.py
+         - Add CollapsibleSection "Fisheye" inside Reframing
+         - Add tab strip: "Metashape" | "Standard"
+         - Metashape tab: build 4 input rows (Input/Output/Images/Masks)
+           + settings (face width, format, force, station/rig)
+           + "Convert to Cubefaces" button + stop button
+         - Standard tab: build simplified reframe UI
+           (Images, Masks, Output, Preset dropdown, Crop, Quality,
+            Station/Rig radio, "Reframe" button)
+           No video input, no interval, no custom calibration
+         - Add CollapsibleSection "Equirectangular / Spherical" (collapsed placeholder)
+         - Tab switching shows/hides the correct content frame
+
+Step 10: Wire cubeface worker
+         - _run_cubeface_convert (validation + thread launch)
+         - _cubeface_worker (calls process_cubeface_sensor)
+         - Stop button wired to app.cancel_flag
+
+Step 11: Add preference persistence
+         - Save/restore for all new fisheye_* pref keys
+         - fisheye_active_tab persists which tab was last selected
+         - Add to _save_prefs / _restore_prefs in source_tab
+
+Step 12: Smoke test
+         - Launch GUI — all tabs load without error
+         - Fisheye subsection: Metashape and Standard tabs switch correctly
+         - Standard tab: existing dual-fisheye reframe works (regression)
+         - Standard tab: new 8-view preset appears in dropdown and works
+         - Metashape tab: load cameras.xml + images dir + output → Convert
+         - ERP subsection: collapsed placeholder visible
+```
+
+---
+
+## Part 6: Test Plan
+
+### 6.1 Import Tests
+Run the verification battery from Section 1.6 after Step 7.
+
+### 6.2 Grep Audits
+Run the stale import checks from Section 1.7 after Step 7.
+
+### 6.3 GUI Smoke Tests
+1. Launch: `python reconstruction_gui/reconstruction_zone.py` — no import errors
+2. Extract tab → 360 Processing → Reframing → Fisheye subsection visible
+3. Fisheye: "Metashape" and "Standard" tabs visible, switching works
+4. Metashape tab: Input/Output/Images/Masks fields present with browse buttons
+5. Metashape tab: Face width, format, force reprocess, station/rig present
+6. Metashape tab: "Convert to Cubefaces" button present
+7. Standard tab: Images/Masks/Output fields, Preset dropdown, Crop/Quality, Station/Rig present
+8. Standard tab: default preset is "Pinhole 90° — 16 views (8/lens)"
+9. Standard tab: reframe produces 16 perspective crops (8 per lens) from fisheye frame pair
+10. ERP subsection: collapsed placeholder visible
+
+### 6.4 Functional Test (requires test data)
+- Provide `cameras.xml` + fisheye images directory
+- Set output directory
+- Click "Convert to Cubefaces"
+- Verify: 5 cubeface images produced per input image
+- Verify: masks converted if mask directory provided
+- Verify: processing stamp written
+- Verify: skip works on re-run (stamps match)
+- Verify: force reprocess overrides stamps
+
+---
+
+## Notes
+
+- The `cameras.xml` is a full Metashape alignment export. `cubeface_processing.process_cubeface_sensor()` accepts it via `calibration_xml` parameter — `get_calibration_with_corrections()` in `fourier_corrections.py` extracts the sensor calibration from within it.
+
+- Face width defaults to 0 (auto). The engine auto-calculates the optimal width from the lens calibration in the cameras.xml via `solid_angle.compute_optimal_width()`. The user can override with a specific pixel value if needed.
+
+- The Fisheye subsection has two tabs: **Metashape** (calibration-driven cubeface conversion, 5 faces per image) and **Standard** (preset-driven perspective reframing, 8 views per lens). Both produce pinhole outputs from fisheye inputs, but via different engines and for different use cases. Metashape requires a cameras.xml and uses the F2C cubeface engine with RBF remapping. Standard uses the existing `FisheyeReframer` with `cv2.fisheye`, takes image directories directly (no video input), and uses the built-in equidistant calibration.
+
+- The 8-view preset geometry comes from the lichtfeld-360-plugin (`core/fisheye_reframer.py`), which was itself ported from reconstruction-zone's `prep360/core/fisheye_reframer.py`. The view layout (`ctr_hi, ring_l, ring_ll, ring_lr, ring_r, ring_ur, ring_ul, ctr_lo`) was designed via `fisheye-perspective-planner.html` for optimal 3DGS training coverage. Default crop size is 1920 (vs 1600 for existing presets).
