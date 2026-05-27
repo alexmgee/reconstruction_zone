@@ -30,19 +30,6 @@ class ExtractionSettings:
     format: str = "jpg"
     start_sec: Optional[float] = None
     end_sec: Optional[float] = None
-    blur_filter: bool = False
-    blur_percentile: int = 80
-    sky_filter: bool = False
-    lut_enabled: bool = False
-    lut_path: str = ""
-    lut_strength: float = 1.0
-    shadow: int = 50
-    highlight: int = 50
-    sky_brightness: float = 0.85
-    sky_keypoints: int = 50
-    motion_enabled: bool = False
-    motion_sharpness: float = 50.0
-    motion_flow: float = 10.0
     sharpness_method: str = "laplacian"   # "none", "laplacian", "tenengrad"
     scene_detection: bool = True
 
@@ -58,19 +45,6 @@ class ExtractionSettings:
             format=data.get("format", "jpg"),
             start_sec=data.get("start_sec"),
             end_sec=data.get("end_sec"),
-            blur_filter=data.get("blur_filter", False),
-            blur_percentile=data.get("blur_percentile", 80),
-            sky_filter=data.get("sky_filter", False),
-            lut_enabled=data.get("lut_enabled", False),
-            lut_path=data.get("lut_path", ""),
-            lut_strength=data.get("lut_strength", 1.0),
-            shadow=data.get("shadow", 50),
-            highlight=data.get("highlight", 50),
-            sky_brightness=data.get("sky_brightness", 0.85),
-            sky_keypoints=data.get("sky_keypoints", 50),
-            motion_enabled=data.get("motion_enabled", False),
-            motion_sharpness=data.get("motion_sharpness", 50.0),
-            motion_flow=data.get("motion_flow", 10.0),
             sharpness_method=data.get("sharpness_method",
                                      # Backward compat: old queue items have sharpest_tier
                                      "laplacian" if data.get("sharpest_tier") else
@@ -91,14 +65,6 @@ class ExtractionSettings:
             parts.append(self.sharpness_method)
             if self.scene_detection:
                 parts.append("scene-aware")
-        if self.blur_filter:
-            parts.append(f"blur≤{self.blur_percentile}%")
-        if self.sky_filter:
-            parts.append("sky")
-        if self.lut_enabled:
-            parts.append("LUT")
-        if self.shadow != 50 or self.highlight != 50:
-            parts.append(f"sh{self.shadow}/hl{self.highlight}")
         return ", ".join(parts)
 
 
