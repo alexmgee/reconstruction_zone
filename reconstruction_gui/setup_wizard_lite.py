@@ -181,15 +181,46 @@ def check_network() -> HealthCheck:
         )
 
 
+def check_sam3_package() -> Optional[HealthCheck]:
+    """Check if the sam3 Python package is importable.
+
+    Only relevant when SAM3 weights are already downloaded — if weights
+    are missing the model section already flags it and the package check
+    would be redundant noise.
+    """
+    try:
+        weights_present = _CHECK_FNS["sam3"]()
+    except Exception:
+        weights_present = False
+
+    if not weights_present:
+        return None
+
+    import importlib.util
+    if importlib.util.find_spec("sam3") is not None:
+        return HealthCheck("SAM3 package", "SAM3 Python library", "pass", "Installed")
+
+    return HealthCheck(
+        "SAM3 package", "SAM3 Python library",
+        "warn",
+        "Weights present but package not installed — masking falls back to RF-DETR. "
+        "Fix: pip install git+https://github.com/facebookresearch/sam3.git",
+    )
+
+
 def run_all_health_checks() -> List[HealthCheck]:
     """Run all environment health checks."""
-    return [
+    checks = [
         check_cuda(),
         check_ffmpeg(),
         check_ffprobe(),
         check_disk_space(),
         check_network(),
     ]
+    sam3_pkg = check_sam3_package()
+    if sam3_pkg is not None:
+        checks.append(sam3_pkg)
+    return checks
 
 
 def all_checks_pass(checks: List[HealthCheck]) -> bool:
