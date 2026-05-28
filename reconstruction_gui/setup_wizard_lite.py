@@ -196,15 +196,19 @@ def check_sam3_package() -> Optional[HealthCheck]:
     if not weights_present:
         return None
 
-    import importlib.util
-    if importlib.util.find_spec("sam3") is not None:
+    try:
+        from sam3.model_builder import build_sam3_image_model  # noqa: F401
+        from sam3.model.sam3_image_processor import Sam3Processor  # noqa: F401
         return HealthCheck("SAM3 package", "SAM3 Python library", "pass", "Installed")
+    except ImportError as e:
+        import_error = str(e)
 
     return HealthCheck(
         "SAM3 package", "SAM3 Python library",
         "warn",
-        "Weights present but package not installed — masking falls back to RF-DETR. "
-        "Fix: pip install git+https://github.com/facebookresearch/sam3.git",
+        f"SAM3 not importable ({import_error}) — masking falls back to RF-DETR. "
+        "Fix: git clone https://github.com/facebookresearch/sam3 then "
+        ".venv\\Scripts\\pip install -e sam3",
     )
 
 
