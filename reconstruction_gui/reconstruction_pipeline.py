@@ -684,9 +684,8 @@ class SAM3Segmenter(BaseSegmenter):
         """Initialize SAM3 model and processor."""
         if not HAS_SAM3:
             raise ImportError(
-                "SAM3 not available. Install from: "
-                "git clone https://github.com/facebookresearch/sam3 && "
-                "cd sam3 && pip install -e ."
+                "SAM3 not available. Install with: "
+                "pip install git+https://github.com/facebookresearch/sam3.git"
             )
 
         logger.info("Loading SAM3 image model (848M params)")
