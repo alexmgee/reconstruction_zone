@@ -354,13 +354,13 @@ class PairedSplitVideoExtractor:
         front_out: Path,
         back_out: Path,
         config: PairedSplitConfig,
+        basename: str,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> tuple[list[str], list[str], list[float], list[int], list[int]]:
         """Second pass: extract the previously selected shared frame indices."""
 
         frame_set = set(frame_indices)
-        basename = front_out.name
         front_paths: list[str] = []
         back_paths: list[str] = []
         selected_times: list[float] = []
@@ -428,6 +428,7 @@ class PairedSplitVideoExtractor:
         out_root: Path,
         front_out: Path,
         back_out: Path,
+        basename: str,
         start_frame: int,
         end_frame: int,
         range_start_sec: float,
@@ -592,7 +593,6 @@ class PairedSplitVideoExtractor:
             # ── Output tracking ──────────────────────────────────────
 
             ext = config.output_format
-            _basename = out_root.name
             winners_written = 0
             front_paths: list[str] = []
             back_paths: list[str] = []
@@ -606,8 +606,8 @@ class PairedSplitVideoExtractor:
                 nonlocal winners_written
                 winners_written += 1
                 idx_str = f"{winners_written:06d}"
-                f_path = front_out / f"{_basename}_front_{idx_str}.{ext}"
-                b_path = back_out / f"{_basename}_back_{idx_str}.{ext}"
+                f_path = front_out / f"{basename}_front_{idx_str}.{ext}"
+                b_path = back_out / f"{basename}_back_{idx_str}.{ext}"
                 _save_winner_gpu(best_f_gpu, f_path)
                 _save_winner_gpu(best_b_gpu, b_path)
                 front_paths.append(str(f_path))
@@ -833,7 +833,11 @@ class PairedSplitVideoExtractor:
         scene_detection = config.scene_detection
 
         out_root = Path(output_dir)
-        basename = out_root.name
+        import os as _os
+        front_stem = Path(front_video).stem
+        back_stem = Path(back_video).stem
+        _common = _os.path.commonprefix([front_stem, back_stem])
+        basename = _common.rstrip('_-') or out_root.name
         ext = config.output_format.lower()
         front_out = out_root
         back_out = out_root
@@ -882,7 +886,7 @@ class PairedSplitVideoExtractor:
             if mode == "sharpest" and SharpestExtractor._gpu_available(SharpestExtractor()):
                 gpu_result = self._extract_sharpest_gpu(
                     front_video, back_video, out_root, front_out, back_out,
-                    start_frame, end_frame, range_start_sec, shared_fps, config,
+                    basename, start_frame, end_frame, range_start_sec, shared_fps, config,
                     progress_callback=progress_callback,
                     cancel_check=cancel_check,
                     _log=_log,
@@ -959,6 +963,7 @@ class PairedSplitVideoExtractor:
                 front_out,
                 back_out,
                 config,
+                basename,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
             )
