@@ -1239,6 +1239,9 @@ class TemporalConsistency:
 
     def add_frame(self, mask: np.ndarray, confidence: float):
         """Add frame to history."""
+        if self.mask_history and mask.shape != self.mask_history[0].shape:
+            self.mask_history.clear()
+            self.confidence_history.clear()
         self.mask_history.append(mask)
         self.confidence_history.append(confidence)
 
