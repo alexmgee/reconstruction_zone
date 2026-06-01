@@ -789,7 +789,7 @@ class PairedSplitVideoExtractor:
                 "pair_score": min(fs, bs),
             })
 
-        manifest_path = out_root / "paired_extraction_manifest.json"
+        manifest_path = out_root / f"{basename}_paired_extraction_manifest.json"
         manifest_path.write_text(
             json.dumps(manifest, indent=2), encoding="utf-8")
 
@@ -849,7 +849,7 @@ class PairedSplitVideoExtractor:
             raise RuntimeError(
                 f"Refusing to overwrite non-empty paired extraction folder: {out_root}"
             )
-        manifest_path = out_root / "paired_extraction_manifest.json"
+        manifest_path = out_root / f"{basename}_paired_extraction_manifest.json"
         if manifest_path.exists():
             raise RuntimeError(
                 f"Refusing to overwrite existing paired extraction manifest: {manifest_path}"
