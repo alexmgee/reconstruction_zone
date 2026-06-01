@@ -360,6 +360,7 @@ class PairedSplitVideoExtractor:
         """Second pass: extract the previously selected shared frame indices."""
 
         frame_set = set(frame_indices)
+        basename = front_out.name
         front_paths: list[str] = []
         back_paths: list[str] = []
         selected_times: list[float] = []
@@ -386,8 +387,8 @@ class PairedSplitVideoExtractor:
 
             written += 1
             frame_id = f"{written:06d}"
-            front_path = front_out / f"{frame_id}.{config.output_format.lower()}"
-            back_path = back_out / f"{frame_id}.{config.output_format.lower()}"
+            front_path = front_out / f"{basename}_front_{frame_id}.{config.output_format.lower()}"
+            back_path = back_out / f"{basename}_back_{frame_id}.{config.output_format.lower()}"
             self._write_pair_image(front_path, front_frame, config)
             self._write_pair_image(back_path, back_frame, config)
             front_paths.append(str(front_path))
@@ -591,6 +592,7 @@ class PairedSplitVideoExtractor:
             # ── Output tracking ──────────────────────────────────────
 
             ext = config.output_format
+            _basename = out_root.name
             winners_written = 0
             front_paths: list[str] = []
             back_paths: list[str] = []
@@ -604,8 +606,8 @@ class PairedSplitVideoExtractor:
                 nonlocal winners_written
                 winners_written += 1
                 idx_str = f"{winners_written:06d}"
-                f_path = front_out / f"{idx_str}.{ext}"
-                b_path = back_out / f"{idx_str}.{ext}"
+                f_path = front_out / f"{_basename}_front_{idx_str}.{ext}"
+                b_path = back_out / f"{_basename}_back_{idx_str}.{ext}"
                 _save_winner_gpu(best_f_gpu, f_path)
                 _save_winner_gpu(best_b_gpu, b_path)
                 front_paths.append(str(f_path))
@@ -831,17 +833,24 @@ class PairedSplitVideoExtractor:
         scene_detection = config.scene_detection
 
         out_root = Path(output_dir)
-        front_out = out_root / "front" / "frames"
-        back_out = out_root / "back" / "frames"
-        self._ensure_empty_output(front_out)
-        self._ensure_empty_output(back_out)
+        basename = out_root.name
+        ext = config.output_format.lower()
+        front_out = out_root
+        back_out = out_root
+        _existing = (
+            list(out_root.glob(f"{basename}_front_*.{ext}"))
+            + list(out_root.glob(f"{basename}_back_*.{ext}"))
+        )
+        if _existing:
+            raise RuntimeError(
+                f"Refusing to overwrite non-empty paired extraction folder: {out_root}"
+            )
         manifest_path = out_root / "paired_extraction_manifest.json"
         if manifest_path.exists():
             raise RuntimeError(
                 f"Refusing to overwrite existing paired extraction manifest: {manifest_path}"
             )
-        front_out.mkdir(parents=True, exist_ok=True)
-        back_out.mkdir(parents=True, exist_ok=True)
+        out_root.mkdir(parents=True, exist_ok=True)
 
         front_cap = back_cap = None
         try:
