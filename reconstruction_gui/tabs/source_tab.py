@@ -56,7 +56,7 @@ try:
         PairedSplitVideoExtractor,
     )
     from prep360.core.srt_parser import find_srt_for_video, parse_srt
-    from prep360.core.geotagger import geotag_from_manifest, geotag_from_interval
+    from prep360.core.geotagger import geotag_from_manifest, geotag_from_interval, derive_ground_elevation
 
     HAS_PREP360 = True
 except ImportError:
@@ -1298,6 +1298,38 @@ def _build_extract_section(app, parent):
 
 # ── SRT geotagging helper ─────────────────────────────────────────────
 
+def _resolve_ground_elevation(app, srt_path):
+    """Pick the altitude datum (metres) for geotagging, or None.
+
+    A manual value in the Ground field wins. Otherwise the takeoff elevation is
+    auto-derived from the FIRST clip of this run and reused for every later clip
+    (cached on ``app._geotag_ground_lock``), so a multi-clip shoot stays on one
+    vertical datum despite the drone re-zeroing its barometer between clips.
+    Returns None only when no rel_alt is available (then raw abs_alt is used).
+    """
+    raw = app.metadata_ground_elev_entry.get().strip()
+    if raw:
+        try:
+            g = float(raw)
+            app.log(f"Geotag datum: {g:.2f} m (manual)")
+            return g
+        except ValueError:
+            app.log(f"Geotag: invalid Ground value '{raw}' — auto-deriving instead")
+
+    locked = getattr(app, "_geotag_ground_lock", None)
+    if locked is not None:
+        return locked
+
+    try:
+        g = derive_ground_elevation(parse_srt(srt_path))
+    except Exception:
+        g = None
+    app._geotag_ground_lock = g
+    if g is not None:
+        app.log(f"Geotag datum: {g:.2f} m (auto, from {Path(srt_path).name})")
+    return g
+
+
 def _maybe_geotag(app, video_path, output_dir):
     """Auto-geotag extracted frames if SRT Geotag is enabled.
 
@@ -1320,17 +1352,20 @@ def _maybe_geotag(app, video_path, output_dir):
 
     app.log(f"Geotagging with: {Path(srt_path).name}")
 
+    ground = _resolve_ground_elevation(app, srt_path)
+
     # Try manifest-based first, fall back to interval
     manifest = output_dir / "extraction_manifest.json"
     if manifest.exists():
-        result = geotag_from_manifest(str(output_dir), srt_path)
+        result = geotag_from_manifest(str(output_dir), srt_path, ground_elevation=ground)
     else:
         interval = app.extract_interval_var.get()
         start = app.extract_start_entry.get().strip()
         start_sec = _parse_time(start) if start else 0.0
         if start_sec is None:
             start_sec = 0.0
-        result = geotag_from_interval(str(output_dir), srt_path, interval, start_sec)
+        result = geotag_from_interval(str(output_dir), srt_path, interval, start_sec,
+                                      ground_elevation=ground)
 
     if result.success:
         app.log(f"Geotagged {result.tagged_count}/{result.total_frames} frames"
@@ -1741,6 +1776,7 @@ def _extract_single_worker(app, video_path, base_output):
     try:
         import time
         t_start = time.perf_counter()
+        app._geotag_ground_lock = None   # fresh altitude datum per run
 
         video_name = Path(video_path).stem
         output_dir = Path(base_output) / video_name
@@ -2112,6 +2148,7 @@ def _extract_queue_worker(app):
         t_queue_start = time.perf_counter()
         items_done = 0
         total_frames = 0
+        app._geotag_ground_lock = None   # one altitude datum for the whole batch
 
         while app.extract_queue_processing and not app.cancel_flag.is_set():
             item = app.video_queue.get_next_pending()
@@ -2349,6 +2386,22 @@ def _build_metadata_section(app, parent):
             "Override the auto-detected SRT file.\n"
             "Leave blank to auto-detect by video filename.\n"
             "Used by both auto-geotag and standalone geotagging.")
+
+    # -- Ground elevation datum (fixes DJI mid-flight barometric re-zeroing) --
+    ge_frame = ctk.CTkFrame(c, fg_color="transparent")
+    ge_frame.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(ge_frame, text="Ground:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.metadata_ground_elev_entry = ctk.CTkEntry(ge_frame,
+                                                  placeholder_text="Auto from first clip — or metres MSL")
+    app.metadata_ground_elev_entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
+    Tooltip(app.metadata_ground_elev_entry,
+            "Altitude datum for geotagging, in metres.\n"
+            "When set, each frame's altitude is written as\n"
+            "height-above-takeoff + this value, so every clip\n"
+            "shares ONE vertical datum — this fixes DJI re-zeroing\n"
+            "its barometer between clips (frames sinking below ground).\n\n"
+            "Leave blank to auto-derive from the first clip of the run\n"
+            "(recommended). The value used is printed in the log.")
 
     # -- Standalone: geotag existing frames --
     sep = ctk.CTkFrame(c, height=1, fg_color="gray30")
@@ -2874,7 +2927,22 @@ def _geotag_standalone_worker(app, frames_dir, srt_path):
             return
 
         app.log("Using extraction manifest for timestamp mapping")
-        result = geotag_from_manifest(str(frames_dir), srt_path)
+
+        # Altitude datum: manual Ground field wins, else auto-derive from this clip
+        raw = app.metadata_ground_elev_entry.get().strip()
+        ground = None
+        if raw:
+            try:
+                ground = float(raw)
+                app.log(f"Geotag datum: {ground:.2f} m (manual)")
+            except ValueError:
+                app.log(f"Invalid Ground value '{raw}' — auto-deriving from clip")
+        if ground is None:
+            ground = derive_ground_elevation(srt)
+            if ground is not None:
+                app.log(f"Geotag datum: {ground:.2f} m (auto, from this clip)")
+
+        result = geotag_from_manifest(str(frames_dir), srt_path, ground_elevation=ground)
 
         if result.success:
             app.log(f"Geotagged {result.tagged_count}/{result.total_frames} frames"

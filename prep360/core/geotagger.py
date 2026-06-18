@@ -12,6 +12,7 @@ Two modes:
 
 import json
 import os
+import statistics
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -51,10 +52,18 @@ def _find_exiftool() -> Optional[str]:
     return None
 
 
-def _build_exiftool_args(entry: SrtEntry) -> List[str]:
+def _build_exiftool_args(entry: SrtEntry, ground_elevation: Optional[float] = None) -> List[str]:
     """Build exiftool arguments for a single frame's metadata.
 
     Writes: GPS coordinates, altitude, focal length, capture datetime.
+
+    Altitude source:
+      - If ``ground_elevation`` is given, altitude is written as
+        ``ground_elevation + rel_alt`` (height above takeoff plus a single
+        fixed ground level). This keeps every clip of a shoot on ONE vertical
+        datum even when the drone re-zeros its barometer between clips.
+      - Otherwise it falls back to DJI's barometric ``abs_alt``, which can step
+        between clips and place low frames below the reconstructed ground.
     """
     args = []
 
@@ -66,8 +75,11 @@ def _build_exiftool_args(entry: SrtEntry) -> List[str]:
         args.append(f"-GPSLongitude={abs(lon)}")
         args.append(f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}")
 
-    if entry.abs_alt is not None:
+    if ground_elevation is not None and entry.rel_alt is not None:
+        alt = ground_elevation + entry.rel_alt
+    else:
         alt = entry.abs_alt
+    if alt is not None:
         args.append(f"-GPSAltitude={abs(alt)}")
         args.append(f"-GPSAltitudeRef={'Above Sea Level' if alt >= 0 else 'Below Sea Level'}")
 
@@ -86,10 +98,31 @@ def _build_exiftool_args(entry: SrtEntry) -> List[str]:
     return args
 
 
+def derive_ground_elevation(srt: SrtData) -> Optional[float]:
+    """Estimate the takeoff/ground elevation (metres) from a DJI SRT.
+
+    DJI computes ``abs_alt = rel_alt + home_altitude`` where ``home_altitude``
+    is the GPS elevation captured at takeoff, so ``abs_alt - rel_alt`` is that
+    ground level. Returns the median across entries that have both values, or
+    None if unavailable.
+
+    Use the value from the FIRST clip of a flight as the single ground datum
+    for the whole shoot: later clips that re-zeroed the barometer would
+    otherwise self-reference a different ground and drift onto another datum.
+    """
+    vals = [e.abs_alt - e.rel_alt
+            for e in srt.entries
+            if e.abs_alt is not None and e.rel_alt is not None]
+    if not vals:
+        return None
+    return statistics.median(vals)
+
+
 def geotag_from_manifest(
     frames_dir: str,
     srt_path: str,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ground_elevation: Optional[float] = None,
 ) -> GeotagResult:
     """Geotag frames using extraction manifest + SRT telemetry.
 
@@ -125,7 +158,7 @@ def geotag_from_manifest(
     srt = parse_srt(srt_path)
     frames = manifest.get("frames", [])
 
-    return _geotag_frames(exiftool, frames_dir, frames, srt, progress_callback)
+    return _geotag_frames(exiftool, frames_dir, frames, srt, progress_callback, ground_elevation)
 
 
 def geotag_from_interval(
@@ -134,6 +167,7 @@ def geotag_from_interval(
     interval: float,
     start_sec: float = 0.0,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ground_elevation: Optional[float] = None,
 ) -> GeotagResult:
     """Geotag frames by computing timestamps from interval.
 
@@ -179,7 +213,7 @@ def geotag_from_interval(
             "time_sec": start_sec + i * interval,
         })
 
-    return _geotag_frames(exiftool, frames_dir, frames, srt, progress_callback)
+    return _geotag_frames(exiftool, frames_dir, frames, srt, progress_callback, ground_elevation)
 
 
 def _geotag_frames(
@@ -188,6 +222,7 @@ def _geotag_frames(
     frames: List[Dict],
     srt: SrtData,
     progress_callback: Optional[Callable[[int, int, str], None]],
+    ground_elevation: Optional[float] = None,
 ) -> GeotagResult:
     """Core geotagging: match frames to SRT entries and write EXIF in batch."""
     total = len(frames)
@@ -214,7 +249,7 @@ def _geotag_frames(
             skipped += 1
             continue
 
-        exif_args = _build_exiftool_args(entry)
+        exif_args = _build_exiftool_args(entry, ground_elevation)
         if not exif_args:
             skipped += 1
             continue
