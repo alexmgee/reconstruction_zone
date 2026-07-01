@@ -56,7 +56,11 @@ reconstruction_gui/test_*.py
 .env
 *.env
 # Internal docs and legacy (not for GitHub)
-/docs/
+/docs/*
+!/docs/planning/
+docs/planning/*
+!/docs/planning/pointport_integration/
+!/docs/planning/pointport_integration/**
 /legacy/
 
 # Dev-only files
