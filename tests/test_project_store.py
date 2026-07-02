@@ -166,6 +166,25 @@ class TestProjectStore:
         projects = store.list_projects()
         assert projects[0].title == "Second"
 
+    def test_sorted_by_updated_at_equal_timestamps(self, tmp_dir, monkeypatch):
+        from datetime import datetime
+
+        fixed = datetime(2026, 1, 1, 12, 0, 0)
+
+        class FixedDatetime:
+            @classmethod
+            def now(cls):
+                return fixed
+
+        monkeypatch.setattr("reconstruction_gui.project_store.datetime", FixedDatetime)
+        store = ProjectStore(str(tmp_dir / "tracker.json"))
+        store.create_project("First")
+        store.create_project("Second")
+
+        first = store.list_projects()[0].title
+        assert first == "Second"
+        assert store.list_projects()[0].title == "Second"
+
     def test_validate_paths(self, tmp_dir):
         store = ProjectStore(str(tmp_dir / "tracker.json"))
         p = store.create_project("Paths")
