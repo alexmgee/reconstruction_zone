@@ -279,8 +279,12 @@ class ProjectStore:
                 if search.lower() not in haystack:
                     continue
             results.append(p)
-        results.sort(key=lambda p: p.updated_at or p.created_at, reverse=True)
-        return results
+        indexed = list(enumerate(results))
+        indexed.sort(
+            key=lambda item: (item[1].updated_at or item[1].created_at, item[0]),
+            reverse=True,
+        )
+        return [project for _, project in indexed]
 
     def relocate_source(self, project_id: str, source_index: int, new_path: str) -> bool:
         """Update a source's path (for when files move between drives)."""
