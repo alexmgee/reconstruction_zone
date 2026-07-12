@@ -26,6 +26,8 @@ FORBIDDEN_SOURCE_SUBSTRINGS = (
     "expanduser",
     ".studio_prefs",
     "SimpleHTTPRequestHandler",
+    "tracker.json",
+    "activity_log.json",
     "D:\\",
     "D:/",
     "C:\\",
@@ -33,8 +35,6 @@ FORBIDDEN_SOURCE_SUBSTRINGS = (
 )
 
 STATE_PY_ONLY_ALLOWED_LITERALS = (
-    "tracker.json",
-    "activity_log.json",
     ".prep360",
     ".reconstruction_zone",
 )

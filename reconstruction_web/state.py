@@ -14,8 +14,6 @@ __all__ = [
     "resolve_state_root",
 ]
 
-TRACKER_JSON = "tracker.json"
-ACTIVITY_LOG_JSON = "activity_log.json"
 DOT_RECONSTRUCTION_ZONE = ".reconstruction_zone"
 DOT_PREP360_MODELS = ".prep360_models"
 DOT_PREP360_THUMB_CACHE = ".prep360_thumb_cache"
@@ -148,7 +146,5 @@ def _forbidden_exact_paths() -> frozenset[Path]:
             forbidden.add(drive_root)
             forbidden.add(drive_root / "Projects")
             forbidden.add(drive_root / "Capture")
-            forbidden.add(drive_root / TRACKER_JSON)
-            forbidden.add(drive_root / ACTIVITY_LOG_JSON)
 
     return frozenset(forbidden)
