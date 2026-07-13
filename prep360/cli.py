@@ -138,26 +138,51 @@ def cmd_geotag(args):
 
 def cmd_reframe(args):
     """Reframe equirectangular images to perspective views."""
-    from .core.reframer import Reframer, VIEW_PRESETS
+    import sys
+    import warnings
+
+    from .core.reframer import (
+        Reframer,
+        VIEW_PRESETS,
+        OutputLayout,
+        get_view_preset,
+        resolve_preset_name,
+        validate_view_config,
+    )
 
     if args.list_presets:
         print("Available presets:")
-        for name, config in VIEW_PRESETS.items():
-            print(f"  {name}: {config.total_views()} views")
+        for name in sorted(VIEW_PRESETS.keys()):
+            print(f"  {name}: {VIEW_PRESETS[name].total_views()} views")
         return 0
 
-    config = VIEW_PRESETS.get(args.preset)
-    if config is None:
+    try:
+        preset_key = resolve_preset_name(args.preset)
+    except KeyError:
         print(f"Unknown preset: {args.preset}", file=sys.stderr)
         return 1
 
+    config = get_view_preset(preset_key)
     config.output_size = args.size
     config.jpeg_quality = args.quality
+    validate_view_config(config)
 
-    reframer = Reframer(config)
+    layout_arg = getattr(args, "layout", None)
+    layout = OutputLayout(layout_arg or "rig")
+    if args.stations:
+        if layout_arg is not None and layout_arg != "station":
+            print(
+                "Error: --stations conflicts with --layout; use --layout station",
+                file=sys.stderr,
+            )
+            return 2
+        warnings.warn("--stations is deprecated; use --layout station", DeprecationWarning, stacklevel=2)
+        layout = OutputLayout.STATION
+
+    reframer = Reframer(config, preset_name=preset_key)
 
     if args.info:
-        print(f"Preset: {args.preset}")
+        print(f"Preset: {args.preset} (-> {preset_key})")
         print(reframer.preview_view_positions())
         return 0
 
@@ -167,14 +192,18 @@ def cmd_reframe(args):
     result = reframer.reframe_batch(
         args.input,
         args.output,
+        mask_dir=getattr(args, "mask_dir", None),
         num_workers=args.workers,
         progress_callback=progress,
-        station_dirs=args.stations,
+        output_layout=layout,
+        preset_name=preset_key,
     )
 
     if result.success:
-        mode = "station dirs" if args.stations else "flat"
-        print(f"Reframed {result.input_count} images -> {result.output_count} views ({mode})")
+        print(
+            f"Reframed {result.input_count} images -> {result.output_count} views "
+            f"({layout.value} layout)"
+        )
         return 0
     else:
         print(f"Errors: {len(result.errors)}", file=sys.stderr)
@@ -445,17 +474,22 @@ def cmd_pipeline(args):
     if preset:
         view_config = preset.get_view_config()
     else:
-        from .core.reframer import VIEW_PRESETS
-        view_config = VIEW_PRESETS["prep360_default"]
+        from .core.reframer import get_view_preset
+        view_config = get_view_preset("prep360_default")
 
     view_config.output_size = args.size
+    reframe_layout = getattr(args, "reframe_layout", "flat")
 
-    reframer = Reframer(view_config)
+    from .core.reframer import OutputLayout, Reframer
+
+    reframer = Reframer(view_config, preset_name="prep360_default")
     result = reframer.reframe_batch(
         str(reframe_source),
         str(perspectives_dir),
         num_workers=args.workers,
-        progress_callback=progress
+        progress_callback=progress,
+        output_layout=OutputLayout(reframe_layout),
+        preset_name="prep360_default",
     )
 
     if not result.success:
@@ -550,6 +584,125 @@ def cmd_segment(args):
         print(f"Classes: {result.classes_found}")
         print(f"Mask: {result.mask_path}")
         return 0
+
+
+def cmd_thin_frames(args):
+    """Thin an ordered frame folder by keeping every Nth frame."""
+    from .core.frame_thinner import FrameOrderingPolicy, thin_frame_folder
+
+    ordering_map = {
+        "auto": FrameOrderingPolicy.AUTO,
+        "extraction_manifest": FrameOrderingPolicy.EXTRACTION_MANIFEST,
+        "filename_natural": FrameOrderingPolicy.FILENAME_NATURAL,
+    }
+
+    try:
+        result = thin_frame_folder(
+            args.input,
+            args.output,
+            every_nth=args.every_nth,
+            ordering=ordering_map[args.ordering],
+        )
+    except (FileNotFoundError, FileExistsError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(
+        f"Thinned {result.input_count} frames -> {result.kept_count} kept at "
+        f"{result.output_dir}",
+    )
+    return 0
+
+
+def cmd_thin_cameras(args):
+    """Thin an image folder using COLMAP pose distance/angle thresholds."""
+    from .core.camera_thinner import thin_camera_folder
+    from .core.frame_thinner import FrameOrderingPolicy
+
+    ordering_map = {
+        "auto": FrameOrderingPolicy.AUTO,
+        "extraction_manifest": FrameOrderingPolicy.EXTRACTION_MANIFEST,
+        "filename_natural": FrameOrderingPolicy.FILENAME_NATURAL,
+    }
+
+    try:
+        result = thin_camera_folder(
+            args.input,
+            args.output,
+            colmap_sparse=args.colmap_sparse,
+            max_distance=args.max_distance,
+            max_angle_degrees=args.max_angle,
+            ordering=ordering_map[args.ordering],
+        )
+    except (FileNotFoundError, FileExistsError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(
+        f"Pose-thinned {result.input_count} images ({result.matched_count} posed) -> "
+        f"{result.kept_count} kept at {result.output_dir}",
+    )
+    return 0
+
+
+def cmd_detect_cameras(args):
+    """Scan a folder tree for camera/pose artifact candidates."""
+    import json as json_module
+
+    from .core.camera_detect import candidates_to_dicts, scan_camera_candidates
+
+    try:
+        candidates = scan_camera_candidates(
+            args.root,
+            max_depth=args.max_depth,
+        )
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json_module.dumps(candidates_to_dicts(candidates), indent=2))
+        return 0
+
+    if not candidates:
+        print(f"No camera/pose candidates found under {Path(args.root).resolve()}")
+        return 0
+
+    for candidate in candidates:
+        frame_count = (
+            str(candidate.frame_count)
+            if candidate.frame_count is not None
+            else "?"
+        )
+        print(f"{candidate.kind.value}\t{candidate.path}\tframes={frame_count}")
+    return 0
+
+
+def cmd_transforms_json(args):
+    """Export transforms.json from a COLMAP binary sparse model."""
+    from .core.transforms_json import export_colmap_binary_to_transforms_json
+
+    try:
+        frame_count = export_colmap_binary_to_transforms_json(
+            args.colmap_sparse,
+            args.output,
+            image_prefix=args.image_prefix,
+            overwrite=args.force,
+        )
+    except FileExistsError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(
+        f"Exported {frame_count} frames to {Path(args.output).resolve()}",
+    )
+    return 0
 
 
 def cmd_colmap(args):
@@ -659,8 +812,11 @@ def main():
     p.add_argument("--workers", "-w", type=int, default=4, help="Parallel workers")
     p.add_argument("--info", action="store_true", help="Show preset info")
     p.add_argument("--list-presets", action="store_true", help="List presets")
+    p.add_argument("--layout", choices=["rig", "station", "flat"], default=None,
+                   help="Output directory layout (default: rig)")
+    p.add_argument("--mask-dir", help="ERP masks directory (matched by stem)")
     p.add_argument("--stations", action="store_true",
-                   help="Station-aware output: per-source subdirectories for Metashape")
+                   help="Deprecated: use --layout station")
 
     # lut
     p = subparsers.add_parser("lut", help="Apply LUT color correction")
@@ -714,6 +870,8 @@ def main():
                    help="Filter blurry frames after extraction")
     p.add_argument("--blur-percentile", type=float, default=80.0,
                    help="Keep top N percent sharpest (default: 80)")
+    p.add_argument("--reframe-layout", choices=["rig", "station", "flat"], default="flat",
+                   help="ERP reframe output layout for pipeline step 3 (default: flat)")
 
     # segment
     p = subparsers.add_parser("segment", help="Generate masks using YOLO segmentation")
@@ -759,6 +917,117 @@ def main():
     p.add_argument("--info", action="store_true",
                    help="Parse XML and show project info only")
 
+    # thin-frames
+    p = subparsers.add_parser(
+        "thin-frames",
+        help="Thin an ordered frame folder by keeping every Nth frame",
+    )
+    p.add_argument(
+        "--input",
+        required=True,
+        help="Input directory containing image frames",
+    )
+    p.add_argument(
+        "--output",
+        required=True,
+        help="Output directory for thinned copied frames",
+    )
+    p.add_argument(
+        "--every-nth",
+        type=int,
+        required=True,
+        help="Keep every Nth frame (zero-based; first frame always kept)",
+    )
+    p.add_argument(
+        "--ordering",
+        choices=["auto", "extraction_manifest", "filename_natural"],
+        default="auto",
+        help="Frame ordering policy (default: auto)",
+    )
+
+    # thin-cameras
+    p = subparsers.add_parser(
+        "thin-cameras",
+        help="Thin an image folder using COLMAP pose distance/angle thresholds",
+    )
+    p.add_argument(
+        "--input",
+        required=True,
+        help="Input directory containing image frames",
+    )
+    p.add_argument(
+        "--output",
+        required=True,
+        help="Output directory for thinned copied frames",
+    )
+    p.add_argument(
+        "--colmap-sparse",
+        required=True,
+        help="COLMAP sparse directory containing images.txt or cameras.bin + images.bin",
+    )
+    p.add_argument(
+        "--max-distance",
+        type=float,
+        required=True,
+        help="Minimum Euclidean distance between kept camera centers (meters)",
+    )
+    p.add_argument(
+        "--max-angle",
+        type=float,
+        required=True,
+        help="Minimum angle between kept camera forward vectors (degrees)",
+    )
+    p.add_argument(
+        "--ordering",
+        choices=["auto", "extraction_manifest", "filename_natural"],
+        default="auto",
+        help="Frame ordering policy (default: auto)",
+    )
+
+    # detect-cameras
+    p = subparsers.add_parser(
+        "detect-cameras",
+        help="Scan a folder tree for camera/pose artifact candidates",
+    )
+    p.add_argument("root", help="Root directory to scan")
+    p.add_argument(
+        "--max-depth",
+        type=int,
+        default=8,
+        help="Maximum directory depth to scan (default: 8)",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print candidates as JSON",
+    )
+
+    # transforms-json
+    p = subparsers.add_parser(
+        "transforms-json",
+        help="Export transforms.json from COLMAP binary sparse model",
+    )
+    p.add_argument(
+        "--colmap-sparse",
+        required=True,
+        help="Directory containing cameras.bin and images.bin",
+    )
+    p.add_argument(
+        "--output",
+        required=True,
+        help="Output transforms.json path",
+    )
+    p.add_argument(
+        "--image-prefix",
+        default="images",
+        help='Relative image path prefix (default: "images"; use "" for bare names)',
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing output file",
+    )
+
     # geotag
     p = subparsers.add_parser("geotag", help="Geotag frames using DJI SRT telemetry")
     p.add_argument("frames", help="Directory containing extracted frames")
@@ -785,6 +1054,10 @@ def main():
         "pipeline": cmd_pipeline,
         "segment": cmd_segment,
         "colmap": cmd_colmap,
+        "transforms-json": cmd_transforms_json,
+        "detect-cameras": cmd_detect_cameras,
+        "thin-frames": cmd_thin_frames,
+        "thin-cameras": cmd_thin_cameras,
         "geotag": cmd_geotag,
     }
 
