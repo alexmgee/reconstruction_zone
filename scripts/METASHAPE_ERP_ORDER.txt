@@ -1,0 +1,13 @@
+# Metashape ERP cubemap workflow
+#
+# One script: metashape_apply_erp_rig.py  (Tools > Run Script)
+# It auto-detects: configure rig if not aligned yet, print stats if aligned.
+#
+# 1. Workflow > Add Folder > images/ parent > Multi-camera system   (once per chunk)
+# 2. Tools > Run Script > metashape_apply_erp_rig.py                (configures rig)
+# 3. Workspace: enable frames → Workflow > Align Photos
+#      Adaptive fitting OFF, Generic ON, Sequential OFF
+# 4. Tools > Run Script > metashape_apply_erp_rig.py                (same file — prints stats)
+#
+# Re-running step 2 after step 4 will wipe alignment (apply resets it). Only re-run step 2
+# if you changed rig settings and are willing to align again.
