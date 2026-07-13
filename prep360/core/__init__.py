@@ -6,7 +6,19 @@ Modular components for 360° video processing pipeline.
 
 from .analyzer import VideoAnalyzer, VideoInfo
 from .extractor import FrameExtractor, ExtractionMode, ExtractionConfig
-from .reframer import Reframer, Ring, ViewConfig
+from .reframer import (
+    Reframer,
+    Ring,
+    FreeView,
+    ViewConfig,
+    OutputLayout,
+    VIEW_PRESETS,
+    DEFAULT_PRESET,
+    get_view_preset,
+    copy_view_config,
+    resolve_preset_name,
+)
+from .rig_config import generate_rig_config, write_rig_config
 from .presets import Preset, PresetManager
 from .sky_filter import SkyFilter, SkyFilterConfig
 from .lut import LUTProcessor
@@ -60,7 +72,16 @@ __all__ = [
     "ExtractionConfig",
     "Reframer",
     "Ring",
+    "FreeView",
     "ViewConfig",
+    "OutputLayout",
+    "VIEW_PRESETS",
+    "DEFAULT_PRESET",
+    "get_view_preset",
+    "copy_view_config",
+    "resolve_preset_name",
+    "generate_rig_config",
+    "write_rig_config",
     "Preset",
     "PresetManager",
     "SkyFilter",

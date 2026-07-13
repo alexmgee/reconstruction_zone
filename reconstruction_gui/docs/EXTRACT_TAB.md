@@ -327,131 +327,91 @@ Collapsed by default. Converts dual-fisheye frames or equirectangular (ERP) fram
 
 #### Inputs
 
-The Reframing section has four path fields, giving flexibility for different source types:
+The Reframing section extracts **stitched ERP (equirectangular)** frames into pinhole perspectives. It does not run dual-fisheye pair reframing (that remains available via Coverage/Gaps fisheye helpers).
 
 | Field | Purpose | When to use |
 |-------|---------|-------------|
-| **Video** | `.osv` / `.360` / `.insv` file | Direct extraction from a 360 video — extracts frame pairs at the configured interval, then reframes |
-| **Frames** | Existing ERP frames folder | Reframe pre-extracted equirectangular frames (skips video extraction) |
-| **Masks** | Masks for ERP or fisheye frames | Optional — masks are reframed alongside images, producing per-perspective masks |
-| **Output** | Perspective output directory | Where pinhole crops are saved |
-
-You can provide a Video (extract + reframe in one step), or Frames (reframe existing images), or both. If both are set, the video is extracted first, then all frames are reframed.
-
-#### Custom Calibration
-
-Collapsed inside Reframing. The built-in equidistant fisheye model works for most 360 cameras (DJI, Insta360, GoPro). Only load a custom calibration JSON if you see warped straight lines in your output crops.
-
-JSON format:
-```json
-{
-  "front": {"K": [[...]], "D": [...], "image_size": [w, h], "rms_error": 0.123},
-  "back":  {"K": [[...]], "D": [...], "image_size": [w, h], "rms_error": 0.456}
-}
-```
-
-- **K** — 3×3 camera intrinsic matrix
-- **D** — 4 distortion coefficients
-- Click **Reset** to revert to the built-in model
+| **Video** | Equirectangular video file | Extract ERP frames at the configured interval, then reframe |
+| **Frames** | Existing ERP frames folder | Reframe pre-extracted equirectangular frames |
+| **Masks** | ERP masks (same stems as frames) | Optional — nearest-neighbor reprojection, binarized, edge-eroded |
+| **Output** | Dataset root | Reframes into `images/`, `masks/`, and metadata under this root |
 
 #### Preset
 
-The preset dropdown controls how many perspective views are extracted from each fisheye hemisphere. Each preset defines a set of **Rings** — groups of views at specific pitch angles.
+ERP presets (`low`, `medium`, `high`, `ultra`, `cubemap`, `erp_scaffold_8`) control how many pinhole views are sampled from each ERP frame. Default: **medium** (16 views at 90° FOV).
 
-Example preset description:
-```
-13 views per lens: 1 looking up (45°), 3 looking up (30°), 5 at horizon, 3 looking down (-30°), 1 looking down (-45°)
-Each crop is 90° FOV — standard perspective
-```
+#### Output structure (Metashape)
 
-More views = better spatial coverage for reconstruction, but more output images and longer processing.
+| Mode | Layout | Use |
+|------|--------|-----|
+| **Rig** (default) | `images/{view}/{frame}.jpg` | Metashape Pro rig — one folder per virtual sensor |
+| **Station** | `images/{frame}/{frame}_{view}.jpg` | Metashape station groups |
+| **Flat** | `images/{frame}_{view}.jpg` | Single-folder export |
 
-Built-in presets cover common camera configurations: `prep360_default`, `dji_osmo_360`, `insta360_x3`, `gopro_max`, `slow_motion`.
+Mask paths mirror the selected layout under `masks/`.  
+Writes `reframe_metadata.json` (all layouts) and `rig_config.json` (rig layout only). Unknown preset names are rejected instead of falling back silently.
 
 #### Settings
 
 | Setting | Range | Default | Effect |
 |---------|-------|---------|--------|
-| **Crop** | 1280 / 1600 / 1920 | 1600 | Output resolution per pinhole crop (square). 1600 balances detail and file size |
-| **Quality** | 70–100 | 95 | JPEG quality for output crops |
-| **Interval** | 0.5–10.0s | 2.0s | Extract one frame pair every N seconds from the video |
-
-#### Station dirs (for Metashape)
-
-Enabled by default. Organizes output into per-source subdirectories — each subdirectory represents a Metashape **station** (shared camera position).
-
-When enabled:
-- Images: `output/images/{station}/{label}.jpg`
-- Masks: `output/masks/{station}/{label}_mask.png` (separate parallel tree)
-- Metadata: `output/reframe_metadata.json` with pinhole intrinsics, view configs, station list
-
-When disabled: all perspectives are written flat into the output directory.
-
-**Metashape import:** Drag all station subdirectories into an empty chunk, then set the group type to Station. Use the [import_masks_reframed.py](https://github.com/alexmgee/reconstruction-zone) script to load masks (Metashape's built-in mask import can't traverse subdirectories).
-
-#### Output estimate
-
-A live estimate updates as you change settings. Example:
-
-```
-42 frame pairs × 52 views = ~2,184 output images (1600x1600)
-```
-
-This requires a video to be probed first (selecting the input file triggers an automatic probe).
+| **Crop** | 1280 / 1600 / 1920 | 1600 | Square pinhole output size |
+| **Quality** | 70–100 | 95 | JPEG quality |
+| **Interval** | 0.5–10.0s | 2.0s | ERP frame extraction interval (video input only) |
 
 #### Process
 
 When you click **Extract & Reframe**:
 
-```
-┌─ STEP 1: EXTRACT FISHEYE FRAMES ────────────────────────────┐
-│                                                               │
-│  OSVHandler extracts frame pairs at the configured interval  │
-│  from both streams (front + back lens)                       │
-│  (Skipped if only Frames path is set — uses existing images) │
-│                                                               │
-└───────────────────────────┬──────────────────────────────────┘
-                            │
-                            ▼
-┌─ STEP 2: REFRAME TO PERSPECTIVES ────────────────────────────┐
-│                                                               │
-│  For each frame pair:                                        │
-│  • Apply fisheye calibration (undistort)                     │
-│  • Project through each view in the preset layout            │
-│  • Render pinhole perspective crop at configured resolution  │
-│  • Skip crops with <50% content coverage                     │
-│  • If masks provided, reframe masks in parallel              │
-│                                                               │
-└──────────────────────────────────────────────────────────────┘
-```
+1. If video: probe for equirectangular aspect ratio, extract ERP frames to `{output}/erp_frames/`
+2. Reframe each ERP frame through the selected preset (plugin-style ERP math)
+3. Write layout-specific `images/` + optional `masks/`, metadata, and console pinhole intrinsics
+
+See `docs/ERP_REFRAME.md` for coordinate conventions and provenance notes.
+
+`reframe_metadata.json` includes one `default_pinhole_intrinsics` object, `pinhole_intrinsics_by_fov` for mixed-FOV presets, `frames` mappings for Rig/Flat layouts, `stations` mappings for Station layout, and Metashape rig sensor rotations when applicable.
 
 ### Output structure
 
-**With station dirs enabled** (default):
+**Rig layout (default):**
 ```
 {output}/
 ├── images/
-│   ├── frame_0001/              ← one station per source frame
-│   │   ├── front_h0_y0.jpg
-│   │   ├── front_h30_y0.jpg
-│   │   └── ...
-│   └── frame_0002/
+│   ├── 00_00/
+│   │   ├── frame_0001.jpg
+│   │   └── frame_0002.jpg
+│   └── 00_01/
 │       └── ...
-├── masks/                        ← parallel tree (if masks provided)
-│   ├── frame_0001/
-│   │   ├── front_h0_y0_mask.png
-│   │   └── ...
+├── masks/                        ← mirrors layout when masks provided
+│   ├── 00_00/
+│   │   └── frame_0001.png
 │   └── ...
-└── reframe_metadata.json         ← pinhole intrinsics + station mapping
+├── reframe_metadata.json
+└── rig_config.json
 ```
 
-**With station dirs disabled**:
+**Station layout:**
 ```
 {output}/
-├── front_0001_h0_y0.jpg
-├── front_0001_h30_y0.jpg
-├── back_0001_h0_y0.jpg
-└── ...
+├── images/
+│   └── frame_0001/
+│       ├── frame_0001_00_00.jpg
+│       └── ...
+├── masks/
+│   └── frame_0001/
+│       └── ...
+└── reframe_metadata.json
+```
+
+**Flat layout:**
+```
+{output}/
+├── images/
+│   ├── frame_0001_00_00.jpg
+│   └── ...
+├── masks/
+│   └── frame_0001_00_00.png
+└── reframe_metadata.json
 ```
 
 ---

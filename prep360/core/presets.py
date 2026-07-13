@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from .reframer import ViewConfig, Ring
+from .reframer import ViewConfig, Ring, FreeView, get_view_preset, resolve_preset_name
 
 
 @dataclass
@@ -29,8 +29,11 @@ class Preset:
     extraction_quality: int = 95
 
     # Reframe settings
+    reframe_preset_key: str = "medium"
     reframe_rings: List[Dict[str, Any]] = field(default_factory=list)
-    reframe_zenith: bool = True
+    reframe_views: List[Dict[str, Any]] = field(default_factory=list)
+    reframe_layout: str = "rig"
+    reframe_zenith: bool = False
     reframe_nadir: bool = False
     reframe_zenith_fov: float = 65.0
     reframe_output_size: int = 1920
@@ -60,23 +63,40 @@ class Preset:
 
     def get_view_config(self) -> ViewConfig:
         """Convert preset to ViewConfig."""
-        rings = [
-            Ring(
-                pitch=r.get("pitch", 0),
-                count=r.get("count", 8),
-                fov=r.get("fov", 65.0),
-                start_yaw=r.get("start_yaw", 0.0)
+        if self.reframe_rings or self.reframe_views:
+            rings = [
+                Ring(
+                    pitch=r.get("pitch", 0),
+                    count=r.get("count", 8),
+                    fov=r.get("fov", 65.0),
+                    start_yaw=r.get("start_yaw", 0.0),
+                    flip_vertical=r.get("flip_vertical", False),
+                )
+                for r in self.reframe_rings
+            ]
+            views = [
+                FreeView(
+                    name=v["name"],
+                    yaw=v["yaw"],
+                    pitch=v["pitch"],
+                    fov=v.get("fov", 90.0),
+                )
+                for v in self.reframe_views
+            ]
+            config = ViewConfig(
+                rings=rings,
+                views=views,
+                include_zenith=self.reframe_zenith,
+                include_nadir=self.reframe_nadir,
+                zenith_fov=self.reframe_zenith_fov,
+                output_size=self.reframe_output_size,
+                jpeg_quality=self.reframe_jpeg_quality,
             )
-            for r in self.reframe_rings
-        ]
-        return ViewConfig(
-            rings=rings,
-            include_zenith=self.reframe_zenith,
-            include_nadir=self.reframe_nadir,
-            zenith_fov=self.reframe_zenith_fov,
-            output_size=self.reframe_output_size,
-            jpeg_quality=self.reframe_jpeg_quality,
-        )
+        else:
+            config = get_view_preset(self.reframe_preset_key)
+            config.output_size = self.reframe_output_size
+            config.jpeg_quality = self.reframe_jpeg_quality
+        return config
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary."""
@@ -86,6 +106,7 @@ class Preset:
     def from_dict(cls, data: Dict[str, Any]) -> "Preset":
         """Deserialize from dictionary."""
         # Handle missing fields with defaults
+        has_legacy_rings = bool(data.get("reframe_rings"))
         return cls(
             name=data.get("name", "Unnamed"),
             description=data.get("description", ""),
@@ -95,8 +116,11 @@ class Preset:
             extraction_max_gap=data.get("extraction_max_gap", 3.0),
             extraction_mode=data.get("extraction_mode", "fixed"),
             extraction_quality=data.get("extraction_quality", 95),
+            reframe_preset_key=data.get("reframe_preset_key", data.get("reframe_preset", "medium")),
             reframe_rings=data.get("reframe_rings", []),
-            reframe_zenith=data.get("reframe_zenith", True),
+            reframe_views=data.get("reframe_views", []),
+            reframe_layout=data.get("reframe_layout", "rig"),
+            reframe_zenith=data.get("reframe_zenith", True if has_legacy_rings else False),
             reframe_nadir=data.get("reframe_nadir", False),
             reframe_zenith_fov=data.get("reframe_zenith_fov", 65.0),
             reframe_output_size=data.get("reframe_output_size", 1920),

@@ -87,7 +87,56 @@ except ImportError:
     HAS_PIL = False
 
 
-# ── 360 preset display labels ─────────────────────────────────────────
+# ── ERP reframe preset display labels ─────────────────────────────────
+
+def _build_erp_preset_labels():
+    """Build display-label ↔ preset-key mappings from ERP VIEW_PRESETS."""
+    if not HAS_PREP360:
+        return {}, {}
+    from prep360.core.reframer import VIEW_PRESETS, DEFAULT_PRESET
+    label_to_key = {}
+    key_to_label = {}
+    for key in ("low", "medium", "high", "ultra", "cubemap", "erp_scaffold_8"):
+        if key not in VIEW_PRESETS:
+            continue
+        cfg = VIEW_PRESETS[key]
+        label = f"{key} — {cfg.total_views()} views"
+        label_to_key[label] = key
+        key_to_label[key] = label
+    if DEFAULT_PRESET in key_to_label:
+        pass
+    return label_to_key, key_to_label
+
+
+_ERP_LABEL_TO_KEY, _ERP_KEY_TO_LABEL = _build_erp_preset_labels()
+
+
+def _get_erp_preset_key(app) -> str:
+    var = getattr(app, "erp_reframe_preset_var", None)
+    if var is None:
+        return "medium"
+    return _ERP_LABEL_TO_KEY.get(var.get(), "medium")
+
+
+def _erp_preset_description(preset_key: str) -> str:
+    if not HAS_PREP360:
+        return ""
+    from prep360.core.reframer import VIEW_PRESETS
+    cfg = VIEW_PRESETS.get(preset_key)
+    if cfg is None:
+        return ""
+    n = cfg.total_views()
+    lines = [f"{n} pinhole views per ERP frame"]
+    if cfg.views:
+        fov = cfg.views[0].fov
+        lines.append(f"FOV {fov:.0f}° — ERP sphere sampling preset")
+    elif cfg.rings:
+        fov = cfg.rings[0].fov
+        lines.append(f"Ring layout, FOV {fov:.0f}°")
+    return "\n".join(lines)
+
+
+# ── 360 fisheye preset display labels (Coverage / Gaps) ───────────────
 
 def _build_preset_labels():
     """Build display-label ↔ preset-key mappings from FISHEYE_PRESETS."""
@@ -2990,7 +3039,7 @@ def _build_fisheye_section(app, parent):
 
     reframe_sec = CollapsibleSection(
         c, "Reframing",
-        subtitle="extract pinhole perspectives from a 360 file or existing ERP frames",
+        subtitle="extract pinhole perspectives from ERP frames (equirectangular)",
         expanded=False, scroll_on_expand=True,
     )
     reframe_sec.pack(fill="x", padx=2, pady=(4, 0))
@@ -3050,8 +3099,7 @@ def _build_fisheye_section(app, parent):
         command=lambda: app._browse_folder_for(app.fisheye_reframe_output_entry)
     ).pack(side="left")
 
-    # ── Custom Calibration (collapsible, inside Reframe) ─────────────
-
+    # Custom Calibration — legacy fisheye (kept for Coverage/Gaps helpers, hidden here)
     adv_sec = CollapsibleSection(rc, "Custom Calibration",
                                   subtitle="override built-in lens model",
                                   expanded=False)
@@ -3092,26 +3140,32 @@ def _build_fisheye_section(app, parent):
         text_color="#9ca3af", anchor="w")
     app._fisheye_calib_label.pack(fill="x", padx=12, pady=(0, 2))
 
-    # Preset
+    adv_sec.pack_forget()
+
+    # Preset (ERP)
     preset_frame = ctk.CTkFrame(rc, fg_color="transparent")
     preset_frame.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(preset_frame, text="Preset:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
-    preset_labels = list(_PRESET_KEY_TO_LABEL.values()) if HAS_PREP360 else ["Full 90\u00b0 \u2014 26 views"]
-    app.fisheye_preset_var = ctk.StringVar(value=preset_labels[0])
-    preset_combo = ctk.CTkComboBox(preset_frame, variable=app.fisheye_preset_var,
-                    values=preset_labels, state="readonly",
-                    command=lambda v: _on_preset_change(app, v))
+    erp_preset_labels = list(_ERP_KEY_TO_LABEL.values()) if HAS_PREP360 else ["medium — 16 views"]
+    default_erp_label = _ERP_KEY_TO_LABEL.get("medium", erp_preset_labels[0] if erp_preset_labels else "medium — 16 views")
+    app.erp_reframe_preset_var = ctk.StringVar(value=default_erp_label)
+    preset_combo = ctk.CTkComboBox(preset_frame, variable=app.erp_reframe_preset_var,
+                    values=erp_preset_labels, state="readonly",
+                    command=lambda v: _on_erp_preset_change(app, v))
     preset_combo.pack(side="left", fill="x", expand=True, padx=(6, 0))
     Tooltip(preset_combo,
-            "View layout preset — controls how many pinhole\n"
-            "perspectives are extracted from each fisheye frame.\n"
-            "More views = better 3D coverage but more images.")
+            "ERP view layout — pinhole crops sampled from the equirect sphere.\n"
+            "More views = better coverage but more output images.")
+
+    app.fisheye_preset_var = ctk.StringVar(
+        value=list(_PRESET_KEY_TO_LABEL.values())[0] if HAS_PREP360 and _PRESET_KEY_TO_LABEL else ""
+    )
 
     # Preset description (multi-line, structured)
-    app.fisheye_preset_desc = ctk.CTkLabel(rc, text="", text_color="#9ca3af",
+    app.erp_reframe_preset_desc = ctk.CTkLabel(rc, text="", text_color="#9ca3af",
                                             font=ctk.CTkFont(family="Consolas", size=10),
                                             anchor="w", justify="left")
-    app.fisheye_preset_desc.pack(fill="x", pady=(0, 2), padx=12)
+    app.erp_reframe_preset_desc.pack(fill="x", pady=(0, 2), padx=12)
 
     # Crop + Quality + Interval on compact rows
     cq_frame = ctk.CTkFrame(rc, fg_color="transparent")
@@ -3121,7 +3175,7 @@ def _build_fisheye_section(app, parent):
     crop_combo = ctk.CTkComboBox(cq_frame, variable=app.fisheye_crop_var,
                     values=["1280", "1600", "1920"],
                     state="readonly", width=80,
-                    command=lambda v: _update_fisheye_estimate(app))
+                    command=lambda v: _update_reframe_estimate(app))
     crop_combo.pack(side="left", padx=(6, 0))
     Tooltip(crop_combo, "Output resolution per pinhole crop (square).\n"
             "1600 is a good balance of detail and file size.\n"
@@ -3147,7 +3201,7 @@ def _build_fisheye_section(app, parent):
                                               font=FONT_TEXT_MONO_VALUE)
     def _on_interval_change(v):
         app.fisheye_interval_label.configure(text=f"{float(v):.1f}s")
-        _update_fisheye_estimate(app)
+        _update_reframe_estimate(app)
     interval_slider = ctk.CTkSlider(int_frame, from_=0.5, to=10.0,
                                      variable=app.fisheye_interval_var,
                                      command=_on_interval_change)
@@ -3158,20 +3212,28 @@ def _build_fisheye_section(app, parent):
             "Lower = more frames, longer processing, bigger dataset.\n"
             "2.0s is a good default for walking-speed capture.")
 
-    # Station-aware output checkbox
-    app.station_dirs_var = ctk.BooleanVar(value=True)
-    app.fisheye_station_cb = ctk.CTkCheckBox(rc, text="Station dirs (for Metashape)",
-                    variable=app.station_dirs_var, width=200)
-    app.fisheye_station_cb.pack(pady=(6, 2), padx=6, anchor="w")
-    Tooltip(app.fisheye_station_cb,
-            "Organize output into per-source subdirectories.\n"
-            "Each subdirectory becomes a Metashape station\n"
-            "(shared camera position). Drag all subdirs into\n"
-            "an empty chunk, then set group type to Station.\n\n"
-            "Also writes reframe_metadata.json with pinhole\n"
-            "intrinsics and station-to-view mapping.")
+    # Output structure (Metashape)
+    layout_frame = ctk.CTkFrame(rc, fg_color="transparent")
+    layout_frame.pack(fill="x", pady=(6, 2), padx=6)
+    ctk.CTkLabel(layout_frame, text="Output:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left", anchor="n", pady=4)
+    layout_inner = ctk.CTkFrame(layout_frame, fg_color="transparent")
+    layout_inner.pack(side="left", fill="x", expand=True, padx=(6, 0))
+    app.reframe_layout_var = ctk.StringVar(value="rig")
+    for value, label in (
+        ("rig", "Rig (Metashape Pro)"),
+        ("station", "Station"),
+        ("flat", "Flat"),
+    ):
+        rb = ctk.CTkRadioButton(
+            layout_inner, text=label, variable=app.reframe_layout_var, value=value,
+            command=lambda: _update_reframe_estimate(app),
+        )
+        rb.pack(anchor="w", pady=1)
+    Tooltip(layout_inner,
+            "Rig: one folder per virtual sensor (camera-first).\n"
+            "Station: one folder per ERP frame (frame-first).\n"
+            "Flat: all crops in images/ without subfolders.")
 
-    # Output estimate label (dynamic — updates with preset/interval/crop changes)
     app.fisheye_estimate_label = ctk.CTkLabel(rc, text="",
                                                font=("Consolas", 10),
                                                text_color="#9ca3af",
@@ -3186,8 +3248,8 @@ def _build_fisheye_section(app, parent):
     app.fisheye_reframe_btn.pack(fill="x", padx=6, pady=(6, 2))
     Tooltip(
         app.fisheye_reframe_btn,
-        "Extract from video and/or reframe ERP frames into perspectives.\n"
-        "Use only for pinhole-perspective workflows.",
+        "Extract ERP frames from equirect video and/or reframe to pinhole perspectives.\n"
+        "Requires stitched ERP input (not dual-fisheye pairs).",
     )
 
     app.fisheye_stop_btn = ctk.CTkButton(
@@ -3197,9 +3259,10 @@ def _build_fisheye_section(app, parent):
     )
     # hidden initially — shown via _start_operation
 
-    # Init preset display
+    # Init ERP preset display
     if HAS_PREP360:
-        _on_preset_change(app, app.fisheye_preset_var.get())
+        _restore_reframe_prefs(app)
+        _on_erp_preset_change(app, app.erp_reframe_preset_var.get())
 
 
 def _browse_osv(app):
@@ -3292,12 +3355,81 @@ def _preset_description(preset_name, cfg):
     )
 
 
+def _on_erp_preset_change(app, display_label):
+    preset_key = _ERP_LABEL_TO_KEY.get(display_label)
+    if not HAS_PREP360 or not preset_key:
+        return
+    app.erp_reframe_preset_desc.configure(text=_erp_preset_description(preset_key))
+    _update_reframe_estimate(app)
+
+
+def _restore_reframe_prefs(app):
+    prefs = getattr(app, "_prefs", {})
+    layout = prefs.get("reframe_layout")
+    if not layout and prefs.get("station_dirs") is True:
+        layout = "station"
+    elif not layout and prefs.get("station_dirs") is False:
+        layout = "flat"
+    if layout in ("rig", "station", "flat"):
+        app.reframe_layout_var.set(layout)
+    preset_key = prefs.get("erp_reframe_preset", "medium")
+    label = _ERP_KEY_TO_LABEL.get(preset_key)
+    if label:
+        app.erp_reframe_preset_var.set(label)
+    if prefs.get("erp_reframe_crop_size"):
+        app.fisheye_crop_var.set(str(prefs["erp_reframe_crop_size"]))
+    if prefs.get("erp_reframe_quality"):
+        app.fisheye_quality_var.set(int(prefs["erp_reframe_quality"]))
+    if prefs.get("erp_reframe_interval"):
+        app.fisheye_interval_var.set(float(prefs["erp_reframe_interval"]))
+
+
+def _save_reframe_prefs(app):
+    if not hasattr(app, "_prefs"):
+        return
+    app._prefs["reframe_layout"] = app.reframe_layout_var.get()
+    app._prefs["erp_reframe_preset"] = _get_erp_preset_key(app)
+    app._prefs["erp_reframe_crop_size"] = app.fisheye_crop_var.get()
+    app._prefs["erp_reframe_quality"] = app.fisheye_quality_var.get()
+    app._prefs["erp_reframe_interval"] = app.fisheye_interval_var.get()
+    if hasattr(app, "_save_prefs"):
+        app._save_prefs()
+
+
+def _update_reframe_estimate(app):
+    """Update the dynamic output estimate label for ERP reframing."""
+    if not HAS_PREP360:
+        return
+    from prep360.core.reframer import VIEW_PRESETS
+    preset_key = _get_erp_preset_key(app)
+    cfg = VIEW_PRESETS.get(preset_key)
+    if not cfg:
+        return
+    views = cfg.total_views()
+    crop = app.fisheye_crop_var.get()
+    layout = app.reframe_layout_var.get()
+
+    duration = getattr(app, '_fisheye_video_duration', None)
+    interval = app.fisheye_interval_var.get()
+    if duration and duration > 0:
+        frames = max(1, int(duration / interval))
+        total = frames * views
+        app.fisheye_estimate_label.configure(
+            text=f"{frames} ERP frames × {views} views = "
+                 f"~{total} images ({crop}×{crop}, {layout})")
+    else:
+        app.fisheye_estimate_label.configure(
+            text=f"{views} views per ERP frame ({crop}×{crop}, {layout} layout)")
+
+
 def _on_preset_change(app, display_label):
     preset_key = _PRESET_LABEL_TO_KEY.get(display_label)
     if not HAS_PREP360 or not preset_key or preset_key not in FISHEYE_PRESETS:
         return
     cfg = FISHEYE_PRESETS[preset_key]
-    app.fisheye_preset_desc.configure(text=_preset_description(preset_key, cfg))
+    desc = getattr(app, "fisheye_preset_desc", None)
+    if desc is not None:
+        desc.configure(text=_preset_description(preset_key, cfg))
     _update_fisheye_estimate(app)
 
 
@@ -3579,14 +3711,15 @@ def _run_reframe(app):
 
     video_path = app.fisheye_osv_entry.get().strip()
     frames_dir = app.fisheye_reframe_frames_entry.get().strip()
-    masks_dir = app.fisheye_reframe_masks_entry.get().strip()
+    masks_dir = app.fisheye_reframe_masks_entry.get().strip() or None
     output_dir = app.fisheye_reframe_output_entry.get().strip()
+    layout = app.reframe_layout_var.get()
 
     if not output_dir:
         app.log("Error: Select an output folder for reframing")
         return
     if not video_path and not frames_dir:
-        app.log("Error: Reframing needs either a 360 video or an existing ERP frames folder")
+        app.log("Error: Provide ERP video or ERP frames folder")
         return
     if video_path and not Path(video_path).exists():
         app.log(f"Error: Video not found: {video_path}")
@@ -3598,244 +3731,147 @@ def _run_reframe(app):
         app.log(f"Error: Masks folder not found: {masks_dir}")
         return
 
-    station_dirs = app.station_dirs_var.get()
+    _save_reframe_prefs(app)
     app._start_operation(app.fisheye_reframe_btn, app.fisheye_stop_btn)
     threading.Thread(
-        target=_fisheye_worker,
+        target=_reframe_worker,
         args=(
             app,
             video_path or None,
             frames_dir or None,
-            masks_dir or None,
+            masks_dir,
             output_dir,
-            station_dirs,
+            layout,
             app.fisheye_reframe_btn,
         ),
         daemon=True,
     ).start()
 
 
-def _fisheye_worker(
-    app, video_path, frames_dir, masks_dir, output_dir,
-    station_dirs=False, action_button=None,
-):
-    try:
-        calib = _get_fisheye_calibration(app)
-        app.log(f"Calibration: {calib.camera_model}")
+def _extract_erp_frames_from_video(app, video_path: str, output_dir: str, interval: float) -> str:
+    from prep360.core import VideoAnalyzer, FrameExtractor, ExtractionConfig, ExtractionMode
 
-        preset_name = _get_preset_key(app)
-        preset_config = FISHEYE_PRESETS.get(preset_name)
-        if preset_config is None:
-            app.log(f"Error: Unknown preset '{preset_name}'")
-            return
-
-        crop_size = int(app.fisheye_crop_var.get())
-        quality = app.fisheye_quality_var.get()
-        config = FisheyeViewConfig(
-            views=list(preset_config.views),
-            crop_size=crop_size,
-            quality=quality,
+    info = VideoAnalyzer().analyze(video_path)
+    if not info.is_equirectangular:
+        raise ValueError(
+            f"Video is not equirectangular ({info.width}x{info.height}). "
+            "Provide stitched ERP frames or an equirect video."
+        )
+    ext = info.filename.lower()
+    if ext.endswith((".osv", ".insv", ".360")):
+        app.log(
+            "Warning: dual-fisheye container detected; reframe expects stitched ERP video. "
+            "Provide ERP frames folder if extraction fails."
         )
 
-        # Determine mode
+    extract_dir = Path(output_dir) / "erp_frames"
+    config = ExtractionConfig(
+        mode=ExtractionMode.FIXED,
+        interval=interval,
+        quality=95,
+    )
+    app.log(f"\nExtracting ERP frames (interval={interval:.1f}s)...")
+    result = FrameExtractor().extract(
+        video_path, str(extract_dir), config=config, prefix_source=True,
+    )
+    if not result.success or not result.frames:
+        raise RuntimeError(result.error or "No ERP frames extracted")
+    app.log(f"Extracted {result.frame_count} ERP frames to {extract_dir}")
+    return str(extract_dir)
+
+
+def _reframe_worker(
+    app, video_path, frames_dir, masks_dir, output_dir,
+    layout="rig", action_button=None,
+):
+    try:
+        from prep360.core.reframer import (
+            Reframer, OutputLayout, get_view_preset, copy_view_config, validate_view_config,
+        )
+
+        preset_key = _get_erp_preset_key(app)
+        config = get_view_preset(preset_key)
+        config.output_size = int(app.fisheye_crop_var.get())
+        config.jpeg_quality = app.fisheye_quality_var.get()
+        validate_view_config(config)
+
+        output_layout = OutputLayout(layout)
         has_video = video_path is not None
         has_masks = masks_dir is not None
         mode = "Extract & Reframe" if has_video else ("Reframe with Masks" if has_masks else "Reframe")
-        app.log(f"Mode: {mode}")
-        app.log(f"Preset: {preset_name} ({config.total_views()} views)")
-        app.log(f"Crop: {crop_size}x{crop_size} @ Q{quality}")
 
-        # Step 1: Extract fisheye frames from video (if video provided)
+        app.log(f"Mode: {mode}")
+        app.log(f"ERP preset: {preset_key} ({config.total_views()} views)")
+        app.log(f"Layout: {output_layout.value}")
+        app.log(f"Crop: {config.output_size}x{config.output_size} @ Q{config.jpeg_quality}")
+
         if has_video:
             interval = app.fisheye_interval_var.get()
-            extract_dir = str(Path(output_dir) / "fisheye_frames")
-            app.log(f"\nExtracting fisheye frames (interval={interval:.1f}s)...")
-
-            handler = OSVHandler()
-
-            def osv_progress(stream_name, current, total):
-                if not app.cancel_flag.is_set():
-                    app.log(f"  [{stream_name}] {current}/{total}")
-
-            frame_dict = handler.extract_frames(
-                video_path, extract_dir,
-                interval=interval, streams="both", quality=95,
-                progress_callback=osv_progress,
+            frames_dir = _extract_erp_frames_from_video(
+                app, video_path, output_dir, interval,
             )
 
-            front = sorted(frame_dict.get("front", []))
-            back = sorted(frame_dict.get("back", []))
-            if not front or not back:
-                app.log("Error: No frames extracted")
-                return
-            app.log(f"Extracted {len(front)} front + {len(back)} back frames")
-        else:
-            # Use existing frames from Frames directory
-            frames_path = Path(frames_dir)
-            front = sorted(str(f) for f in frames_path.glob("front_*.jpg"))
-            back = sorted(str(f) for f in frames_path.glob("back_*.jpg"))
-            if not front and not back:
-                # Try generic image names (ERP frames, not front/back pairs)
-                all_frames = sorted(
-                    str(f) for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']
-                    for f in frames_path.glob(ext)
-                )
-                if not all_frames:
-                    app.log("Error: No frames found in frames folder")
-                    return
-                # ERP reframe path (not fisheye pairs)
-                app.log(f"Found {len(all_frames)} ERP frames — using equirect reframer")
-                _erp_reframe_worker(app, all_frames, masks_dir, output_dir, config, station_dirs)
-                return
-
-            if not front or not back:
-                app.log("Error: Need both front_*.jpg and back_*.jpg frames")
-                return
-            app.log(f"Found {len(front)} front + {len(back)} back frames")
+        if not frames_dir:
+            app.log("Error: No ERP frames to reframe")
+            return
 
         if app.cancel_flag.is_set():
             app.log("Cancelled")
             return
 
-        # Optional motion selection (only when extracting from video)
-        if has_video and app.extract_motion_enabled_var.get():
-            app.log("\nRunning motion-aware selection...")
-            selector = MotionSelector(
-                min_sharpness=app.extract_sharpness_var.get(),
-                target_flow=app.extract_flow_var.get(),
-            )
-            sel_result = selector.select_from_paths(front, max_frames=len(front), log=app.log)
-            app.log(sel_result.summary())
-            idx_set = {fs.index for fs in sel_result.selected_frames}
-            front = [f for i, f in enumerate(front) if i in idx_set]
-            back = [b for i, b in enumerate(back) if i in idx_set]
-            app.log(f"After selection: {len(front)} frame pairs")
-
-        if app.cancel_flag.is_set():
-            app.log("Cancelled")
-            return
-
-        # Step 2: Reframe → perspectives
-        pairs = list(zip(front, back))
-        # Station mode: reframer creates images/ and masks/ subdirs itself
-        # Flat mode: put crops in output_dir/images/
-        reframe_out = output_dir if station_dirs else str(Path(output_dir) / "images")
-        app.log(f"\nReframing {len(pairs)} pairs \u2192 {config.total_views()} views each...")
-        if has_masks:
-            app.log(f"Masks: {masks_dir}")
+        reframer = Reframer(config, preset_name=preset_key)
 
         def rf_progress(current, total, msg):
             if not app.cancel_flag.is_set():
                 app.log(f"  [{current}/{total}] {msg}")
 
-        total_crops, errors = fisheye_batch_extract(
-            pairs, config, calib, reframe_out,
+        result = reframer.reframe_batch(
+            frames_dir,
+            output_dir,
             mask_dir=masks_dir,
-            num_workers=1, progress_callback=rf_progress,
-            station_dirs=station_dirs,
+            num_workers=1,
+            progress_callback=rf_progress,
+            output_layout=output_layout,
+            preset_name=preset_key,
             log=app.log,
         )
 
         lines = [
             f"{mode} complete",
-            f"  Frame pairs:   {len(pairs)}",
-            f"  Views/pair:    {config.total_views()}",
-            f"  Total crops:   {total_crops}",
-            f"  Crop size:     {crop_size}x{crop_size}",
-            f"  Images:        {reframe_out}",
+            f"  Input frames:  {result.input_count}",
+            f"  Total crops:   {result.output_count}",
+            f"  Layout:        {output_layout.value}",
+            f"  Output root:   {output_dir}",
+            f"  Images:        {Path(output_dir) / 'images'}",
         ]
         if has_masks:
-            masks_out = str(Path(output_dir) / "masks")
-            lines.append(f"  Masks:         {masks_out}")
-        if errors:
-            lines.append(f"  Errors:        {len(errors)}")
-            for err in errors[:5]:
+            lines.append(f"  Masks:         {Path(output_dir) / 'masks'}")
+        if result.errors:
+            lines.append(f"  Errors:        {len(result.errors)}")
+            for err in result.errors[:5]:
                 lines.append(f"    - {err}")
 
-        summary = "\n".join(lines)
-        app.log(f"\n{summary}")
+        app.log(f"\n" + "\n".join(lines))
 
-        # Record activity for Recent Activity view
-        input_src = video_path or frames_dir or ""
-        app.record_activity(
-            operation="reframe",
-            input_path=str(input_src),
-            output_path=output_dir,
-            details={
-                "frame_pairs": len(pairs),
-                "total_crops": total_crops,
-                "crop_size": crop_size,
-            },
-        )
+        if result.success:
+            input_src = video_path or frames_dir or ""
+            app.record_activity(
+                operation="reframe",
+                input_path=str(input_src),
+                output_path=output_dir,
+                details={
+                    "erp_frames": result.input_count,
+                    "total_crops": result.output_count,
+                    "crop_size": config.output_size,
+                    "layout": output_layout.value,
+                    "preset": preset_key,
+                },
+            )
 
     except Exception as e:
         import traceback
-        app.log(f"Fisheye error: {e}")
+        app.log(f"ERP reframe error: {e}")
         app.log(traceback.format_exc())
     finally:
         btn = action_button or app.fisheye_reframe_btn
-        app.after(0, lambda: app._stop_operation(
-            btn, app.fisheye_stop_btn))
-
-
-def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config, station_dirs=False):
-    """Reframe ERP frames using the equirect reframer (not fisheye pairs)."""
-    from prep360.core.reframer import Reframer, ViewConfig, Ring
-
-    # Build a ViewConfig from the fisheye preset's view angles
-    # Extract unique rings from the fisheye views
-    rings = []
-    pitch_groups = {}
-    for view in config.views:
-        pitch = view.pitch_deg
-        if pitch not in pitch_groups:
-            pitch_groups[pitch] = {"count": 0, "fov": view.fov_deg}
-        pitch_groups[pitch]["count"] += 1
-
-    for pitch, info in sorted(pitch_groups.items()):
-        rings.append(Ring(pitch=pitch, count=info["count"], fov=info["fov"]))
-
-    view_config = ViewConfig(
-        rings=rings,
-        output_size=config.crop_size,
-        jpeg_quality=config.quality,
-    )
-    reframer = Reframer(view_config)
-
-    # Create a temp directory with the frames (reframe_batch expects a directory)
-    frames_dir = str(Path(frame_paths[0]).parent)
-    # Station mode: reframer creates images/ and masks/ subdirs itself
-    # Flat mode: put crops in output_dir/images/
-    reframe_out = output_dir if station_dirs else str(Path(output_dir) / "images")
-
-    app.log(f"\nReframing {len(frame_paths)} ERP frames...")
-
-    def rf_progress(current, total, msg):
-        if not app.cancel_flag.is_set():
-            app.log(f"  [{current}/{total}] {msg}")
-
-    result = reframer.reframe_batch(
-        frames_dir, reframe_out,
-        mask_dir=masks_dir,
-        num_workers=1,
-        progress_callback=rf_progress,
-        station_dirs=station_dirs,
-        log=app.log,
-    )
-
-    lines = [
-        "ERP reframing complete",
-        f"  Input frames:  {result.input_count}",
-        f"  Total views:   {result.output_count}",
-        f"  Images:        {reframe_out}",
-    ]
-    if masks_dir:
-        masks_out = str(Path(output_dir) / "masks")
-        lines.append(f"  Masks:         {masks_out}")
-    if result.errors:
-        lines.append(f"  Errors:        {len(result.errors)}")
-        for err in result.errors[:5]:
-            lines.append(f"    - {err}")
-
-    summary = "\n".join(lines)
-    app.log(f"\n{summary}")
+        app.after(0, lambda: app._stop_operation(btn, app.fisheye_stop_btn))

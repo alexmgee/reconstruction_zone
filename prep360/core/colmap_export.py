@@ -60,6 +60,7 @@ class MetashapeCamera:
     sensor_id: int
     enabled: bool
     transform: Optional[np.ndarray] = None  # 4x4 camera-to-chunk, None if unaligned
+    component_id: Optional[int] = None
 
 
 @dataclass
@@ -232,6 +233,8 @@ def _parse_cameras(chunk_elem) -> List[MetashapeCamera]:
         label = cam_elem.get("label", "")
         sensor_id = int(cam_elem.get("sensor_id", "0"))
         enabled = cam_elem.get("enabled", "true").lower() != "false"
+        component_attr = cam_elem.get("component_id")
+        component_id = int(component_attr) if component_attr is not None else None
 
         transform = None
         t_elem = cam_elem.find("transform")
@@ -246,6 +249,7 @@ def _parse_cameras(chunk_elem) -> List[MetashapeCamera]:
             sensor_id=sensor_id,
             enabled=enabled,
             transform=transform,
+            component_id=component_id,
         ))
 
     return cameras
@@ -696,7 +700,8 @@ def write_rig_config(
     views = view_config.get_all_views()
     rig_config = [{"cameras": []}]
 
-    for i, (yaw, pitch, fov, view_name) in enumerate(views):
+    for i, view in enumerate(views):
+        yaw, pitch, fov, view_name = view.yaw, view.pitch, view.fov, view.name
         R_face = _create_rotation_matrix(yaw, pitch, 0).T  # world-to-camera
         qw, qx, qy, qz = rotation_to_quaternion(R_face)
 
@@ -1089,7 +1094,8 @@ class ColmapExporter:
         stem = Path(cam.label).stem
         views = view_config.get_all_views()
 
-        for yaw, pitch, fov, view_name in views:
+        for view in views:
+            yaw, pitch, fov, view_name = view.yaw, view.pitch, view.fov, view.name
             out_name = f"{stem}_{view_name}.jpg"
             out_path = images_out / out_name
 
@@ -1374,7 +1380,7 @@ class ColmapExporter:
         if self.config.export_xmp and erp_cams:
             views = view_config.get_all_views()
             if views:
-                fov = views[0][2]
+                fov = views[0].fov
                 f_px = (view_config.output_size / 2.0) / math.tan(math.radians(fov) / 2.0)
                 f_35mm = focal_length_to_35mm(f_px, view_config.output_size)
                 write_common_xmp(
