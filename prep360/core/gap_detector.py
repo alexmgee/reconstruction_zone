@@ -32,6 +32,9 @@ from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
+from .colmap_binary import qvec_to_rotmat, read_colmap_pose_model_binary
+from .colmap_types import ColmapPoseModel
+
 
 @dataclass
 class CameraPosition:
@@ -240,7 +243,7 @@ class GapDetector:
 
             # Quaternion to rotation matrix
             qvec = np.array([qw, qx, qy, qz])
-            R = _qvec2rotmat(qvec)
+            R = qvec_to_rotmat(qvec)
             tvec = np.array([tx, ty, tz])
 
             # Camera center in world coordinates
@@ -260,6 +263,57 @@ class GapDetector:
             ))
 
         return cameras
+
+    def parse_colmap_binary_poses(self, model_dir: str) -> List[CameraPosition]:
+        """Parse camera positions from COLMAP cameras.bin + images.bin."""
+        model = read_colmap_pose_model_binary(model_dir)
+        return self._pose_model_to_camera_positions(model)
+
+    def _pose_model_to_camera_positions(
+        self, model: ColmapPoseModel,
+    ) -> List[CameraPosition]:
+        cameras = []
+        for image in model.images.values():
+            timestamp = _extract_timestamp(image.name)
+            cameras.append(CameraPosition(
+                image_id=image.image_id,
+                name=image.name,
+                position=image.center,
+                qvec=image.qvec,
+                tvec=image.tvec,
+                camera_id=image.camera_id,
+                timestamp=timestamp,
+            ))
+        return cameras
+
+    def _find_colmap_images_txt(self, colmap_path: Path) -> Optional[Path]:
+        candidates = [
+            colmap_path / "images.txt",
+            colmap_path / "sparse" / "images.txt",
+        ]
+        for path in candidates:
+            if path.is_file():
+                return path
+
+        sparse_dirs = sorted(colmap_path.glob("sparse/*/images.txt"))
+        if sparse_dirs:
+            return sparse_dirs[0]
+        return None
+
+    def _find_colmap_binary_model_dir(self, colmap_path: Path) -> Optional[Path]:
+        candidates = [
+            colmap_path,
+            colmap_path / "sparse",
+        ]
+        for candidate in candidates:
+            if (candidate / "cameras.bin").is_file() and (candidate / "images.bin").is_file():
+                return candidate
+
+        sparse_dirs = sorted(colmap_path.glob("sparse/*"))
+        for candidate in sparse_dirs:
+            if (candidate / "cameras.bin").is_file() and (candidate / "images.bin").is_file():
+                return candidate
+        return None
 
     def parse_metashape_cameras(self, xml_path: str) -> List[CameraPosition]:
         """Parse camera positions from Metashape cameras.xml export.
@@ -537,20 +591,18 @@ class GapDetector:
         elif colmap_dir is not None:
             colmap_path = Path(colmap_dir)
 
-            # Find images.txt (might be in sparse/ subdirectory)
-            images_txt = colmap_path / "images.txt"
-            if not images_txt.exists():
-                images_txt = colmap_path / "sparse" / "images.txt"
-            if not images_txt.exists():
-                sparse_dirs = list(colmap_path.glob("sparse/*/images.txt"))
-                if sparse_dirs:
-                    images_txt = sparse_dirs[0]
-            if not images_txt.exists():
-                raise FileNotFoundError(
-                    f"Cannot find images.txt in {colmap_dir}"
-                )
-
-            cameras = self.parse_colmap_images(str(images_txt))
+            images_txt = self._find_colmap_images_txt(colmap_path)
+            if images_txt is not None:
+                cameras = self.parse_colmap_images(str(images_txt))
+            else:
+                binary_dir = self._find_colmap_binary_model_dir(colmap_path)
+                if binary_dir is not None:
+                    cameras = self.parse_colmap_binary_poses(str(binary_dir))
+                else:
+                    raise FileNotFoundError(
+                        f"Cannot find COLMAP poses in {colmap_dir}. "
+                        "Expected images.txt or cameras.bin + images.bin."
+                    )
         else:
             raise ValueError(
                 "Provide one of: colmap_dir, metashape_xml, or xmp_dir"
@@ -740,16 +792,6 @@ class GapDetector:
 
 
 # --- Utility functions ---
-
-def _qvec2rotmat(qvec: np.ndarray) -> np.ndarray:
-    """Convert COLMAP quaternion (qw, qx, qy, qz) to 3x3 rotation matrix."""
-    qw, qx, qy, qz = qvec
-    return np.array([
-        [1 - 2*qy*qy - 2*qz*qz, 2*qx*qy - 2*qz*qw, 2*qx*qz + 2*qy*qw],
-        [2*qx*qy + 2*qz*qw, 1 - 2*qx*qx - 2*qz*qz, 2*qy*qz - 2*qx*qw],
-        [2*qx*qz - 2*qy*qw, 2*qy*qz + 2*qx*qw, 1 - 2*qx*qx - 2*qy*qy],
-    ])
-
 
 def _extract_timestamp(filename: str) -> Optional[float]:
     """Try to extract a timestamp (seconds) from a frame filename.

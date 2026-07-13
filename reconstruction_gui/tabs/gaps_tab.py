@@ -73,7 +73,7 @@ def _build_gap_analysis_section(app, parent):
                        variable=app.gaps_source_var, value="colmap",
                        command=lambda: _on_source_change(app))
     radio_colmap.pack(anchor="w", pady=2)
-    Tooltip(radio_colmap, "Load camera positions from a COLMAP sparse reconstruction.\nExpects a directory with cameras.bin, images.bin, points3D.bin.")
+    Tooltip(radio_colmap, "Load camera positions from a COLMAP sparse reconstruction.\nExpects images.txt or cameras.bin + images.bin.")
     radio_meta = ctk.CTkRadioButton(src_radios, text="Metashape XML",
                        variable=app.gaps_source_var, value="metashape",
                        command=lambda: _on_source_change(app))
