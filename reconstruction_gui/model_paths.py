@@ -14,9 +14,9 @@ Override with RECONSTRUCTION_ZONE_MODEL_DIR environment variable.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
-import logging
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 

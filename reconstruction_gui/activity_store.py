@@ -12,8 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Any
-
+from typing import Any, Dict, List, Optional
 
 MAX_ACTIVITY_GROUPS = 30  # Cap on grouped root directories shown
 

@@ -4,39 +4,50 @@ prep360 Core Library
 Modular components for 360° video processing pipeline.
 """
 
-from .analyzer import VideoAnalyzer, VideoInfo
-from .extractor import FrameExtractor, ExtractionMode, ExtractionConfig
-from .reframer import Reframer, Ring, ViewConfig
-from .presets import Preset, PresetManager
-from .sky_filter import SkyFilter, SkyFilterConfig
-from .lut import LUTProcessor
 # Segmenter imports are lazy to avoid pulling ultralytics at package import time.
 # Use: from prep360.core.segmenter import Segmenter
 # Or:  from prep360.core import Segmenter  (triggers lazy load)
 from .adjustments import apply_shadow_highlight, batch_adjust_images
+from .analyzer import VideoAnalyzer, VideoInfo
 from .blur_filter import BlurFilter, BlurFilterConfig
+from .bridge_extractor import BridgeExtractor, BridgeFrameInfo, BridgeRequest, BridgeResult
 from .colmap_export import (
-    ColmapExporter, ColmapExportConfig, MetashapeProject,
-    parse_metashape_xml, ExportResult,
+    ColmapExportConfig,
+    ColmapExporter,
+    ExportResult,
+    MetashapeProject,
+    parse_metashape_xml,
 )
-from .osv import OSVHandler, OSVInfo
+from .extractor import ExtractionConfig, ExtractionMode, FrameExtractor
 from .fisheye_calibration import (
-    FisheyeCalibrator, FisheyeCalibration, DualFisheyeCalibration,
+    DualFisheyeCalibration,
+    FisheyeCalibration,
+    FisheyeCalibrator,
 )
-from .motion_selector import MotionSelector, FrameScore, SelectionResult
-from .gap_detector import GapDetector, GapReport, SpatialGap, CameraPosition as GapCameraPosition
 from .fisheye_reframer import (
-    FisheyeReframer, FisheyeView, FisheyeViewConfig,
-    FISHEYE_PRESETS, batch_extract as fisheye_batch_extract,
+    FISHEYE_PRESETS,
+    FisheyeReframer,
+    FisheyeView,
+    FisheyeViewConfig,
     default_osmo360_calibration,
 )
-from .bridge_extractor import BridgeExtractor, BridgeRequest, BridgeResult, BridgeFrameInfo
-from .sharpest_extractor import SharpestExtractor, SharpestConfig, SharpestResult
+from .fisheye_reframer import (
+    batch_extract as fisheye_batch_extract,
+)
+from .gap_detector import CameraPosition as GapCameraPosition
+from .gap_detector import GapDetector, GapReport, SpatialGap
+from .lut import LUTProcessor
+from .motion_selector import FrameScore, MotionSelector, SelectionResult
+from .osv import OSVHandler, OSVInfo
 from .paired_split_video_extractor import (
-    PairedSplitVideoExtractor,
     PairedSplitConfig,
     PairedSplitResult,
+    PairedSplitVideoExtractor,
 )
+from .presets import Preset, PresetManager
+from .reframer import Reframer, Ring, ViewConfig
+from .sharpest_extractor import SharpestConfig, SharpestExtractor, SharpestResult
+from .sky_filter import SkyFilter, SkyFilterConfig
 
 __all__ = [
     "VideoAnalyzer",
@@ -104,7 +115,7 @@ _LAZY_SEGMENTER = {"Segmenter", "SegmentConfig", "COCO_CLASSES", "CLASS_PRESETS"
 
 def __getattr__(name):
     if name in _LAZY_SEGMENTER:
-        from .segmenter import Segmenter, SegmentConfig, COCO_CLASSES, CLASS_PRESETS
+        from .segmenter import CLASS_PRESETS, COCO_CLASSES, SegmentConfig, Segmenter
         _map = {"Segmenter": Segmenter, "SegmentConfig": SegmentConfig,
                 "COCO_CLASSES": COCO_CLASSES, "CLASS_PRESETS": CLASS_PRESETS}
         return _map[name]

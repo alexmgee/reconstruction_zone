@@ -5,8 +5,11 @@ the parsing, detection, and recommendation functions with crafted inputs.
 """
 
 from prep360.core.analyzer import (
-    VideoAnalyzer, VideoInfo, LOG_FORMATS,
-    _safe_float, _safe_int,
+    LOG_FORMATS,
+    VideoAnalyzer,
+    VideoInfo,
+    _safe_float,
+    _safe_int,
 )
 
 

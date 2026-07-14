@@ -6,11 +6,11 @@ Saves/loads from review_status.json alongside the masks directory.
 """
 
 import json
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-from typing import Dict, Optional, List, Callable
-from datetime import datetime
 import logging
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 

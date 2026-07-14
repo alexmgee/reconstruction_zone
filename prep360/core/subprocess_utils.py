@@ -7,11 +7,10 @@ from Miniconda/Conda directories on PATH.
 from __future__ import annotations
 
 import os
-import subprocess
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Dict
-
 
 # Directories containing these substrings are demoted to end of PATH.
 _DEMOTE_PATH_PATTERNS = (

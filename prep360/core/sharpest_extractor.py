@@ -407,9 +407,10 @@ class SharpestExtractor:
         Returns SharpestResult on success or cancellation.
         Returns None on GPU init/runtime failure (caller falls back to CPU).
         """
+        import time
+
         import cv2
         import numpy as np
-        import time
 
         def _log(msg):
             if log:
@@ -720,8 +721,9 @@ class SharpestExtractor:
         buffer the current window's best frame, and write the winner when
         the window closes. No second decode pass.
         """
-        import cv2
         import time
+
+        import cv2
 
         def _log(msg):
             if log:

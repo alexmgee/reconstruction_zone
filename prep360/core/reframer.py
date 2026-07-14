@@ -8,10 +8,10 @@ using a ring-based configuration system.
 import json
 import math
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Callable, Tuple
-from concurrent.futures import ProcessPoolExecutor
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np

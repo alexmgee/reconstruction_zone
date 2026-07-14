@@ -4,18 +4,18 @@ Saves face images to disk so we can visually inspect what SAM3 receives.
 
 Usage: python reconstruction_gui/test_cubemap_sam3.py <equirect_image_path>
 """
-import sys, os
+import os
+import sys
 
 # Ensure reconstruction_gui and sam3 are importable
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'models', 'sam3'))
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 from PIL import Image
-from pathlib import Path
-
-import torch
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 

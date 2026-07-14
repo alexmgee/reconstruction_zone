@@ -6,13 +6,14 @@ every frame during batch masking.
 """
 
 import json
-import numpy as np
-import cv2
-from pathlib import Path
-from dataclasses import dataclass, asdict
-from typing import List, Optional
-from datetime import datetime
 import logging
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional
+
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,9 @@
 import json
 
 from prep360.core.queue_manager import (
-    VideoQueue, QueueItem, ExtractionSettings, QueueItemStatus,
+    ExtractionSettings,
+    QueueItem,
+    VideoQueue,
 )
 
 

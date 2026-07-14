@@ -22,15 +22,19 @@ fields the moment a Metashape XML is loaded.
 """
 
 import math
+
 import numpy as np
 
 # v4 library imports — treat v4 as a stable dependency.
 from prep360.core.cubeface_engine import (
     compute_rays as _v4_compute_rays,
+)
+from prep360.core.cubeface_engine import (
     compute_solid_angle_fd as _v4_compute_solid_angle_fd,
+)
+from prep360.core.cubeface_engine import (
     equirectangular_to_rays as _v4_equirectangular_to_rays,
 )
-
 
 # Calibration parameter order expected by v4.compute_rays. Missing fields
 # default to zero (matching Metashape's "absent parameter" convention).

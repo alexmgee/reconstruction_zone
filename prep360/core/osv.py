@@ -29,7 +29,7 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _SUBPROCESS_FLAGS = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 

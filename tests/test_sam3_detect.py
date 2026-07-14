@@ -2,18 +2,17 @@
 
 Usage: python reconstruction_gui/test_sam3_detect.py <image_path>
 """
-import sys, os
+import os
+import sys
 
 # Ensure sam3 is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'models', 'sam3'))
 
-import torch
 import cv2
-import numpy as np
 from PIL import Image
-
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
+
 
 def main():
     img_path = sys.argv[1] if len(sys.argv) > 1 else None

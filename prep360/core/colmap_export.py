@@ -26,9 +26,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .reframer import ViewConfig, Ring, _create_rotation_matrix, reframe_view
 from .presets import PresetManager
-
+from .reframer import Ring, ViewConfig, _create_rotation_matrix, reframe_view
 
 # =============================================================================
 # DATA STRUCTURES

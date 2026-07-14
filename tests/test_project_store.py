@@ -1,10 +1,13 @@
 """Tests for ProjectStore — project CRUD, persistence, and migration."""
 
-import json
 
 from reconstruction_gui.project_store import (
-    Project, ProjectSource, ProjectWorkDir, ProjectStore,
-    STAGE_ORDER, count_media_files,
+    STAGE_ORDER,
+    Project,
+    ProjectSource,
+    ProjectStore,
+    ProjectWorkDir,
+    count_media_files,
 )
 
 

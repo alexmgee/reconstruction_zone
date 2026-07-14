@@ -137,7 +137,7 @@ def benchmark(
 
     # Show disagreements with context
     if lap_only or ten_only:
-        print(f"Disagreements (showing first 20):")
+        print("Disagreements (showing first 20):")
         print(f"  {'Window':>8}  {'Lap frame':>10}  {'Ten frame':>10}  {'Lap score':>10}  {'Ten score':>10}  {'Delta':>8}")
         print(f"  {'─'*8}  {'─'*10}  {'─'*10}  {'─'*10}  {'─'*10}  {'─'*8}")
 

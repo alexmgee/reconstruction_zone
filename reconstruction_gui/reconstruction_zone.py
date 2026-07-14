@@ -14,19 +14,20 @@ Tabs:
 No CLI arguments required. All configuration via the GUI.
 """
 
-import customtkinter as ctk
-import tkinter as tk
-from tkinter import filedialog
-from pathlib import Path
-from typing import Any, Optional, List, Dict
-import threading
-import queue
-import sys
-import os
 import copy
 import json
 import logging
+import os
+import queue
 import shutil
+import sys
+import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog
+from typing import Any, Dict, List, Optional
+
+import customtkinter as ctk
 
 # Ensure reconstruction_gui and prep360 are importable
 _this_dir = Path(__file__).resolve().parent
@@ -56,17 +57,24 @@ except ImportError:
 
 def _import_pipeline():
     from reconstruction_pipeline import (
-        MaskingPipeline, MaskConfig, SegmentationModel,
-        ImageGeometry, CLASS_PRESETS, COCO_CLASSES, COCO_NAME_TO_ID,
+        CLASS_PRESETS,
+        COCO_CLASSES,
+        COCO_NAME_TO_ID,
+        ImageGeometry,
+        MaskConfig,
+        MaskingPipeline,
+        SegmentationModel,
     )
     return MaskingPipeline, MaskConfig, SegmentationModel, ImageGeometry, CLASS_PRESETS, COCO_CLASSES, COCO_NAME_TO_ID
 
 
 def _import_review():
     from review_gui import (
-        load_overlay_thumbnail, compute_mask_area_percent, REVIEW_COLORS,
+        REVIEW_COLORS,
+        compute_mask_area_percent,
+        load_overlay_thumbnail,
     )
-    from review_status import ReviewStatusManager, MaskStatus
+    from review_status import MaskStatus, ReviewStatusManager
     return (load_overlay_thumbnail, compute_mask_area_percent,
             REVIEW_COLORS, ReviewStatusManager, MaskStatus)
 
@@ -77,21 +85,30 @@ def _import_review():
 # ──────────────────────────────────────────────────────────────────────
 
 from _version import __version__
-from widgets import (
-    Section as _Section, CollapsibleSection as _CollapsibleSection, slider_row, Tooltip,
-    COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
-    COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
-    COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
-    COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
-    COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
-    FONT_TEXT_SUBTITLE, FONT_TEXT_MONO_VALUE, FONT_TEXT_CONSOLE, FONT_TEXT_STATUS,
-    LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
-)
 from app_infra import AppInfrastructure
 from tabs.alignment_tab import build_alignment_tab
-from tabs.source_tab import build_source_tab
 from tabs.projects_tab import build_projects_tab
-
+from tabs.source_tab import build_source_tab
+from widgets import (
+    BROWSE_BUTTON_WIDTH,
+    COLOR_ACTION_DANGER,
+    COLOR_ACTION_DANGER_H,
+    COLOR_ACTION_MUTED,
+    COLOR_ACTION_MUTED_H,
+    COLOR_ACTION_PRIMARY,
+    COLOR_ACTION_PRIMARY_H,
+    COLOR_ACTION_SECONDARY,
+    COLOR_ACTION_SECONDARY_H,
+    LABEL_FIELD_WIDTH,
+    Tooltip,
+    slider_row,
+)
+from widgets import (
+    CollapsibleSection as _CollapsibleSection,
+)
+from widgets import (
+    Section as _Section,
+)
 
 # ──────────────────────────────────────────────────────────────────────
 # Main application
@@ -2741,7 +2758,9 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                         )
             else:
                 self.log(f"Processing single image: {inp}")
-                import cv2, shutil
+                import shutil
+
+                import cv2
                 image = cv2.imread(str(inp))
                 if image is None:
                     self.log(f"ERROR: Failed to load image: {inp}")
@@ -4026,7 +4045,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         pil_img = self._thumb_cache.get(stem)
         if pil_img is not None:
-            from PIL import Image as PILImage, ImageTk
+            from PIL import Image as PILImage
+            from PIL import ImageTk
             # Compute display width from scroll frame (half minus padding)
             try:
                 scroll_w = self._thumb_scroll.winfo_width()

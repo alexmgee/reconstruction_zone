@@ -24,17 +24,16 @@ Usage:
 """
 
 import json
+import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-import time
-from typing import Callable, List, Optional, Tuple, Dict, Union
-from concurrent.futures import ProcessPoolExecutor
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
 
-from .fisheye_calibration import FisheyeCalibration, DualFisheyeCalibration
-
+from .fisheye_calibration import DualFisheyeCalibration, FisheyeCalibration
 
 # --- Default calibration for DJI Osmo 360 ---
 #
@@ -1040,7 +1039,7 @@ def main():
                 intr = reframer.get_virtual_pinhole_intrinsics(fov, config.crop_size)
                 p = intr["params"]
                 print(f"\n  FOV {fov:.0f}°:")
-                print(f"    Model: PINHOLE")
+                print("    Model: PINHOLE")
                 print(f"    fx={p[0]:.2f}  fy={p[1]:.2f}")
                 print(f"    cx={p[2]:.2f}  cy={p[3]:.2f}")
                 print(f"    COLMAP line: PINHOLE {config.crop_size} {config.crop_size} "

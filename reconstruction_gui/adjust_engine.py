@@ -25,7 +25,6 @@ from typing import Optional
 import cv2
 import numpy as np
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # State dataclasses
 # ══════════════════════════════════════════════════════════════════════════════
@@ -735,9 +734,9 @@ def adjust_vignette(img: np.ndarray, strength: float) -> np.ndarray:
 # Video utilities
 # ══════════════════════════════════════════════════════════════════════════════
 
+import json as _json
 import shutil
 import subprocess
-import json as _json
 
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".mts", ".m4v", ".webm"}
 

@@ -18,13 +18,14 @@ Usage:
     dual.save("osmo360.json")
 """
 
-import json
 import datetime
-import numpy as np
-import cv2
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple
+
+import cv2
+import numpy as np
 
 
 @dataclass

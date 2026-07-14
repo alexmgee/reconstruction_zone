@@ -4,7 +4,11 @@ import cv2
 import numpy as np
 
 from prep360.core.blur_filter import (
-    BlurFilter, BlurFilterConfig, BlurFilterResult, BlurScore, _score_image,
+    BlurFilter,
+    BlurFilterConfig,
+    BlurFilterResult,
+    BlurScore,
+    _score_image,
 )
 
 

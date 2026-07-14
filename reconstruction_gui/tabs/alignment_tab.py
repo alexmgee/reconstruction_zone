@@ -23,26 +23,40 @@ try:
         build_spheresfm_erp_profile,
     )
     from reconstruction_gui.widgets import (
-        Section, CollapsibleSection, Tooltip,
-        COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
-        COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
-        COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
-        COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
-        COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
-        FONT_TEXT_MONO_VALUE, FONT_TEXT_CONSOLE,
-        LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+        BROWSE_BUTTON_WIDTH,
+        COLOR_ACTION_DANGER,
+        COLOR_ACTION_DANGER_H,
+        COLOR_ACTION_MUTED,
+        COLOR_ACTION_MUTED_H,
+        COLOR_ACTION_PRIMARY,
+        COLOR_ACTION_PRIMARY_H,
+        COLOR_ACTION_SECONDARY,
+        COLOR_ACTION_SECONDARY_H,
+        COLOR_TEXT_DIM,
+        COLOR_TEXT_MUTED,
+        FONT_TEXT_CONSOLE,
+        FONT_TEXT_MONO_VALUE,
+        LABEL_FIELD_WIDTH,
+        CollapsibleSection,
+        Section,
+        Tooltip,
     )
 except ImportError:
     from alignment_profiles import build_colmap_pinhole_profile, build_spheresfm_erp_profile
     from widgets import (
-        Section, CollapsibleSection, Tooltip,
-        COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
-        COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
-        COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
-        COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
-        COLOR_TEXT_MUTED, COLOR_TEXT_DIM,
-        FONT_TEXT_MONO_VALUE, FONT_TEXT_CONSOLE,
-        LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+        BROWSE_BUTTON_WIDTH,
+        COLOR_ACTION_DANGER,
+        COLOR_ACTION_DANGER_H,
+        COLOR_ACTION_MUTED,
+        COLOR_ACTION_MUTED_H,
+        COLOR_ACTION_PRIMARY,
+        COLOR_ACTION_PRIMARY_H,
+        COLOR_ACTION_SECONDARY,
+        COLOR_ACTION_SECONDARY_H,
+        LABEL_FIELD_WIDTH,
+        CollapsibleSection,
+        Section,
+        Tooltip,
     )
 
 
@@ -1072,8 +1086,8 @@ def _on_viewer_screenshot(app):
 
 def _on_viewer_load_model(app):
     """Browse for a sparse model folder and load it into the viewer."""
-    from tkinter import filedialog
     from pathlib import Path
+    from tkinter import filedialog
 
     folder = filedialog.askdirectory(
         title="Select Sparse Model Directory (contains cameras.txt/bin, images.txt/bin, points3D.txt/bin)",
@@ -1330,7 +1344,7 @@ def _download_vocab_tree(app):
             urllib.request.urlretrieve(_VOCAB_TREE_URL, str(dest))
             app.after(0, lambda: _set_entry_text(app.alignment_vocab_tree_entry, str(dest)))
             app.after(0, lambda: app.log(f"Vocab tree downloaded: {dest}"))
-        except Exception as exc:
+        except Exception:
             app.after(0, lambda: app.log(f"Vocab tree download failed: {exc}"))
 
     threading.Thread(target=_worker, daemon=True).start()
@@ -1522,9 +1536,9 @@ def _update_rig_file_entry_state(app):
 def _on_rig_preset_change(app):
     """Called when the rig preset dropdown changes."""
     try:
-        from reconstruction_gui.rig_presets import get_preset_by_display_name, format_rig_summary, load_rig_config
+        from reconstruction_gui.rig_presets import format_rig_summary, get_preset_by_display_name, load_rig_config
     except ImportError:
-        from rig_presets import get_preset_by_display_name, format_rig_summary, load_rig_config
+        from rig_presets import format_rig_summary, get_preset_by_display_name, load_rig_config
 
     _update_rig_file_entry_state(app)
 

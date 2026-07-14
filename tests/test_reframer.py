@@ -1,6 +1,5 @@
 """Tests for prep360 Ring/ViewConfig geometry."""
 
-import math
 
 from prep360.core.reframer import Ring, ViewConfig
 

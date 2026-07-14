@@ -19,41 +19,56 @@ from tkinter import filedialog
 from typing import List, Optional
 
 import customtkinter as ctk
-
 from widgets import (
-    Section, CollapsibleSection, Tooltip,
-    COLOR_ACTION_PRIMARY, COLOR_ACTION_PRIMARY_H,
-    COLOR_ACTION_SECONDARY, COLOR_ACTION_SECONDARY_H,
-    COLOR_ACTION_DANGER, COLOR_ACTION_DANGER_H,
-    COLOR_ACTION_MUTED, COLOR_ACTION_MUTED_H,
-    COLOR_TEXT_MUTED, COLOR_TEXT_DIM, COLOR_TEXT_DISABLED,
-    FONT_TEXT_SUBTITLE, FONT_TEXT_MONO_VALUE, FONT_TEXT_STATUS,
-    FONT_TEXT_BTN_PRIMARY, FONT_TEXT_BTN_SECONDARY,
-    LABEL_FIELD_WIDTH, BROWSE_BUTTON_WIDTH,
+    BROWSE_BUTTON_WIDTH,
+    COLOR_ACTION_DANGER,
+    COLOR_ACTION_DANGER_H,
+    COLOR_ACTION_MUTED,
+    COLOR_ACTION_MUTED_H,
+    COLOR_ACTION_PRIMARY,
+    COLOR_ACTION_PRIMARY_H,
+    COLOR_ACTION_SECONDARY,
+    COLOR_ACTION_SECONDARY_H,
+    COLOR_TEXT_DIM,
+    COLOR_TEXT_DISABLED,
+    FONT_TEXT_BTN_PRIMARY,
+    FONT_TEXT_MONO_VALUE,
+    FONT_TEXT_STATUS,
     HEIGHT_ACTION_BAR,
+    LABEL_FIELD_WIDTH,
+    CollapsibleSection,
+    Section,
+    Tooltip,
 )
 
 # ── prep360 core (optional) ────────────────────────────────────────────
 
 try:
     from prep360.core import (
-        VideoAnalyzer,
-        FrameExtractor, ExtractionConfig, ExtractionMode,
-        OSVHandler,
-        FisheyeViewConfig, FISHEYE_PRESETS,
+        FISHEYE_PRESETS,
         DualFisheyeCalibration,
-        SharpestExtractor, SharpestConfig,
+        ExtractionConfig,
+        ExtractionMode,
+        FisheyeViewConfig,
+        FrameExtractor,
+        OSVHandler,
+        SharpestConfig,
+        SharpestExtractor,
+        VideoAnalyzer,
     )
     from prep360.core.fisheye_reframer import (
-        default_osmo360_calibration, batch_extract as fisheye_batch_extract,
+        batch_extract as fisheye_batch_extract,
     )
-    from prep360.core.queue_manager import VideoQueue, ExtractionSettings
+    from prep360.core.fisheye_reframer import (
+        default_osmo360_calibration,
+    )
+    from prep360.core.geotagger import geotag_from_interval, geotag_from_manifest
     from prep360.core.paired_split_video_extractor import (
         PairedSplitConfig,
         PairedSplitVideoExtractor,
     )
+    from prep360.core.queue_manager import ExtractionSettings, VideoQueue
     from prep360.core.srt_parser import find_srt_for_video, parse_srt
-    from prep360.core.geotagger import geotag_from_manifest, geotag_from_interval
 
     HAS_PREP360 = True
 except ImportError:
@@ -1198,7 +1213,7 @@ def _extract_single_worker(app, video_path, base_output):
                 app.after(0, lambda m=msg: app.log(m))
 
         used_sharpest = False
-        app.log(f"\nExtraction...")
+        app.log("\nExtraction...")
         t_extract = time.perf_counter()
 
         if sharpness != "none":
@@ -1541,7 +1556,7 @@ def _extract_queue_worker(app):
                 app.log(f"Output: {output_dir}")
                 app.log(f"Settings: {s.summary()}")
 
-                app.log(f"\nExtraction...")
+                app.log("\nExtraction...")
                 t_extract = time.perf_counter()
                 used_sharpest = False
 
@@ -2082,8 +2097,9 @@ def _fqf_run_filter(app):
 
     def worker():
         try:
-            import numpy as np
             import shutil
+
+            import numpy as np
             folder_path = Path(folder)
             safety = app.fqf_safety_var.get()
             use_move = "move" in safety.lower() if isinstance(safety, str) else True
@@ -2895,7 +2911,7 @@ def _std_reframe_worker(app, images_dir, masks_dir, output_dir,
     """Thread target: standard fisheye reframe using FisheyeReframer."""
     try:
         calib = default_osmo360_calibration()
-        app.log(f"Reframing fisheye \u2192 perspectives")
+        app.log("Reframing fisheye \u2192 perspectives")
         app.log(f"  Preset: {preset_key} ({config.total_views()} views)")
         app.log(f"  Crop: {config.crop_size}x{config.crop_size}")
         app.log(f"  Images: {images_dir}")
@@ -2932,7 +2948,7 @@ def _std_reframe_worker(app, images_dir, masks_dir, output_dir,
             log=app.log,
         )
 
-        app.log(f"\nReframe complete")
+        app.log("\nReframe complete")
         app.log(f"  Frame pairs: {len(pairs)}")
         app.log(f"  Total crops: {total_crops}")
         if errors:
@@ -3250,7 +3266,7 @@ def _paired_split_video_worker(app, front_video, back_video, output_dir):
         if not app.cancel_flag.is_set():
             app.log(f"  [{current}/{total}] {msg}")
 
-    app.log(f"\nExtraction...")
+    app.log("\nExtraction...")
     t_extract = time.perf_counter()
     extractor = PairedSplitVideoExtractor()
     result = extractor.extract(
@@ -3498,7 +3514,7 @@ def _fisheye_worker(
 
 def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config, station_dirs=False):
     """Reframe ERP frames using the equirect reframer (not fisheye pairs)."""
-    from prep360.core.reframer import Reframer, ViewConfig, Ring
+    from prep360.core.reframer import Reframer, Ring, ViewConfig
 
     # Build a ViewConfig from the fisheye preset's view angles
     # Extract unique rings from the fisheye views

@@ -4,9 +4,10 @@ Image Adjustments Module
 Shadow and highlight adjustments using OpenCV curve manipulation.
 """
 
+from typing import Tuple
+
 import cv2
 import numpy as np
-from typing import Tuple
 
 
 def create_shadow_highlight_lut(shadow: int = 50, highlight: int = 50) -> np.ndarray:

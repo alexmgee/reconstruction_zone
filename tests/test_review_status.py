@@ -5,9 +5,8 @@ The ``last_edit_modified`` flag distinguishes "actually edited" from
 "rubber-stamped" without adding more statuses.
 """
 
-import json
 
-from reconstruction_gui.review_status import ReviewStatusManager, MaskStatus
+from reconstruction_gui.review_status import MaskStatus, ReviewStatusManager
 
 
 class TestMaskStatus:

@@ -25,25 +25,25 @@ __version__ = "0.1.0"
 __author__ = "Edgeworks"
 
 from .core import (
-    VideoAnalyzer,
-    VideoInfo,
-    FrameExtractor,
-    ExtractionMode,
-    Reframer,
-    Ring,
-    ViewConfig,
-    Preset,
-    PresetManager,
-    SkyFilter,
-    SkyFilterConfig,
-    LUTProcessor,
     BlurFilter,
     BlurFilterConfig,
-    ColmapExporter,
     ColmapExportConfig,
-    MetashapeProject,
-    parse_metashape_xml,
+    ColmapExporter,
     ExportResult,
+    ExtractionMode,
+    FrameExtractor,
+    LUTProcessor,
+    MetashapeProject,
+    Preset,
+    PresetManager,
+    Reframer,
+    Ring,
+    SkyFilter,
+    SkyFilterConfig,
+    VideoAnalyzer,
+    VideoInfo,
+    ViewConfig,
+    parse_metashape_xml,
 )
 
 __all__ = [
@@ -78,7 +78,7 @@ _LAZY_SEGMENTER = {"Segmenter", "SegmentConfig", "COCO_CLASSES", "CLASS_PRESETS"
 
 def __getattr__(name):
     if name in _LAZY_SEGMENTER:
-        from .core.segmenter import Segmenter, SegmentConfig, COCO_CLASSES, CLASS_PRESETS
+        from .core.segmenter import CLASS_PRESETS, COCO_CLASSES, SegmentConfig, Segmenter
         _map = {"Segmenter": Segmenter, "SegmentConfig": SegmentConfig,
                 "COCO_CLASSES": COCO_CLASSES, "CLASS_PRESETS": CLASS_PRESETS}
         return _map[name]

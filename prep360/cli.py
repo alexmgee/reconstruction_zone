@@ -24,8 +24,9 @@ from pathlib import Path
 
 def cmd_analyze(args):
     """Analyze video file."""
-    from .core.analyzer import VideoAnalyzer
     import json
+
+    from .core.analyzer import VideoAnalyzer
 
     analyzer = VideoAnalyzer()
 
@@ -56,7 +57,7 @@ def cmd_analyze(args):
 
 def cmd_extract(args):
     """Extract frames from video."""
-    from .core.extractor import FrameExtractor, ExtractionConfig, ExtractionMode
+    from .core.extractor import ExtractionConfig, ExtractionMode, FrameExtractor
 
     config = ExtractionConfig(
         interval=args.interval,
@@ -107,7 +108,7 @@ def cmd_extract(args):
 
 def cmd_geotag(args):
     """Geotag extracted frames using SRT telemetry."""
-    from .core.geotagger import geotag_from_manifest, geotag_from_interval, MANIFEST_FILENAME
+    from .core.geotagger import MANIFEST_FILENAME, geotag_from_interval, geotag_from_manifest
 
     def progress(curr, total, msg):
         print(f"[{curr}/{total}] {msg}")
@@ -138,7 +139,7 @@ def cmd_geotag(args):
 
 def cmd_reframe(args):
     """Reframe equirectangular images to perspective views."""
-    from .core.reframer import Reframer, VIEW_PRESETS
+    from .core.reframer import VIEW_PRESETS, Reframer
 
     if args.list_presets:
         print("Available presets:")
@@ -273,8 +274,9 @@ def cmd_sky(args):
 
 def cmd_presets(args):
     """Manage presets."""
-    from .core.presets import PresetManager
     import json
+
+    from .core.presets import PresetManager
 
     manager = PresetManager(args.dir)
 
@@ -375,9 +377,9 @@ def cmd_blur(args):
 def cmd_pipeline(args):
     """Run full pipeline."""
     from .core.analyzer import VideoAnalyzer
-    from .core.extractor import FrameExtractor, ExtractionConfig, ExtractionMode
-    from .core.reframer import Reframer
+    from .core.extractor import ExtractionConfig, ExtractionMode, FrameExtractor
     from .core.presets import PresetManager
+    from .core.reframer import Reframer
 
     output_base = Path(args.output)
     output_base.mkdir(parents=True, exist_ok=True)
@@ -425,7 +427,7 @@ def cmd_pipeline(args):
     if args.blur_filter:
         from .core.blur_filter import BlurFilter, BlurFilterConfig
 
-        print(f"\n=== Step 2.5: Filter Blurry Frames ===")
+        print("\n=== Step 2.5: Filter Blurry Frames ===")
         filtered_dir = output_base / "frames_filtered"
         blur_config = BlurFilterConfig(
             percentile=args.blur_percentile,
@@ -459,11 +461,11 @@ def cmd_pipeline(args):
     )
 
     if not result.success:
-        print(f"Reframing had errors", file=sys.stderr)
+        print("Reframing had errors", file=sys.stderr)
 
     print(f"Created {result.output_count} perspective views")
 
-    print(f"\n=== Complete ===")
+    print("\n=== Complete ===")
     print(f"Output: {output_base}")
     print(f"  frames/: {result.input_count} equirectangular frames")
     print(f"  perspectives/: {result.output_count} perspective views")
@@ -473,10 +475,7 @@ def cmd_pipeline(args):
 
 def cmd_segment(args):
     """Segment images to generate masks."""
-    from .core.segmenter import (
-        Segmenter, SegmentConfig, COCO_CLASSES, CLASS_PRESETS,
-        get_class_id, HAS_YOLO
-    )
+    from .core.segmenter import CLASS_PRESETS, COCO_CLASSES, HAS_YOLO, SegmentConfig, Segmenter, get_class_id
 
     if args.list_classes:
         print("COCO Classes:")
@@ -555,7 +554,9 @@ def cmd_segment(args):
 def cmd_colmap(args):
     """Export Metashape XML project to COLMAP + XMP."""
     from .core.colmap_export import (
-        ColmapExporter, ColmapExportConfig, print_project_info,
+        ColmapExportConfig,
+        ColmapExporter,
+        print_project_info,
     )
 
     if args.info:
@@ -599,7 +600,7 @@ def cmd_colmap(args):
     result = exporter.export(progress_callback=progress)
 
     if result.success:
-        print(f"\nExport complete:")
+        print("\nExport complete:")
         print(f"  Images: {result.images_exported}")
         if result.cameras_written > 0:
             print(f"  COLMAP cameras: {result.cameras_written}")
@@ -615,7 +616,7 @@ def cmd_colmap(args):
             print(f"  COLMAP output: {result.colmap_dir}")
         return 0
     else:
-        print(f"\nExport failed:")
+        print("\nExport failed:")
         for err in result.errors[:10]:
             print(f"  {err}")
         return 1

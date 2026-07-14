@@ -1,6 +1,6 @@
 """Tests for distribution flag and version consistency."""
 
-from prep360.distribution import is_gumroad, DISTRIBUTION
+from prep360.distribution import DISTRIBUTION, is_gumroad
 
 
 def test_default_distribution_is_github():

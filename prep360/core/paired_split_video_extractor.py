@@ -444,8 +444,9 @@ class PairedSplitVideoExtractor:
         Returns PairedSplitResult on success or cancellation.
         Returns None on GPU init/runtime failure (caller falls back to CPU).
         """
-        import numpy as np
         import time
+
+        import numpy as np
 
         if _log is None:
             _log = lambda _msg: None

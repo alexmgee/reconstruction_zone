@@ -6,11 +6,10 @@ Useful for masking out people, equipment, and other unwanted objects
 before photogrammetry processing.
 """
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Callable, Dict, Tuple, Set
-import json
-import time
+from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np

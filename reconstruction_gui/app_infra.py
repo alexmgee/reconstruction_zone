@@ -30,7 +30,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
-from typing import Dict, Optional
+from typing import Optional
 
 try:
     from app_paths import crash_log_file

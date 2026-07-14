@@ -6,8 +6,9 @@ building blocks used across all tabs.
 """
 
 import tkinter as tk
-import customtkinter as ctk
 from typing import Optional
+
+import customtkinter as ctk
 
 # ── Design System Constants ──────────────────────────────────────────
 # See docs/DESIGN_SYSTEM.md for rationale and usage rules.

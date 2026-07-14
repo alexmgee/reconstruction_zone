@@ -29,16 +29,15 @@ CLI:
 """
 
 import json
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional
 
 import cv2
 import numpy as np
 
 from .gap_detector import GapReport, SpatialGap
-from .motion_selector import MotionSelector, FrameScore
+from .motion_selector import MotionSelector
 
 
 @dataclass
@@ -530,7 +529,8 @@ def main():
         view_config = None
         if args.reframe:
             from .fisheye_reframer import (
-                FisheyeReframer, FISHEYE_PRESETS,
+                FISHEYE_PRESETS,
+                FisheyeReframer,
             )
             reframer = FisheyeReframer.with_defaults()
             view_config = FISHEYE_PRESETS.get(args.preset)

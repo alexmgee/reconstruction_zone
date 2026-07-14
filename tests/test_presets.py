@@ -2,8 +2,8 @@
 
 import json
 
-from prep360.core.presets import Preset, PresetManager, BUILTIN_PRESETS
-from prep360.core.reframer import Ring, ViewConfig
+from prep360.core.presets import BUILTIN_PRESETS, Preset, PresetManager
+from prep360.core.reframer import ViewConfig
 
 
 class TestPreset:

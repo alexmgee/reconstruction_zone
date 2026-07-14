@@ -9,11 +9,10 @@ GUI-independent — usable from CLI, Metashape scripts, or the Projects tab.
 
 import json
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Any
-
+from typing import Any, Dict, List, Optional
 
 STAGE_ORDER = [
     "extracted",

@@ -32,6 +32,10 @@ def _check_vtk() -> bool:
     global _HAS_VTK
     if _HAS_VTK is None:
         try:
+            import pyvista  # noqa: F401
+            from vtkmodules.vtkInteractionStyle import (  # noqa: F401
+                vtkInteractorStyleTrackballCamera,
+            )
             from vtkmodules.vtkRenderingCore import (  # noqa: F401
                 vtkActor,
                 vtkPolyDataMapper,
@@ -39,10 +43,6 @@ def _check_vtk() -> bool:
                 vtkRenderWindow,
                 vtkRenderWindowInteractor,
             )
-            from vtkmodules.vtkInteractionStyle import (  # noqa: F401
-                vtkInteractorStyleTrackballCamera,
-            )
-            import pyvista  # noqa: F401
 
             _HAS_VTK = True
         except ImportError:
@@ -86,12 +86,12 @@ class PointCloudViewer:
                 "Install with: pip install pyvista"
             )
 
+        import pyvista as pv
+        from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
         from vtkmodules.vtkRenderingCore import (
             vtkRenderWindow,
             vtkRenderWindowInteractor,
         )
-        from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
-        import pyvista as pv
 
         self._parent = parent_frame
         self._destroyed = False
@@ -336,8 +336,8 @@ class PointCloudViewer:
     def _build_point_cloud(self, points3D: dict):
         """Build VTK point cloud actor from COLMAPPoint3D dict."""
         import vtk
-        from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
         from vtkmodules.util.numpy_support import numpy_to_vtk
+        from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
         if self._point_actor is not None:
             self._renderer.RemoveActor(self._point_actor)

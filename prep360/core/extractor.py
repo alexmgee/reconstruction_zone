@@ -8,11 +8,10 @@ Writes an extraction manifest alongside frames for geotagging.
 import json
 import os
 import subprocess
-import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Callable, List
+from typing import Callable, List, Optional
 
 MANIFEST_FILENAME = "extraction_manifest.json"
 

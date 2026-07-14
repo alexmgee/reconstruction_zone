@@ -26,9 +26,9 @@ Usage:
 import json
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -271,7 +271,7 @@ class GapDetector:
         Camera center in chunk coords = transform[:3, 3].
         If a chunk transform exists, applies it to get world coords.
         """
-        from .colmap_export import parse_metashape_xml, get_chunk_rotation_and_scale
+        from .colmap_export import get_chunk_rotation_and_scale, parse_metashape_xml
 
         project = parse_metashape_xml(xml_path)
         R_cw, cw_scale = get_chunk_rotation_and_scale(

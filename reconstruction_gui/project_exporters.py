@@ -9,10 +9,8 @@ Outputs:
 
 from datetime import datetime
 from pathlib import Path
-from typing import List
 
-from project_store import Project, ProjectStore, STAGE_ORDER
-
+from project_store import STAGE_ORDER, ProjectStore
 
 METHOD_LABELS = ("Metashape", "RealityScan", "COLMAP")
 
@@ -41,13 +39,13 @@ def export_markdown(store: ProjectStore, output_path: str):
     """Export all projects to a markdown file."""
     projects = store.list_projects()
     lines = [
-        f"# Photogrammetry Project Index",
-        f"",
+        "# Photogrammetry Project Index",
+        "",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"Total projects: {len(projects)}",
-        f"",
-        f"---",
-        f"",
+        "",
+        "---",
+        "",
     ]
 
     for proj in projects:

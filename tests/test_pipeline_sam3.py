@@ -5,7 +5,8 @@ to find exactly where detections are lost.
 
 Usage: python reconstruction_gui/test_pipeline_sam3.py <equirect_image_path>
 """
-import sys, os
+import os
+import sys
 
 # Ensure reconstruction_gui and sam3 are importable
 sys.path.insert(0, os.path.dirname(__file__))
@@ -13,11 +14,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'models', 'sam3
 
 import cv2
 import numpy as np
-from PIL import Image
-
 from reconstruction_pipeline import (
-    MaskConfig, MaskingPipeline, SAM3Segmenter, CubemapProjection,
-    ImageGeometry, SegmentationModel
+    CubemapProjection,
+    ImageGeometry,
+    MaskConfig,
+    MaskingPipeline,
+    SAM3Segmenter,
+    SegmentationModel,
 )
 
 

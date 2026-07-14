@@ -5,11 +5,11 @@ Save and load camera/extraction presets for different configurations.
 """
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
-from .reframer import ViewConfig, Ring
+from .reframer import Ring, ViewConfig
 
 
 @dataclass

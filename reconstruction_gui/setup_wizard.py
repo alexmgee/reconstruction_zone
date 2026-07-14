@@ -17,14 +17,12 @@ tkinter calls are ever made from background threads.
 from __future__ import annotations
 
 import logging
-import os
 import queue
 import shutil
 import threading
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import customtkinter as ctk
 
@@ -32,13 +30,21 @@ logger = logging.getLogger(__name__)
 
 try:
     from model_paths import (
-        resolve_sam3_weights, resolve_rfdetr_seg_weights, resolve_yolo26_weights,
-        app_model_dir, RFDETR_SEG_URLS, SAM3_MODEL_ID,
+        RFDETR_SEG_URLS,
+        SAM3_MODEL_ID,
+        app_model_dir,
+        resolve_rfdetr_seg_weights,
+        resolve_sam3_weights,
+        resolve_yolo26_weights,
     )
 except ImportError:
     from reconstruction_gui.model_paths import (
-        resolve_sam3_weights, resolve_rfdetr_seg_weights, resolve_yolo26_weights,
-        app_model_dir, RFDETR_SEG_URLS, SAM3_MODEL_ID,
+        RFDETR_SEG_URLS,
+        SAM3_MODEL_ID,
+        app_model_dir,
+        resolve_rfdetr_seg_weights,
+        resolve_sam3_weights,
+        resolve_yolo26_weights,
     )
 
 

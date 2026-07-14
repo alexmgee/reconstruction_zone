@@ -19,7 +19,6 @@ from pathlib import Path
 
 from prep360.core.fourier_corrections import parse_corrections_from_element
 
-
 # Calibration parameters parsed when present. Missing parameters are absent
 # from the returned dict (callers fall back to zero defaults). Order matches
 # the Metashape XML element order for readability.

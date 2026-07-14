@@ -6,11 +6,11 @@ Manages a persistent queue of video files for batch processing.
 
 import json
 import uuid
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-from typing import List, Optional, Dict, Any
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
 class QueueItemStatus(Enum):

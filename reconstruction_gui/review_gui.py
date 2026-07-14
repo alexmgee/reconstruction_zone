@@ -9,17 +9,17 @@ Usage:
     python review_gui.py ./output/masks --images-dir ./output/frames
 """
 
-import customtkinter as ctk
-from PIL import Image, ImageDraw
-import cv2
-import numpy as np
-from pathlib import Path
-from typing import List, Optional, Dict, Tuple
 import argparse
 import logging
 import threading
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-from review_status import ReviewStatusManager, MaskStatus
+import customtkinter as ctk
+import cv2
+import numpy as np
+from PIL import Image
+from review_status import MaskStatus, ReviewStatusManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -506,7 +506,8 @@ class ReviewApp(ctk.CTk):
                 from review_masks import MaskReviewer
             except ImportError:
                 # Try relative import
-                import sys, os
+                import os
+                import sys
                 sys.path.insert(0, os.path.dirname(__file__))
                 from review_masks import MaskReviewer
 

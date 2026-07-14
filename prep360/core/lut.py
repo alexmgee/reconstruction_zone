@@ -6,8 +6,7 @@ Apply color lookup tables to convert log footage to standard color space.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable, List, Tuple
-import shutil
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np

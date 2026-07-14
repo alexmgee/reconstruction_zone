@@ -113,7 +113,7 @@
 #   Next: the Quaternions (four images (w,x,y,z)).
 #
 # One can use whatever program one desires to view/inspect the output images.
-# 
+#
 # One option is ImageJ (which can be found on-line and downloaded for free).
 #
 # If you use this you can File->Import->RAW  (imput Width, Height, Images=5, little endian on a windows PC)
@@ -132,7 +132,6 @@
 import argparse
 import hashlib
 import logging
-import os
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -142,7 +141,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 from scipy.spatial import KDTree
-
 
 # =============================================================================
 # Module-level constants and helpers introduced in v2.
@@ -1046,8 +1044,8 @@ def generate_camera_data(width, height, params, model):
 
     print("Done.")
     return filename
-    
-    
+
+
 # =========================
 # QUAT → RAY
 # Note: Referencing: https://en.wikipedia.org/wiki/Conversion_between_quaternions_and_Euler_angles
@@ -1087,7 +1085,7 @@ def project_to_face(ray, face):
         return None
 
     return u, v
-    
+
 
 def gaussian_kernel(r, eps):
     return np.exp(-(eps * r)**2)
@@ -1161,8 +1159,8 @@ def compute_interpolation_function(facewidth, cubefaceintersections_x, cubefacei
     logger.info("Finished solving for the weights to reproject (chunk_size=%d).", chunk_size)
 
     return indices, pixel_weights
-    
-    
+
+
 
 
 # --- 3. RAPID REUSE FUNCTION ---
@@ -1176,10 +1174,10 @@ def apply_fast_gaussian_remap(indices, pixel_weights, imagedim, new_values):
     """
     # Grab the specific values for each pixel's neighbors
     neighbor_values = new_values[indices] # Shape: (Pixels, Neighbors)
-    
+
     # Dot product: Sum (weight * value) for each pixel
     remapped = np.einsum('ij,ij->i', pixel_weights, neighbor_values)
-    
+
     return remapped.reshape(imagedim, imagedim)
 
 def compute_metashape_rays_usefulpixmap(
@@ -1327,20 +1325,20 @@ def compute_metashape_rays_usefulpixmap(
 
     return rays, useful_pixel_mask, maxangle
 
-    
+
 def compute_image2cubeface_remapping(width, height, rays, useful_pixel_mask, facewidth, face):
 
     F = facewidth / 2
-    
+
     #############################################################################################
     # Compute the real valued coordinates of the rays that hit each of the cube faces. Each
     # of these ray directions has a source image integer location, so it can reference the source
     # image and mask data when we later reproject the images.
     #############################################################################################
-    
+
     pad = 10
     center = facewidth / 2
-    
+
     ############################################################################################
     # Here we go through each of the five faces and determine the reprojection.
     #
@@ -1388,7 +1386,7 @@ def compute_image2cubeface_remapping(width, height, rays, useful_pixel_mask, fac
     # rays that hit this cube face. We will record the fisheye image coordinates and the
     # cube face intersection coordinates. Because really wide fisheye lens images have a lot
     # of "useless pixels" that are outside of the useful image area, we want to exclude using
-    # rays that are "cast" through these "invalid" pixels. For the moment, for simplicity, I am 
+    # rays that are "cast" through these "invalid" pixels. For the moment, for simplicity, I am
     # assimuming a maximum angle from the optical axis to simply threshold and determine which
     # pixels to use, and which to discard. Later this decision could be made by examining the
     # mask images, or come other method. Its not a problem to work to a better solution at this
@@ -1740,7 +1738,7 @@ def main():
     # argument validation.
     if args.version:
         print()
-        print(codeversion);
+        print(codeversion)
         print()
         return
 
@@ -1748,13 +1746,13 @@ def main():
     # to run it.
     if args.h:
         print()
-        print()    
+        print()
         print("------------------------------------------------------------------------------------------------")
         print()
         print("This software can break up super-wide angle fisheye images for subsequent alignment as pinhole images")
         print("in Agisoft Metashape. After alignment these images and masks can be exported for Gaussian Splat training")
         print("without requiring the use of GUT.")
-        print()       
+        print()
         print("This software breaks up super-wide field of view images captured with fisheye lenses. Examples of")
         print("these images include, but are not limited to those captured by (1) 360 cameras that have not been")
         print("stitched into an Equirectangular format representation (2) Images captured with a full frame Nikon")
@@ -1800,7 +1798,7 @@ def main():
         print("organized in separate folders by each fisheye lens.")
         print()
         print("Thus for EACH fisheye lens (and images created by the lens and masks you should have):")
-        print()   
+        print()
         print("    (1) An Agisoft Metashape lens calibration (.xml) file")
         print("    (2) A directory of images captured by one fisheye lens.")
         print("    (3) A directory of masks for every image captured with this fisheye lens.")
@@ -1855,7 +1853,7 @@ def main():
             "the following arguments are required for processing: "
             + ", ".join(missing)
         )
-        
+
     outputdir = Path(args.outputdir)
     images_dir = Path(args.directoryfisheyeimages)
     masks_dir = Path(args.directoryfisheyemasks) if args.directoryfisheyemasks is not None else None

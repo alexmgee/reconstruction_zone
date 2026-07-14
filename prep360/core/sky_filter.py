@@ -6,7 +6,7 @@ Detect and filter frames that are predominantly sky (useless for photogrammetry)
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple, Dict, List, Optional, Callable
+from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np

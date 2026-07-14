@@ -159,7 +159,7 @@ class SAM3VideoPipeline:
             # PyTorch. Monkey-patch to allow all backends as fallback.
             try:
                 from sam3.model import decoder as _dec
-                from torch.nn.attention import sdpa_kernel, SDPBackend
+                from torch.nn.attention import SDPBackend, sdpa_kernel
                 _orig_sdpa_kernel = sdpa_kernel
                 _dec.sdpa_kernel = lambda *a, **kw: _orig_sdpa_kernel(
                     [SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.FLASH_ATTENTION]

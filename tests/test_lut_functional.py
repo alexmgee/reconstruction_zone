@@ -4,9 +4,9 @@ and error handling for both apply_uint8 and apply_lut compatibility wrapper.
 
 These verify the lut.py additions from commit 2741e55 are correct.
 """
+
 import numpy as np
 import pytest
-from pathlib import Path
 
 from prep360.core.lut import LUTProcessor
 
