@@ -251,6 +251,44 @@ print(json.dumps({"prep360": "prep360" in sys.modules}))
     assert result["prep360"] is False
 
 
+def test_import_jobs_does_not_import_desktop_or_workflow_modules():
+    probe = '''
+import json
+import sys
+
+import reconstruction_web.jobs  # noqa: F401
+
+print(json.dumps({
+    "customtkinter": "customtkinter" in sys.modules,
+    "reconstruction_zone": "reconstruction_gui.reconstruction_zone" in sys.modules,
+    "app_infra": "reconstruction_gui.app_infra" in sys.modules,
+    "prep360": any(name == "prep360" or name.startswith("prep360.") for name in sys.modules),
+}))
+'''
+    result = _run_import_probe(probe)
+    assert result == {
+        "customtkinter": False,
+        "reconstruction_zone": False,
+        "app_infra": False,
+        "prep360": False,
+    }
+
+
+def test_desktop_startup_path_does_not_import_reconstruction_web():
+    probe = '''
+import json
+import sys
+
+import reconstruction_gui.reconstruction_zone  # noqa: F401
+
+print(json.dumps({
+    "web": any(name == "reconstruction_web" or name.startswith("reconstruction_web.") for name in sys.modules),
+}))
+'''
+    result = _run_import_probe(probe)
+    assert result["web"] is False
+
+
 def test_version_route_does_not_import_desktop_modules_subprocess():
     runner = '''
 import json
@@ -333,6 +371,25 @@ def test_no_forbidden_boundary_imports_in_source():
         for module in forbidden_modules:
             assert f"import {module}" not in text, f"{module!r} import found in {path}"
             assert f"from {module}" not in text, f"{module!r} import found in {path}"
+
+
+def test_no_forbidden_web4_runtime_or_serving_technology_in_source():
+    forbidden = (
+        "fastapi",
+        "flask",
+        "aiohttp",
+        "uvicorn",
+        "asyncio",
+        "multiprocessing",
+        "subprocess",
+        "concurrent.futures",
+        "SimpleHTTPRequestHandler",
+    )
+    for path in PACKAGE_ROOT.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        lowered = source.lower()
+        for value in forbidden:
+            assert value.lower() not in lowered, f"{value!r} found in {path}"
 
 
 def test_sentinel_home_not_modified_during_server_run(allowed_state_root, monkeypatch):

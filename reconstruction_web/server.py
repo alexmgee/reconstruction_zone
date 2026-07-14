@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from reconstruction_web import __version__
 from reconstruction_web.file_access import FileAccessError, FolderTokenRegistry
+from reconstruction_web.jobs import JobRegistry, JobRegistryError
 from reconstruction_web.state import WebStateConfig, WebStateConfigError, build_state_config
 
-__all__ = ["HOST", "make_server", "main", "parse_root_argument"]
+__all__ = ["HOST", "make_server", "main", "parse_root_argument", "shutdown_server"]
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -50,11 +53,15 @@ def make_server(
     *,
     port: int = DEFAULT_PORT,
     root_registry: FolderTokenRegistry | None = None,
+    job_registry: JobRegistry | None = None,
 ) -> ThreadingHTTPServer:
     _ = state_config  # validated by caller; reserved for future route context
     registry = root_registry or FolderTokenRegistry()
-    handler = _build_handler(registry)
-    return ThreadingHTTPServer((HOST, port), handler)
+    jobs = job_registry or JobRegistry()
+    handler = _build_handler(registry, jobs)
+    server = _SafeThreadingHTTPServer((HOST, port), handler)
+    server.job_registry = jobs
+    return server
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,8 +84,29 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nShutting down.", file=sys.stderr)
     finally:
-        server.server_close()
+        shutdown_server(server)
     return 0
+
+
+def shutdown_server(
+    server: ThreadingHTTPServer,
+    server_thread: threading.Thread | None = None,
+    *,
+    join_timeout: float = 5.0,
+) -> None:
+    """Stop HTTP acceptance, close the server, and join representative workers."""
+    jobs = getattr(server, "job_registry", None)
+    if jobs is not None:
+        jobs.begin_shutdown()
+    if server_thread is not None and server_thread.is_alive():
+        server.shutdown()
+    server.server_close()
+    if server_thread is not None:
+        server_thread.join(join_timeout)
+        if server_thread.is_alive():
+            raise RuntimeError("HTTP server did not stop during shutdown.")
+    if jobs is not None:
+        jobs.shutdown(join_timeout=join_timeout)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -104,7 +132,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _build_handler(registry: FolderTokenRegistry) -> type[BaseHTTPRequestHandler]:
+def _build_handler(
+    registry: FolderTokenRegistry,
+    jobs: JobRegistry,
+) -> type[BaseHTTPRequestHandler]:
     health_payload = {
         "ok": True,
         "service": "reconstruction_web",
@@ -123,27 +154,122 @@ def _build_handler(registry: FolderTokenRegistry) -> type[BaseHTTPRequestHandler
             return
 
         def do_GET(self) -> None:  # noqa: N802
-            parsed = urlparse(self.path)
-            route = parsed.path
-            query = parse_qs(parsed.query, keep_blank_values=True)
+            try:
+                parsed = urlparse(self.path)
+                route = parsed.path
+                query = parse_qs(parsed.query, keep_blank_values=True)
 
-            if route == "/api/health":
-                self._send_json(200, health_payload)
-                return
-            if route == "/api/version":
-                self._send_json(200, version_payload)
-                return
-            if route == "/api/roots":
-                self._send_json(200, {"roots": registry.roots_for_api()})
-                return
-            if route == "/api/files/list":
-                self._handle_files_list(query)
-                return
-            if route == "/api/files/stat":
-                self._handle_files_stat(query)
-                return
+                if route == "/api/health":
+                    self._send_json(200, health_payload)
+                    return
+                if route == "/api/version":
+                    self._send_json(200, version_payload)
+                    return
+                if route == "/api/roots":
+                    self._send_json(200, {"roots": registry.roots_for_api()})
+                    return
+                if route == "/api/files/list":
+                    self._handle_files_list(query)
+                    return
+                if route == "/api/files/stat":
+                    self._handle_files_stat(query)
+                    return
+                if route == "/api/jobs":
+                    self._send_json(200, {"jobs": jobs.list_summaries()})
+                    return
+                if route.startswith("/api/jobs/") and route.count("/") == 3:
+                    self._handle_job_detail(route.removeprefix("/api/jobs/"))
+                    return
 
-            self._send_json(404, {"error": "not_found"})
+                self._send_error_json(404, "not_found", "Route not found.")
+            except Exception:
+                self._send_error_json(500, "internal_error", "Internal server error.")
+
+        def do_POST(self) -> None:  # noqa: N802
+            try:
+                route = urlparse(self.path).path
+                if route == "/api/jobs":
+                    self._handle_job_create()
+                    return
+                match = re.fullmatch(r"/api/jobs/([^/]+)/cancel", route)
+                if match is not None:
+                    self._handle_job_cancel(match.group(1))
+                    return
+                self._send_error_json(404, "not_found", "Route not found.")
+            except Exception:
+                self._send_error_json(500, "internal_error", "Internal server error.")
+
+        def _handle_job_create(self) -> None:
+            body = self._read_bounded_body(require_empty=False)
+            if body is None:
+                return
+            media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
+                self._send_error_json(
+                    415, "unsupported_media_type", "Content type must be application/json."
+                )
+                return
+            try:
+                request = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self._send_error_json(400, "invalid_request", "Invalid request.")
+                return
+            if (
+                not isinstance(request, dict)
+                or set(request) != {"job_type", "behavior"}
+                or type(request.get("job_type")) is not str
+                or type(request.get("behavior")) is not str
+                or request["job_type"] != "representative"
+                or request["behavior"] not in {"complete", "fail"}
+            ):
+                self._send_error_json(400, "invalid_request", "Invalid request.")
+                return
+            try:
+                snapshot = jobs.create_representative(behavior=request["behavior"])
+            except JobRegistryError as exc:
+                self._send_error_json(exc.status, exc.code, exc.message)
+                return
+            self._send_json(202, snapshot)
+
+        def _handle_job_detail(self, job_id: str) -> None:
+            try:
+                snapshot = jobs.get_snapshot(job_id)
+            except JobRegistryError as exc:
+                self._send_error_json(exc.status, exc.code, exc.message)
+                return
+            self._send_json(200, snapshot)
+
+        def _handle_job_cancel(self, job_id: str) -> None:
+            body = self._read_bounded_body(require_empty=True)
+            if body is None:
+                return
+            try:
+                accepted, snapshot = jobs.request_cancel(job_id)
+            except JobRegistryError as exc:
+                self._send_error_json(exc.status, exc.code, exc.message)
+                return
+            self._send_json(
+                202 if accepted else 200,
+                {"cancel_accepted": accepted, "job": snapshot},
+            )
+
+        def _read_bounded_body(self, *, require_empty: bool) -> bytes | None:
+            if self.headers.get("Transfer-Encoding") is not None:
+                self._send_error_json(400, "invalid_request", "Invalid request.")
+                return None
+            raw_length = self.headers.get("Content-Length")
+            try:
+                length = int(raw_length, 10) if raw_length is not None else None
+            except ValueError:
+                length = None
+            if length is None or not 0 <= length <= 4096 or (require_empty and length != 0):
+                self._send_error_json(400, "invalid_request", "Invalid request.")
+                return None
+            body = self.rfile.read(length)
+            if len(body) != length:
+                self._send_error_json(400, "invalid_request", "Invalid request.")
+                return None
+            return body
 
         def _handle_files_list(self, query: dict[str, list[str]]) -> None:
             token = _first_query_value(query, "root")
@@ -173,7 +299,18 @@ def _build_handler(registry: FolderTokenRegistry) -> type[BaseHTTPRequestHandler
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_error_json(self, status: int, code: str, message: str) -> None:
+            self._send_json(status, {"error": code, "message": message})
+
     return ReconstructionWebHandler
+
+
+class _SafeThreadingHTTPServer(ThreadingHTTPServer):
+    job_registry: JobRegistry
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        _ = request, client_address
+        print("HTTP request handling failed safely.", file=sys.stderr)
 
 
 def _first_query_value(query: dict[str, list[str]], key: str) -> str | None:
