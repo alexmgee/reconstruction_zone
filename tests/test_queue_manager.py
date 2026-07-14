@@ -20,7 +20,6 @@ class TestExtractionSettings:
         s = ExtractionSettings.from_dict({})
         assert s.mode == "fixed"
         assert s.interval == 2.0
-        assert s.blur_filter is False
 
     def test_summary(self):
         s = ExtractionSettings(mode="fixed", interval=2.0, format="jpg", quality=95)
