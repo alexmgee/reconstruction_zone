@@ -5,12 +5,13 @@ from __future__ import annotations
 import os
 import string
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 __all__ = [
     "WebStateConfig",
     "WebStateConfigError",
     "build_state_config",
+    "reject_if_under_forbidden_home_children",
     "resolve_state_root",
 ]
 
@@ -35,6 +36,7 @@ def resolve_state_root(explicit_state_root: str | Path | None = None) -> Path:
 
     raw = Path(explicit_state_root)
     _reject_drive_relative(raw)
+    _reject_unc(raw)
 
     try:
         resolved = raw.resolve(strict=True)
@@ -44,12 +46,39 @@ def resolve_state_root(explicit_state_root: str | Path | None = None) -> Path:
     if not resolved.is_dir():
         raise WebStateConfigError("State root must be an existing directory.")
 
+    _reject_unc(resolved)
+
     _reject_unsafe_root(resolved)
     return resolved
 
 
 def build_state_config(explicit_state_root: str | Path | None = None) -> WebStateConfig:
     return WebStateConfig(state_root=resolve_state_root(explicit_state_root))
+
+
+def reject_if_under_forbidden_home_children(resolved: Path) -> None:
+    """Reject paths inside production home child directories (exact or descendant)."""
+    home = _user_home()
+    if home is None:
+        return
+    for forbidden_child in _forbidden_home_children(home):
+        if _is_same_or_descendant(resolved, forbidden_child):
+            raise WebStateConfigError("State root is not allowed.")
+
+
+def _reject_unc(path: Path) -> None:
+    """Reject UNC / device-prefixed roots structurally, before any existence check.
+
+    Windows-guarded to match _reject_drive_relative and avoid rejecting legitimate
+    POSIX filenames that may contain backslashes.
+    """
+    if os.name != "nt":
+        return
+    text = os.fspath(path)
+    if text.startswith("\\\\") or text.startswith("//"):
+        raise WebStateConfigError("State root is not allowed.")
+    if PureWindowsPath(text).drive.startswith("\\\\"):
+        raise WebStateConfigError("State root is not allowed.")
 
 
 def _reject_drive_relative(path: Path) -> None:
