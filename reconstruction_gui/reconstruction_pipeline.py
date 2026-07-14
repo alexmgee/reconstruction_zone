@@ -480,6 +480,16 @@ class BaseSegmenter(ABC):
             mask = self._expand_pole_masks(mask)
 
         if final:
+            # For fisheye: pre-clip detection mask to valid circle area before dilation.
+            # This prevents stray 1s in the corner area from being dilated inward into
+            # the valid image region. The circle is applied again after dilation.
+            if self.config.fisheye_circle_mask and geometry == ImageGeometry.FISHEYE:
+                circle = self._get_fisheye_circle_mask(
+                    mask.shape[1], mask.shape[0],
+                    self.config.fisheye_margin_percent,
+                )
+                mask = mask * (circle == 0).astype(np.uint8)
+
             # General mask dilation (before fill-holes so edges close around gaps)
             if self.config.mask_dilate_px > 0:
                 k = self.config.mask_dilate_px * 2 + 1
@@ -503,12 +513,8 @@ class BaseSegmenter(ABC):
             elif geometry == ImageGeometry.EQUIRECTANGULAR:
                 logger.info(f"  Nadir mask: OFF (nadir_mask_percent={self.config.nadir_mask_percent})")
 
-            # Auto-mask fisheye corners + periphery
+            # Auto-mask fisheye corners + periphery (circle already computed above)
             if self.config.fisheye_circle_mask and geometry == ImageGeometry.FISHEYE:
-                circle = self._get_fisheye_circle_mask(
-                    mask.shape[1], mask.shape[0],
-                    self.config.fisheye_margin_percent,
-                )
                 mask = np.maximum(mask, circle)
 
             # Apply user-authored static mask overlays
@@ -1205,6 +1211,9 @@ class TemporalConsistency:
     
     def add_frame(self, mask: np.ndarray, confidence: float):
         """Add frame to history."""
+        if self.mask_history and mask.shape != self.mask_history[0].shape:
+            self.mask_history.clear()
+            self.confidence_history.clear()
         self.mask_history.append(mask)
         self.confidence_history.append(confidence)
     
