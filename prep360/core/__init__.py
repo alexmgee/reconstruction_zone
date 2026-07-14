@@ -45,7 +45,19 @@ from .paired_split_video_extractor import (
     PairedSplitVideoExtractor,
 )
 from .presets import Preset, PresetManager
-from .reframer import Reframer, Ring, ViewConfig
+from .reframer import (
+    Reframer,
+    Ring,
+    FreeView,
+    ViewConfig,
+    OutputLayout,
+    VIEW_PRESETS,
+    DEFAULT_PRESET,
+    get_view_preset,
+    copy_view_config,
+    resolve_preset_name,
+)
+from .rig_config import generate_rig_config, write_rig_config
 from .sharpest_extractor import SharpestConfig, SharpestExtractor, SharpestResult
 from .sky_filter import SkyFilter, SkyFilterConfig
 
@@ -57,7 +69,16 @@ __all__ = [
     "ExtractionConfig",
     "Reframer",
     "Ring",
+    "FreeView",
     "ViewConfig",
+    "OutputLayout",
+    "VIEW_PRESETS",
+    "DEFAULT_PRESET",
+    "get_view_preset",
+    "copy_view_config",
+    "resolve_preset_name",
+    "generate_rig_config",
+    "write_rig_config",
     "Preset",
     "PresetManager",
     "SkyFilter",

@@ -3586,7 +3586,7 @@ def _fisheye_worker(
 
 def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config, station_dirs=False):
     """Reframe ERP frames using the equirect reframer (not fisheye pairs)."""
-    from prep360.core.reframer import Reframer, Ring, ViewConfig
+    from prep360.core.reframer import OutputLayout, Reframer, Ring, ViewConfig
 
     # Build a ViewConfig from the fisheye preset's view angles
     # Extract unique rings from the fisheye views
@@ -3610,9 +3610,11 @@ def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config, station
 
     # Create a temp directory with the frames (reframe_batch expects a directory)
     frames_dir = str(Path(frame_paths[0]).parent)
-    # Station mode: reframer creates images/ and masks/ subdirs itself
-    # Flat mode: put crops in output_dir/images/
-    reframe_out = output_dir if station_dirs else str(Path(output_dir) / "images")
+    # The equirect reframer treats output_dir as the dataset ROOT and creates
+    # images/ (plus per-layout subdirs) itself. The ERP layout radio is
+    # station|rig: map station -> STATION, else RIG. RIG also emits
+    # rig_config.json for Metashape Pro.
+    output_layout = OutputLayout.STATION if station_dirs else OutputLayout.RIG
 
     app.log(f"\nReframing {len(frame_paths)} ERP frames...")
 
@@ -3621,20 +3623,24 @@ def _erp_reframe_worker(app, frame_paths, masks_dir, output_dir, config, station
             app.log(f"  [{current}/{total}] {msg}")
 
     result = reframer.reframe_batch(
-        frames_dir, reframe_out,
+        frames_dir, output_dir,
         mask_dir=masks_dir,
         num_workers=1,
         progress_callback=rf_progress,
-        station_dirs=station_dirs,
+        output_layout=output_layout,
         log=app.log,
     )
 
+    images_out = str(Path(output_dir) / "images")
     lines = [
         "ERP reframing complete",
         f"  Input frames:  {result.input_count}",
         f"  Total views:   {result.output_count}",
-        f"  Images:        {reframe_out}",
+        f"  Output root:   {output_dir}",
+        f"  Images:        {images_out}",
     ]
+    if output_layout == OutputLayout.RIG:
+        lines.append(f"  Rig config:    {Path(output_dir) / 'rig_config.json'}")
     if masks_dir:
         masks_out = str(Path(output_dir) / "masks")
         lines.append(f"  Masks:         {masks_out}")

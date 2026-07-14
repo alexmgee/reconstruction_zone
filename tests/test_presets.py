@@ -17,8 +17,15 @@ class TestPreset:
     def test_from_dict_missing_fields_uses_defaults(self):
         p = Preset.from_dict({"name": "minimal"})
         assert p.extraction_interval == 2.0
-        assert p.reframe_zenith is True
+        assert p.reframe_zenith is False
         assert p.mask_confidence == 0.5
+
+    def test_from_dict_legacy_rings_keep_zenith_default(self):
+        p = Preset.from_dict({
+            "name": "legacy",
+            "reframe_rings": [{"pitch": 0, "count": 8, "fov": 65}],
+        })
+        assert p.reframe_zenith is True
 
     def test_from_dict_empty_name(self):
         p = Preset.from_dict({})
@@ -44,7 +51,8 @@ class TestPreset:
     def test_get_view_config_empty_rings(self):
         p = Preset(name="empty", reframe_rings=[])
         vc = p.get_view_config()
-        assert vc.total_views() == 1  # zenith only (default)
+        # Default reframe_preset_key is plugin medium exactly.
+        assert vc.total_views() == 16
 
 
 class TestBuiltinPresets:
