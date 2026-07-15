@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 from reconstruction_web import __version__
 from reconstruction_web.file_access import FileAccessError, FolderTokenRegistry
 from reconstruction_web.jobs import JobRegistry, JobRegistryError
+from reconstruction_web.shell import SHELL_HTML
 from reconstruction_web.state import WebStateConfig, WebStateConfigError, build_state_config
 
 __all__ = ["HOST", "make_server", "main", "parse_root_argument", "shutdown_server"]
@@ -180,6 +181,9 @@ def _build_handler(
                 if route.startswith("/api/jobs/") and route.count("/") == 3:
                     self._handle_job_detail(route.removeprefix("/api/jobs/"))
                     return
+                if self.path == "/":
+                    self._send_html(SHELL_HTML)
+                    return
 
                 self._send_error_json(404, "not_found", "Route not found.")
             except Exception:
@@ -296,6 +300,23 @@ def _build_handler(
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_html(self, body: bytes) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                "connect-src 'self'; img-src data:; font-src 'none'; object-src 'none'; "
+                "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            )
             self.end_headers()
             self.wfile.write(body)
 
