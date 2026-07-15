@@ -154,6 +154,20 @@ def _build_handler(
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
             return
 
+        def parse_request(self) -> bool:
+            if not super().parse_request():
+                return False
+            if not self.path.startswith("/"):
+                self._send_error_json(400, "bad_request", "Unsupported request target.")
+                return False
+            hosts = self.headers.get_all("Host") or []
+            port = self.server.server_address[1]
+            allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+            if len(hosts) != 1 or hosts[0].strip().lower() not in allowed:
+                self._send_error_json(403, "forbidden_host", "Host not allowed.")
+                return False
+            return True
+
         def do_GET(self) -> None:  # noqa: N802
             try:
                 parsed = urlparse(self.path)

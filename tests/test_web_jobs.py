@@ -501,22 +501,22 @@ def test_http_all_four_routes_and_json_content_type(state_root: Path):
     ("raw_request", "expected"),
     [
         (
-            b"POST /api/jobs HTTP/1.1\r\nHost: localhost\r\nContent-Length: -1\r\n"
+            b"POST /api/jobs HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: -1\r\n"
             b"Content-Type: application/json\r\nConnection: close\r\n\r\n",
             400,
         ),
         (
-            b"POST /api/jobs HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5000\r\n"
+            b"POST /api/jobs HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 5000\r\n"
             b"Content-Type: application/json\r\nConnection: close\r\n\r\n{}",
             400,
         ),
         (
-            b"POST /api/jobs HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n"
+            b"POST /api/jobs HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nTransfer-Encoding: chunked\r\n"
             b"Content-Type: application/json\r\nConnection: close\r\n\r\n0\r\n\r\n",
             400,
         ),
         (
-            b"POST /api/jobs HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+            b"POST /api/jobs HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n"
             b"Connection: close\r\n\r\n{}",
             400,
         ),
@@ -528,6 +528,9 @@ def test_http_rejects_unbounded_body_forms_promptly(
     server, thread = _start_server(state_root)
     try:
         started = time.monotonic()
+        raw_request = raw_request.replace(
+            b"{port}", str(server.server_address[1]).encode("ascii")
+        )
         status, payload = _raw_http(server, raw_request)
         assert time.monotonic() - started < 2
         assert status == expected
@@ -543,8 +546,11 @@ def test_http_rejects_short_body_after_eof(state_root: Path):
         with socket.create_connection((host, port), timeout=2) as client:
             client.settimeout(2)
             client.sendall(
-                b"POST /api/jobs HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n"
-                b"Content-Type: application/json\r\nConnection: close\r\n\r\n{}"
+                (
+                    f"POST /api/jobs HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                    "Content-Length: 10\r\nContent-Type: application/json\r\n"
+                    "Connection: close\r\n\r\n{}"
+                ).encode("ascii")
             )
             client.shutdown(socket.SHUT_WR)
             response = b""
