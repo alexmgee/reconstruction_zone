@@ -87,7 +87,6 @@ def _import_review():
 from _version import __version__
 from app_infra import AppInfrastructure
 from tabs.alignment_tab import build_alignment_tab
-from tabs.projects_tab import build_projects_tab
 from tabs.source_tab import build_source_tab
 from widgets import (
     BROWSE_BUTTON_WIDTH,
@@ -686,10 +685,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 self._prefs[pref_key] = var.get()
         if hasattr(self, "fisheye_force_var"):
             self._prefs["fisheye_force_reprocess"] = self.fisheye_force_var.get()
-        # Persist tracker store path
-        if hasattr(self, '_project_store') and self._project_store:
-            self._prefs["tracker_store_path"] = str(self._project_store.store_path)
-            self._save_prefs()
+        self._save_prefs()
         # Signal any running extraction/processing threads to stop
         self.cancel_flag.set()
         if hasattr(self, "_alignment_cancel_event") and self._alignment_cancel_event is not None:
@@ -729,7 +725,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Left: tabview (settings tabs only)
         self.tabs = ctk.CTkTabview(self._main_frame, command=self._on_tab_change)
         self.tabs.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=0)
-        self.tabs.add("Projects")
         self.tabs.add("Extract")
         self.tabs.add("Mask")
         self.tabs.add("Review")
@@ -741,7 +736,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._preview_panel.grid(row=0, column=1, sticky="nsew", padx=0, pady=(17, 0))
         self._build_preview_panel()
 
-        build_projects_tab(self, self.tabs.tab("Projects"))
         build_source_tab(self, self.tabs.tab("Extract"))
         self._build_process_tab()
         self._build_review_tab()
@@ -1577,22 +1571,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         active = self.tabs.get()
 
         # Swap right-side panel: Projects info vs. Align detail vs. preview
-        if active == "Projects":
-            self._preview_panel.grid_forget()
-            if hasattr(self, '_preview_show_btn'):
-                self._preview_show_btn.destroy()
-            if hasattr(self, '_alignment_detail_panel'):
-                self._alignment_detail_panel.grid_forget()
-            if hasattr(self, '_proj_right_panel'):
-                self._proj_right_panel.grid(
-                    row=0, column=1, sticky="nsew", padx=0, pady=(17, 0),
-                )
-            self._main_frame.grid_columnconfigure(1, weight=1, uniform="")
-            # Refresh recent activity when returning to Projects tab
-            if hasattr(self, '_proj_list_mode_var') and self._proj_list_mode_var.get() == "Recent Activity":
-                from tabs.projects_tab import _refresh_recent_activity
-                _refresh_recent_activity(self)
-        elif active == "Align":
+        if active == "Align":
             self._preview_panel.grid_forget()
             if hasattr(self, '_preview_show_btn'):
                 self._preview_show_btn.destroy()
