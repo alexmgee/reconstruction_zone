@@ -1610,7 +1610,9 @@ class ColmapRunner:
         """Parse a COLMAP model and compute summary stats.
 
         Uses pycolmap if available (reads binary models directly, no text
-        conversion needed). Falls back to text parsers otherwise.
+        conversion needed), then the native binary reader for .bin models
+        (no pycolmap, no model_converter). Falls back to text parsers
+        otherwise.
         """
         if model_dir is None:
             self._ensure_active_run()
@@ -1634,6 +1636,16 @@ class ColmapRunner:
             except Exception as exc:
                 logger.warning("pycolmap model read failed, falling back to text: %s", exc)
 
+        # Native binary reader — no pycolmap, no model_converter subprocess
+        bin_files = [model_path / f"{stem}.bin" for stem in ("cameras", "images", "points3D")]
+        if all(path.exists() for path in bin_files):
+            try:
+                parsed = self._parse_model_binary(model_path)
+                parsed["stats"] = self._model_stats_from_parsed(parsed)
+                return parsed
+            except Exception as exc:
+                logger.warning("native binary model read failed, falling back to text: %s", exc)
+
         # Fallback: convert to text and parse
         return self._parse_model_text(model_path)
 
@@ -1648,6 +1660,19 @@ class ColmapRunner:
         rec = pycolmap.Reconstruction()
         rec.read(str(model_path))
         parsed = from_pycolmap_reconstruction(rec)
+        parsed["model_dir"] = str(model_path.resolve())
+        return parsed
+
+    def _parse_model_binary(self, model_path: Path) -> Dict[str, Any]:
+        """Parse a binary model with the native reader (no external tools)."""
+        try:
+            from colmap_binary_validation_adapter import read_colmap_binary_full_for_validation
+        except ImportError:
+            from reconstruction_gui.colmap_binary_validation_adapter import (
+                read_colmap_binary_full_for_validation,
+            )
+
+        parsed = read_colmap_binary_full_for_validation(model_path)
         parsed["model_dir"] = str(model_path.resolve())
         return parsed
 

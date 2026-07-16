@@ -23,10 +23,12 @@ Usage:
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import cv2
 import numpy as np
+
+from prep360.core.colmap_binary import normalize_point3d_id
 
 logger = logging.getLogger(__name__)
 
@@ -365,9 +367,12 @@ def from_pycolmap_reconstruction(rec) -> Dict[str, Any]:
     """
     cameras: Dict[int, COLMAPCamera] = {}
     for cam_id, cam in rec.cameras.items():
+        model_name = getattr(cam, "model_name", None)
+        if model_name is None:
+            model_name = cam.model.name if hasattr(cam.model, "name") else str(cam.model)
         cameras[cam_id] = COLMAPCamera(
             camera_id=cam_id,
-            model=cam.model_name,
+            model=model_name,
             width=cam.width,
             height=cam.height,
             params=[float(p) for p in cam.params],
@@ -381,7 +386,11 @@ def from_pycolmap_reconstruction(rec) -> Dict[str, Any]:
         tvec = cfw.translation
         points2d = []
         for pt2d in img.points2D:
-            points2d.append((float(pt2d.xy[0]), float(pt2d.xy[1]), int(pt2d.point3D_id)))
+            points2d.append((
+                float(pt2d.xy[0]),
+                float(pt2d.xy[1]),
+                normalize_point3d_id(int(pt2d.point3D_id)),
+            ))
         images[img_id] = COLMAPImage(
             image_id=img_id,
             qw=float(quat[3]), qx=float(quat[0]),
@@ -465,6 +474,42 @@ class GeometricValidator:
         logger.info(
             f"Loaded COLMAP reconstruction: {len(self.cameras)} cameras, "
             f"{len(self.images)} images, {len(self.points3d)} points"
+        )
+
+    def load_reconstruction_data(
+        self,
+        reconstruction: Mapping[str, Any],
+        source_label: str = "provided reconstruction",
+    ) -> None:
+        """Load already-adapted reconstruction data for geometric validation."""
+        required_keys = ("cameras", "images", "points3D")
+        missing = [key for key in required_keys if key not in reconstruction]
+        if missing:
+            raise KeyError(
+                "Reconstruction data missing required keys: "
+                + ", ".join(missing),
+            )
+
+        self.cameras = dict(reconstruction["cameras"])
+        self.images = dict(reconstruction["images"])
+        self.points3d = dict(reconstruction["points3D"])
+        self._name_to_id = {
+            image.name: image.image_id for image in self.images.values()
+        }
+
+        if not self.points3d:
+            logger.warning(
+                "Loaded COLMAP reconstruction from %s with zero points3D; "
+                "geometric validation will not have 3D evidence.",
+                source_label,
+            )
+
+        logger.info(
+            "Loaded COLMAP reconstruction from %s: %d cameras, %d images, %d points",
+            source_label,
+            len(self.cameras),
+            len(self.images),
+            len(self.points3d),
         )
 
     def project_point(
@@ -641,6 +686,12 @@ class GeometricValidator:
                 report.flagged_frames.append(name)
 
         report.flagged_frames.sort()
+
+        if report.total_points_checked == 0:
+            logger.warning(
+                "Geometric validation checked zero 3D points; the reconstruction may be "
+                "empty, below threshold, outside camera bounds, or missing usable masks.",
+            )
 
         summary = report.summary()
         logger.info(
