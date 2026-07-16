@@ -1,6 +1,6 @@
 # Contributing
 
-How to extend the masking pipeline — adding new segmentation models, refinement modules, and shadow detection methods.
+How to extend the masking pipeline — adding new segmentation models and refinement modules.
 
 ## Adding a new segmentation model
 
@@ -180,21 +180,7 @@ Refinement modules are optional post-segmentation stages. They're loaded lazily 
 
 | Module | Config flag | When it runs | Input → Output |
 |--------|-------------|-------------|----------------|
-| `sam_refinement.py` | `sam_refine` | After cubemap merge | Coarse binary mask → refined binary mask |
-| `matting.py` | `matting` | Last stage | Binary mask → soft alpha (0.0–1.0) |
-| `vos_propagation.py` | `vos_propagation` | Per-frame in sequences | Image + optional mask → propagated mask |
-| `shadow_detection.py` | `detect_shadows` | After SAM refine | Image + person mask → expanded shadow mask |
 | `colmap_validation.py` | `colmap_validate` | Post-batch | Masks + COLMAP model → consistency scores |
-
-## Adding a shadow detection method
-
-Shadow detection is handled by `shadow_detection.py` which already supports multiple algorithms via `ShadowDetectorType` enum.
-
-To add a new method:
-
-1. Add to the `ShadowDetectorType` enum
-2. Implement a detector function that takes `(image, object_mask, config)` → binary shadow mask
-3. Register in `ShadowPipeline._get_detector()`
 
 ## Code conventions
 

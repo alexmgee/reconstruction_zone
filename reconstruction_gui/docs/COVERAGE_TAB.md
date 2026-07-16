@@ -1,5 +1,7 @@
 # Coverage Tab
 
+> **Deferred:** the Coverage tab is not included in the current release. This guide is retained for a future version.
+
 The Coverage tab analyzes spatial gaps in existing 3D reconstructions and extracts targeted "bridge" frames from source video to fill them. It sits at the end of the tab bar because it operates on reconstruction output — you use it *after* your first COLMAP or Metashape run, not before.
 
 ## When to use this tab

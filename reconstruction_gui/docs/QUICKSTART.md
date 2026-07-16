@@ -49,30 +49,6 @@ SAM 3 weights (~2 GB) download automatically on first run once authenticated. Wh
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 ```
 
-<details>
-<summary><strong>Temporal propagation</strong> (optional — masks propagate across video frames)</summary>
-
-```bash
-# LiVOS (recommended)
-git clone https://github.com/hkchengrex/LiVOS.git
-cd LiVOS && pip install -e .
-
-# Or Cutie (alternative)
-git clone https://github.com/hkchengrex/Cutie.git
-cd Cutie && pip install -e .
-```
-
-</details>
-
-<details>
-<summary><strong>Shadow detection</strong> (optional — extends masks to cover cast shadows)</summary>
-
-```bash
-pip install efficientnet-pytorch
-```
-
-</details>
-
 **Common issues:**
 
 | Symptom | Fix |
@@ -200,10 +176,8 @@ The **Review tab** shows a thumbnail grid of all mask overlays, filterable by qu
 
 ## What's next
 
-- **Video sequences?** Enable temporal propagation: `vos_propagation=True` — masks propagate between keyframes using LiVOS/Cutie. See [ARCHITECTURE.md](ARCHITECTURE.md#temporal-propagation).
-- **Soft edges?** Enable alpha matting: `matting=True` — converts binary masks to soft alpha mattes via ViTMatte.
+- **Video sequences?** Use SAM3 Unified Video mode — objects are detected on the first frame and tracked through all subsequent frames automatically.
 - **Multiple models?** Enable ensemble: `ensemble=True, ensemble_models=["yolo26", "rfdetr"]` — runs multiple detectors and fuses results. See [MODELS.md](MODELS.md#ensemble-mode).
-- **Shadow removal?** Enable shadow detection: `detect_shadows=True` — extends person masks to cover cast shadows.
 - **COLMAP validation?** After reconstruction, validate mask consistency: `colmap_validate=True, colmap_dir="./sparse/0"`. See [ARCHITECTURE.md](ARCHITECTURE.md#colmap-validation).
 
 ## Dependency reference
@@ -215,7 +189,7 @@ The **Review tab** shows a thumbnail grid of all mask overlays, filterable by qu
 | `ultralytics` | YOLO26 + FastSAM segmentation |
 | `rfdetr`, `supervision` | RF-DETR transformer detection (ensemble partner) |
 | `py360convert` | Equirect-to-perspective reframing |
-| `transformers` | ViTMatte alpha matting |
+| `transformers` | Transformer backbones (RF-DETR) |
 | `huggingface_hub` | SAM 3 weight authentication |
 | `sam3` | Text-prompted segmentation ([HF access](https://huggingface.co/facebook/sam3) required) |
 | `tqdm`, `pyyaml` | Progress bars, config parsing |

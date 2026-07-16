@@ -8,6 +8,7 @@ Photogrammetry preprocessing toolkit — extract frames from video, reframe 360 
 - **NVIDIA GPU** with CUDA support (strongly recommended — CPU works but is 10-50x slower)
 - **4 GB+ VRAM** (8 GB+ recommended for SAM 3)
 - [ffmpeg + ffprobe](https://ffmpeg.org/download.html) on PATH (required for video features)
+- [COLMAP](https://colmap.github.io/) (optional — required only for the Align tab; point the app at your `colmap.exe`)
 
 ## Getting Started
 
@@ -37,11 +38,10 @@ While waiting for approval, RF-DETR works immediately for common objects (person
 
 | Tab | What it does |
 |-----|-------------|
-| **Projects** | Track your photogrammetry projects, sources, and processing stages |
 | **Extract** | Pull frames from 360/fisheye/standard video with reframing and filtering |
 | **Mask** | Auto-detect and mask objects using text prompts or class selection |
 | **Review** | Accept/reject/edit masks with an interactive brush editor |
-| **Coverage** | Find spatial gaps in your dataset and extract bridge frames |
+| **Align** | Run sparse COLMAP or SphereSfM reconstruction with a live point cloud viewer (requires COLMAP, installed separately) |
 
 ## Crash Logs
 

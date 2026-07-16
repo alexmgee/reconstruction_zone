@@ -108,54 +108,11 @@ The stages run in this order in the pipeline:
 Detect (YOLO/RF-DETR/SAM3)
     |
     v
-Shadow Detection ── add shadow regions to mask
-    |
-    v
-SAM Mask Refinement ── tighten edges with SAM point prompts
-    |
-    v
 Edge Injection ── add thin structures via Canny edges
-    |
-    v
-Alpha Matting ── generate soft edges
     |
     v
 COLMAP Geometric Validation ── cross-check against 3D geometry
 ```
-
-### Shadow Detection
-
-Detects shadows cast by masked objects and includes them in the mask. Shadows from photographers, tripods, and equipment can confuse reconstruction if left unmasked.
-
-| Setting | Options | Default | Purpose |
-|---------|---------|---------|---------|
-| **Detector** | targeted_person, brightness, c1c2c3, hybrid | targeted_person | Shadow detection algorithm. `targeted_person` detects shadows beneath detected persons using depth-aware ground plane estimation; `brightness` is a fast heuristic; `c1c2c3` uses chromaticity-invariant color space; `hybrid` combines brightness + chromaticity |
-| **Verify** | none, c1c2c3, hybrid, brightness | none | Optional second-pass verification to reduce false positives |
-| **Spatial** | all, near_objects, connected | near_objects | Where to look for shadows. `near_objects` only checks regions near detected objects; `connected` requires shadows to touch the object mask |
-| **Dilation** | 0–200 px | 50 | Expand shadow search region around objects |
-| **Confidence** | 0.0–1.0 | 0.50 | Minimum confidence to accept a shadow detection |
-| **Darkness** | 0.0–1.0 | 0.70 | How dark a region must be to qualify as shadow |
-| **Chromaticity** | 0.0–0.5 | 0.15 | Color shift threshold for shadow vs. non-shadow |
-
-### SAM Mask Refinement
-
-Takes the coarse mask from the detector and refines edges using SAM (Segment Anything Model) with automatically placed point prompts along the mask boundary. Produces tighter, more accurate edges — especially useful for complex silhouettes.
-
-| Setting | Options | Default | Purpose |
-|---------|---------|---------|---------|
-| **SAM model** | vit_b, vit_l, vit_h | vit_b | Model size. vit_b (375MB) is fastest; vit_h is most accurate |
-| **Box margin** | 0.0–0.5 | 0.15 | How much to expand the bounding box around each detection before sending to SAM |
-| **IoU threshold** | 0.0–1.0 | 0.50 | Minimum overlap between SAM's output and the original mask to accept the refinement |
-
-### Alpha Matting (ViTMatte)
-
-Generates soft alpha edges instead of hard binary boundaries. Useful for hair, fur, transparent fabric, and any semi-transparent boundary. The output mask contains gradual transitions (0–255) rather than sharp 0/1 edges.
-
-| Setting | Options | Default | Purpose |
-|---------|---------|---------|---------|
-| **Model** | small, base | small | ViTMatte model size. small (~100MB) is recommended |
-| **Erode** | 0–50 px | 10 | Shrink the mask edge to create the trimap's definite-foreground region |
-| **Dilate** | 0–50 px | 10 | Expand the mask edge to create the trimap's definite-background region. The band between erode and dilate becomes the "unknown" region where matting operates |
 
 ### Ensemble Detection (WMF)
 
@@ -181,7 +138,7 @@ Cross-checks masks against an existing COLMAP sparse reconstruction. Projects 3D
 | **Agreement** | 0.70 | Minimum fraction of projected 3D points that must agree with the mask |
 | **Flag above** | 0.15 | Fraction of disagreeing points above which the mask is flagged for review |
 
-> **Note:** VOS temporal propagation (LiVOS/Cutie) is available via the Python API (`vos_propagation=True` in MaskConfig) but is not currently exposed in the GUI.
+> **Note:** For temporal consistency across video frames, use SAM3's Unified Video mode (built-in tracking) — see the video workflow below.
 
 ---
 
@@ -243,10 +200,7 @@ Detection: detect objects per frame (or SAM3 unified tracking)
       |
       v
 Detection & Refinement (each optional):
-      |-- Shadow Detection
-      |-- SAM Mask Refinement
       |-- Edge Injection
-      |-- Alpha Matting
       |-- COLMAP Geometric Validation
       |
       v
@@ -286,9 +240,8 @@ Output:
 3.               -> Check target classes
 4. Post-Proc     -> Set Nadir mask to ~5-10% (covers tripod head)
 5.               -> Set Pole expand to 1.2-1.5 (compensates for stretching)
-6. (Optional)    -> Detection & Refinement: enable Shadow Detection
-7.               -> Click Run Masking
-8. Review tab    -> Check flagged masks
+6.               -> Click Run Masking
+7. Review tab    -> Check flagged masks
 ```
 
 ## Typical workflow: video sequence with temporal consistency
@@ -306,11 +259,9 @@ Unified Video mode uses SAM3's built-in temporal tracking — objects are detect
 
 ```
 1. Detection     -> Model = auto, Geometry = pinhole
-2. Det & Refine  -> Enable Shadow Detection (hybrid detector)
-3.               -> Enable SAM Mask Refinement (vit_b)
-4.               -> Enable Ensemble Detection (YOLO26 + RF-DETR)
-5.               -> Enable Alpha Matting (soft edges)
-6. Post-Proc     -> Mask dilate = 2-3 px (safety margin)
-7.               -> Fill holes = on
-8.               -> Click Run Masking
+2. Det & Refine  -> Enable Ensemble Detection (YOLO26 + RF-DETR)
+3.               -> Enable Edge Injection (thin structures)
+4. Post-Proc     -> Mask dilate = 2-3 px (safety margin)
+5.               -> Fill holes = on
+6.               -> Click Run Masking
 ```

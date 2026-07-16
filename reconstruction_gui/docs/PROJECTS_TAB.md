@@ -1,5 +1,7 @@
 # Projects Tab
 
+> **Deferred:** the Projects tab is not included in the current release. This guide is retained for a future version.
+
 The Projects tab is a central registry for tracking photogrammetry projects across their full lifecycle. It records where your media lives on disk, what stage each source has reached in the reconstruction pipeline, which tools (Metashape, COLMAP, RealityScan) are involved, and any notes you want to attach. All data persists to a JSON file so it survives app restarts.
 
 This tab is intentionally lightweight — it does not run any processing. It exists to answer: "What projects do I have, where are the files, and what's been done?"

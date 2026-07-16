@@ -2,13 +2,13 @@
 
 The Extract tab is the frame-selection stage for reconstruction projects. It handles video analysis, sharp/raw frame extraction, paired front/back synchronization, SRT geotagging, and 360° fisheye-to-perspective reframing.
 
-For the main reconstruction workflow, Extract produces **raw selected frames**. Visual color work belongs in **Adjust**, where LUTs and recipes can be previewed before export:
+For the main reconstruction workflow, Extract produces **raw selected frames** that flow straight into masking:
 
 ```text
-Extract -> Adjust -> Mask -> Review -> Align
+Extract -> Mask -> Review -> Align
 ```
 
-Raw selected frames are treated as the source truth. Adjusted frames are derivative datasets used by Mask, Review, and Align.
+Raw selected frames are treated as the source truth. Optional color/LUT post-processing (below) writes adjusted copies without touching them.
 
 ## Sections
 
@@ -17,7 +17,7 @@ The tab has four top-level sections — two always-visible and two collapsible:
 | Section | Type | Purpose |
 |---------|------|---------|
 | **Video Selection** | Always visible | Load a video (or split-lens pair), set output folder |
-| **Frame Extraction** | Always visible | Analysis, extraction settings, Adjust handoff, legacy post-processing filters, batch queue |
+| **Frame Extraction** | Always visible | Analysis, extraction settings, post-processing filters, batch queue |
 | **360 Processing** | Collapsible | Split dual-fisheye containers or reframe to pinhole perspectives |
 | **Advanced** | Collapsible (default: collapsed) | Frame quality filter for existing frames, SRT geotagging |
 
@@ -46,7 +46,7 @@ When **Use Split Lens Videos** is checked, the Analyze and Extract buttons opera
 | **Back** | Graded back lens video (`.mp4` / `.mov`) |
 | **Clip Folder** | Per-clip working folder (auto-filled from the filename stem). Extract writes `front/frames` + `back/frames` here. |
 
-The preferred workflow is: Split Lenses if needed → enable Split Lens Videos here → Extract raw selected pairs → Open in Adjust → apply one shared recipe to both lenses.
+The preferred workflow is: Split Lenses if needed → enable Split Lens Videos here → Extract raw selected pairs. Apply any shared color work to both lens folders with the Color & LUT post-processing filters or an external grading tool.
 
 ---
 
@@ -102,7 +102,7 @@ Estimated Frame Pairs @ 2.0s: 161
 
 When analyzing a split pair, mismatches (resolution, FPS, duration) between front and back are flagged as warnings.
 
-Analysis stores video metadata internally — the Coverage tab reads it for bridge extraction, and the live estimate uses it to calculate frame counts.
+Analysis stores video metadata internally — the live estimate uses it to calculate frame counts.
 
 ### Sharpness and Scene Detection
 
@@ -148,19 +148,13 @@ Once a video is analyzed, the estimate bar updates in real-time as you adjust se
 
 It accounts for mode, interval, time range, format, quality, and active filters.
 
-### Post-Processing And Adjust Handoff
+### Post-Processing
 
-A collapsible section inside Frame Extraction contains the preferred Adjust handoff plus optional legacy filters that run after frames are extracted.
-
-#### Adjust Handoff
-
-Default extraction writes raw selected frames and stops. Use **Open in Adjust** to load the raw selected output root into the Adjust tab and preview LUT/color changes visually.
-
-If **Apply saved Adjust recipe after extraction** is enabled, the recipe is validated before extraction starts. A valid recipe is applied to a separate adjusted derivative folder after extraction; raw selected frames are not overwritten.
+A collapsible section inside Frame Extraction contains optional filters that run after frames are extracted.
 
 #### Color & LUT
 
-Collapsed by default. Legacy quick color tools for advanced/headless batches. These run after extraction without visual preview, so LUT tuning should happen in Adjust.
+Collapsed by default. Quick color tools for batch processing. These run after extraction without visual preview — validate a LUT on a few frames before running a large batch.
 
 | Setting | Default | Effect |
 |---------|---------|--------|
@@ -229,7 +223,7 @@ When you click **Extract**, the selected mode pulls raw selected frames from the
        └─ Write GPS, altitude, focal length, datetime → EXIF via exiftool
 ```
 
-Each legacy post-processing step reads from disk, processes, and either overwrites (LUT, shadow/highlight) or deletes (sky, blur, motion) in place. Geotagging runs last so it only tags surviving frames. If optional LUT/color post-processing fails after extraction, the extraction is still logged as complete and the raw selected frames remain available for Adjust.
+Each post-processing step reads from disk, processes, and either overwrites (LUT, shadow/highlight) or deletes (sky, blur, motion) in place. Geotagging runs last so it only tags surviving frames. If optional LUT/color post-processing fails after extraction, the extraction is still logged as complete and the raw selected frames remain intact.
 
 ---
 
@@ -327,7 +321,7 @@ Collapsed by default. Converts dual-fisheye frames or equirectangular (ERP) fram
 
 #### Inputs
 
-The Reframing section extracts **stitched ERP (equirectangular)** frames into pinhole perspectives. It does not run dual-fisheye pair reframing (that remains available via Coverage/Gaps fisheye helpers).
+The Reframing section has two workflows. The **Fisheye** subsection reframes dual-fisheye pairs: its Metashape tab converts calibrated fisheye captures to cubemap faces from a `cameras.xml`, and its Standard tab runs preset-based fisheye-to-pinhole reframing. The **ERP** workflow below extracts **stitched ERP (equirectangular)** frames into pinhole perspectives.
 
 | Field | Purpose | When to use |
 |-------|---------|-------------|
@@ -338,16 +332,17 @@ The Reframing section extracts **stitched ERP (equirectangular)** frames into pi
 
 #### Preset
 
-ERP presets (`low`, `medium`, `high`, `ultra`, `cubemap`, `erp_scaffold_8`) control how many pinhole views are sampled from each ERP frame. Default: **medium** (16 views at 90° FOV).
+The preset selector controls how many pinhole views are sampled from each ERP frame; the GUI lists view presets by their layout description (e.g. "13 views per lens: 1 looking up (45°), ..."). The prep360 engine additionally ships named ERP presets (`low`, `medium`, `high`, `ultra`, `cubemap`, `erp_scaffold_8`) for API and CLI use.
 
 #### Output structure (Metashape)
 
 | Mode | Layout | Use |
 |------|--------|-----|
-| **Rig** (default) | `images/{view}/{frame}.jpg` | Metashape Pro rig — one folder per virtual sensor |
-| **Station** | `images/{frame}/{frame}_{view}.jpg` | Metashape station groups |
-| **Flat** | `images/{frame}_{view}.jpg` | Single-folder export |
+| **Station** (GUI default) | `images/{frame}/{frame}_{view}.jpg` | Metashape station groups |
+| **Rig** | `images/{view}/{frame}.jpg` | Metashape Pro rig — one folder per virtual sensor |
+| **Flat** (API/CLI only) | `images/{frame}_{view}.jpg` | Single-folder export |
 
+The GUI exposes Station and Rig radio buttons; the Flat layout is available through the prep360 API and CLI.  
 Mask paths mirror the selected layout under `masks/`.  
 Writes `reframe_metadata.json` (all layouts) and `rig_config.json` (rig layout only). Unknown preset names are rejected instead of falling back silently.
 
@@ -520,7 +515,6 @@ Collapsible subsection (collapsed by default, disabled by default). Thins redund
 6. (Optional)       → Enable Sky Filter if outdoor scene has upward-facing frames
 7.                  → Click Extract
 8.                  → Raw selected frames appear in {output}/{video_name}/
-9. Adjust           → Open in Adjust, preview LUT/recipe, export adjusted dataset
 ```
 
 ## Typical workflow: drone video with GPS
@@ -590,13 +584,3 @@ Collapsible subsection (collapsed by default, disabled by default). Thins redund
 9.                    → Click Filter to apply
 ```
 
-## Typical workflow: 360 with coverage feedback
-
-```
-1. 360 Processing        → Extract & Reframe (steps 1-7 from "360 → pinhole" above)
-2. (External)       → Run COLMAP on perspectives
-3. Coverage tab     → Analyze gaps in the reconstruction
-4. Coverage tab     → Extract bridges (check "Reframe fisheye → perspective")
-                      Reads calibration + preset from this tab's 360 section
-5. (External)       → Merge bridge perspectives into dataset, re-run COLMAP
-```

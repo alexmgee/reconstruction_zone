@@ -20,8 +20,7 @@ A deep dive into how the masking pipeline works, why it's designed this way, and
 │  └──────────────────────────────────────────────────┘            │
 ├─────────────────────────────────────────────────────────────────┤
 │  Refinement Modules (optional, lazy-loaded)                       │
-│  sam_refinement.py · matting.py · vos_propagation.py              │
-│  shadow_detection.py · colmap_validation.py · sam3_pipeline.py    │
+│  colmap_validation.py · sam3_pipeline.py                          │
 ├─────────────────────────────────────────────────────────────────┤
 │  Review / QC Layer                                                │
 │  review_gui.py · review_status.py · review_masks.py              │
@@ -35,12 +34,8 @@ A deep dive into how the masking pipeline works, why it's designed this way, and
 | File | Lines | Key classes | Purpose |
 |------|-------|-------------|---------|
 | `reconstruction_pipeline.py` | ~3250 | `MaskingPipeline`, `MaskConfig`, `MaskResult`, `BaseSegmenter`, `CubemapProjection`, `TemporalConsistency` | Core pipeline — segmentation, cubemap geometry, postprocessing, batch processing |
-| `reconstruction_zone.py` | ~2680 | `ReconstructionZone` | GUI app — 5 tabs (Projects, Extract, Mask, Review, Coverage), preview panel, mask/review integration |
+| `reconstruction_zone.py` | ~2680 | `ReconstructionZone` | GUI app — 4 tabs (Extract, Mask, Review, Align), preview panel, mask/review integration |
 | `sam3_pipeline.py` | ~340 | `SAM3VideoPipeline`, `SAM3VideoConfig` | SAM 3 video predictor for unified detect+track across frames |
-| `sam_refinement.py` | ~480 | `SAMMaskRefiner`, `SAMRefinementConfig`, `SAMWeightManager` | Boundary refinement using SAM point/box prompts from coarse masks |
-| `matting.py` | ~260 | `MattingRefiner`, `MattingConfig` | Binary mask → soft alpha matte via [ViTMatte](https://github.com/hustvl/ViTMatte) |
-| `vos_propagation.py` | ~350 | `VOSPropagator`, `VOSConfig` | Temporal propagation via [LiVOS](https://github.com/hkchengrex/LiVOS) or [Cutie](https://github.com/hkchengrex/Cutie) (API only — not exposed in GUI) |
-| `shadow_detection.py` | ~1480 | `ShadowPipeline`, `ShadowConfig` | Multi-method shadow detection (targeted person, brightness, chromaticity) |
 | `colmap_validation.py` | ~660 | `GeometricValidator`, `ValidationConfig` | Validate mask consistency against COLMAP 3D reconstruction |
 | `masking_queue.py` | ~230 | `MaskingQueue`, `MaskingQueueItem` | Persistent batch queue for the Mask tab (folder-based, JSON-backed) |
 | `model_downloader.py` | ~110 | `ModelDownloadDialog`, `check_missing_models` | First-run model weight download check with CTk progress UI |
@@ -52,9 +47,8 @@ A deep dive into how the masking pipeline works, why it's designed this way, and
 | `project_exporters.py` | ~170 | `export_metashape_script`, etc. | Generate export scripts for Metashape and COLMAP |
 | `app_infra.py` | ~280 | `AppInfrastructure` | GUI mixin: logging, threading, preferences, crash-resilient file logger |
 | `widgets.py` | ~270 | `Section`, `CollapsibleSection`, `Tooltip`, `slider_row` | Shared UI building blocks |
-| `tabs/projects_tab.py` | ~1080 | — | Projects tab: project list, detail panel, source tracking, export |
+| `tabs/projects_tab.py` | ~1080 | — | Projects tab (not registered in this release): project list, detail panel, source tracking, export |
 | `tabs/source_tab.py` | ~3380 | — | Extract tab: video analysis, extraction queue, fisheye, frame quality filter |
-| `tabs/gaps_tab.py` | ~400 | — | Coverage tab: spatial gap detection, bridge extraction |
 
 ## The equirectangular problem
 
@@ -141,18 +135,7 @@ sequenceDiagram
     Pipeline->>Cube: cubemap2equirect(face_masks)
     Cube-->>Pipeline: merged equirect mask
 
-    opt sam_refine=True
-        Pipeline->>Refine: SAMMaskRefiner.refine(image, mask)
-    end
-    opt detect_shadows=True
-        Pipeline->>Refine: ShadowPipeline.run(image, mask)
-    end
-
     Pipeline->>Pipeline: postprocess(mask, final=True)
-
-    opt matting=True
-        Pipeline->>Refine: MattingRefiner.refine(image, mask)
-    end
 
     Pipeline-->>User: MaskResult(mask, confidence, quality)
 ```
@@ -192,42 +175,15 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a new segmenter.
 
 ## Temporal propagation
 
-> **GUI note:** VOS temporal propagation is not currently exposed in the GUI. It remains available via the Python API (`MaskConfig(vos_propagation=True)`). The GUI offers SAM3 Unified Video mode as the primary temporal consistency approach. The sections below describe the API-level behavior.
-
-For video sequences (ordered frames), you have two temporal strategies:
+For video sequences (ordered frames), two temporal strategies are available:
 
 ### Sliding-window averaging (built-in)
 
-`TemporalConsistency` (line 1064) maintains a deque of recent masks and returns a weighted average. Simple, fast, no extra dependencies. Enabled by default when `use_temporal_consistency=True`.
+`TemporalConsistency` maintains a deque of recent masks and returns a weighted average. Simple, fast, no extra dependencies. Enabled by default when `use_temporal_consistency=True`.
 
-### VOS propagation (optional, superior)
+### SAM3 Unified Video mode
 
-`VOSPropagator` wraps [LiVOS](https://github.com/hkchengrex/LiVOS) (CVPR 2025) or [Cutie](https://github.com/hkchengrex/Cutie) (CVPR 2024) for real video object segmentation. Instead of averaging, it actually tracks objects across frames:
-
-1. **Keyframes** (every `vos_keyframe_interval` frames): Run full detection, feed both the image and detected mask to VOS as a reference.
-2. **Intermediate frames**: Feed only the image. VOS propagates the mask from the nearest keyframe using learned appearance/motion models.
-3. **Bidirectional option**: Process forward, then backward, then merge.
-
-This produces dramatically more consistent masks than averaging — objects are tracked through occlusion, scale changes, and motion blur.
-
-## Shadow detection
-
-`shadow_detection.py` implements multiple shadow detection algorithms, selectable via `ShadowConfig.detector_type`:
-
-| Algorithm | Key | How it works | Paper/Source |
-|-----------|-----|-------------|--------------|
-| `brightness` | Heuristic | Relative darkness ratio below person mask base. Fast, no model. | — |
-| `c1c2c3` | Physical | Chromaticity-invariant color space (c1, c2, c3). Shadows change brightness but not chrominance. | Gevers & Smeulders, 1999 |
-| `hybrid` | Combined | Brightness + C1C2C3 fusion | — |
-| `sddnet` | Deep learning | SDDNet shadow detection network | [Zhu et al.](https://github.com/rmcong/SDDNet-TGRS2022) |
-| `careaga` | Illuminant | Illumination estimation + shadow boundary detection | [Careaga & Aksoy](https://github.com/stevleiux/shadow-removal) |
-
-The default `brightness` heuristic works well for outdoor photogrammetry (strong directional light, dark ground shadows). For complex indoor scenes, `hybrid` or `sddnet` give better results.
-
-**Spatial filtering** (`ShadowConfig.spatial_mode`):
-- `all` — Keep all detected shadows
-- `near_objects` — Only keep shadows spatially connected to detected object masks
-- `connected` — Only keep shadow regions directly adjacent to mask boundaries
+SAM3's video predictor detects objects on the first frame and tracks them through all subsequent frames using its built-in temporal model — the primary approach for consistent video masking. See `sam3_pipeline.py`.
 
 ## COLMAP validation
 
@@ -277,11 +233,10 @@ The GUI (`reconstruction_zone.py`) inherits from both `AppInfrastructure` (loggi
 │  ┌──────────────────────┬───────────────────────────────────┐ │
 │  │  Tab View (35%)       │  Preview Panel (65%)              │ │
 │  │  ┌─────────────────┐ │  ┌─────────────────────────────┐ │ │
-│  │  │ Projects        │ │  │ Image overlay / mask view    │ │ │
-│  │  │ Extract         │ │  │  (or Project detail panel    │ │ │
-│  │  │ Mask            │ │  │   when Projects tab active)  │ │ │
-│  │  │ Review          │ │  │                             │ │ │
-│  │  │ Coverage        │ │  ├─────────────────────────────┤ │ │
+│  │  │ Extract         │ │  │ Image overlay / mask view    │ │ │
+│  │  │ Mask            │ │  │  (or Align detail panel      │ │ │
+│  │  │ Review          │ │  │   when Align tab active)     │ │ │
+│  │  │ Align           │ │  ├─────────────────────────────┤ │ │
 │  │  └─────────────────┘ │  │ Navigator slider            │ │ │
 │  │                       │  │ Zoom slider                 │ │ │
 │  │  [Config widgets      │  │ Console log                 │ │ │
@@ -364,24 +319,11 @@ Complete field listing for the `MaskConfig` dataclass:
 |-------|------|---------|-------------|
 | `mask_dilate_px` | `int` | `0` | Dilate final mask by N pixels |
 | `fill_holes` | `bool` | `False` | Fill enclosed interior holes |
-| `detect_shadows` | `bool` | `False` | Extend masks to cover shadows |
-| `shadow_config` | `dict\|None` | `None` | ShadowConfig parameters |
 | `edge_injection` | `bool` | `False` | Canny edge recovery for thin structures |
 | `edge_canny_low` | `int` | `50` | Canny lower threshold |
 | `edge_canny_high` | `int` | `150` | Canny upper threshold |
 | `edge_dilate_px` | `int` | `2` | Dilate injected edges |
 
-### Refinement modules
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `sam_refine` | `bool` | `False` | [SAM](https://segment-anything.com/) boundary refinement |
-| `sam_refine_config` | `dict\|None` | `None` | SAMRefinementConfig parameters |
-| `matting` | `bool` | `False` | [ViTMatte](https://github.com/hustvl/ViTMatte) alpha matting |
-| `matting_config` | `dict\|None` | `None` | MattingConfig parameters |
-| `vos_propagation` | `bool` | `False` | [LiVOS](https://github.com/hkchengrex/LiVOS)/[Cutie](https://github.com/hkchengrex/Cutie) temporal propagation |
-| `vos_config` | `dict\|None` | `None` | VOSConfig parameters |
-| `vos_keyframe_interval` | `int` | `5` | Detect every N frames |
 
 ### Ensemble
 

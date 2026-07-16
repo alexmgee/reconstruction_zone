@@ -9,7 +9,7 @@
 
 > Photogrammetry preprocessing toolkit — extract frames from video, reframe 360° and fisheye into perspective views, auto-mask unwanted objects, and build clean datasets for 3D reconstruction.
 
-This GUI prepares camera captures for 3D reconstruction. Extract and reframe perspectives from 360° or fisheye video, filter for sharpness, auto-detect and mask photographers/tripods/equipment across hundreds of images, review every mask with an interactive editor, then analyze spatial coverage and fill gaps. Outputs datasets ready for reconstruction pipelines.
+This GUI prepares camera captures for 3D reconstruction. Extract and reframe perspectives from 360° or fisheye video, filter for sharpness, auto-detect and mask photographers/tripods/equipment across hundreds of images, review every mask with an interactive editor, then run sparse alignment with COLMAP or SphereSfM. Outputs datasets ready for reconstruction pipelines.
 
 ## Requirements
 
@@ -71,20 +71,17 @@ python reconstruction_gui/reconstruction_zone.py
 The main reconstruction path is:
 
 ```text
-Extract -> Adjust -> Mask -> Review -> Align
+Extract -> Mask -> Review -> Align
 ```
 
-Extract selects raw source frames. Adjust previews LUTs/recipes and exports adjusted derivatives for downstream masking and alignment.
+Extract selects raw source frames and reframes 360°/fisheye footage into pinhole perspectives; those frames flow straight into masking.
 
 | Tab | What it does | Guide |
 |-----|-------------|-------|
-| **Projects** | Central registry for photogrammetry projects. Track sources, processing stages, and export status. | [Projects Guide](reconstruction_gui/docs/PROJECTS_TAB.md) |
 | **Extract** | Pull raw selected frames from 360° video, fisheye, split-lens pairs, or standard video. Equirect-to-perspective reframing with configurable view rings. | [Extract Guide](reconstruction_gui/docs/EXTRACT_TAB.md) |
-| **Adjust** | Preview `.cube` LUTs and recipes, tune color, and export safe adjusted image or paired front/back datasets. | [Adjust Guide](reconstruction_gui/docs/ADJUST_TAB.md) |
 | **Mask** | Auto-detect and mask objects using text prompts or class selection. Supports 360°-aware cubemap decomposition. | [Mask Guide](reconstruction_gui/docs/MASK_TAB.md) |
 | **Review** | Thumbnail grid with accept/reject/skip workflow. Open any mask in the interactive editor for brush, flood fill, and lasso touch-ups. | [Review Guide](reconstruction_gui/docs/REVIEW_TAB.md) |
 | **Align** | Run sparse COLMAP or SphereSfM reconstruction. Feature extraction, matching, and mapping with live point cloud viewer. | [Align Guide](reconstruction_gui/docs/ALIGN_TAB.md) |
-| **Coverage** | Analyze spatial coverage gaps in your dataset and extract bridge frames to fill them. | [Coverage Guide](reconstruction_gui/docs/COVERAGE_TAB.md) |
 
 <details>
 <summary><strong>Supported models</strong></summary>
