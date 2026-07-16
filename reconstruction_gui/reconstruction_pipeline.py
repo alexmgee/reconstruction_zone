@@ -339,27 +339,47 @@ class BaseSegmenter(ABC):
         self.model = None
         self._fisheye_circle_cache: Optional[Tuple[Tuple[int, int, float], np.ndarray]] = None
 
-        # Pre-composite static mask overlays (loaded once, applied to every frame)
+        # Pre-composite static mask overlays (applied to every frame).
+        # Stored as a hash of the current source paths so the pipeline cache
+        # can rebuild it when the user adds/edits/removes a layer.
         self._static_composite = None
-        if self.config.static_mask_paths:
-            for path in self.config.static_mask_paths:
-                raw = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-                if raw is None:
-                    logger.warning(f"Could not load static mask: {path}")
-                    continue
-                binary = (raw > 127).astype(np.uint8)
-                if self._static_composite is None:
-                    self._static_composite = binary
-                else:
-                    if binary.shape != self._static_composite.shape:
-                        binary = cv2.resize(binary,
-                            (self._static_composite.shape[1], self._static_composite.shape[0]),
-                            interpolation=cv2.INTER_NEAREST)
-                    self._static_composite = np.maximum(self._static_composite, binary)
-            if self._static_composite is not None:
-                n = len(self.config.static_mask_paths)
-                pct = float(np.sum(self._static_composite > 0) / self._static_composite.size * 100)
-                logger.info(f"Static mask: {n} layer(s) loaded, {pct:.1f}% coverage")
+        self._static_composite_key = None
+        self._rebuild_static_composite()
+
+    def _rebuild_static_composite(self):
+        """Recompute self._static_composite from self.config.static_mask_paths.
+
+        Pipeline caching reuses a segmenter across runs and patches
+        config.static_mask_paths in place, so this must be callable after
+        construction to refresh the precomputed overlay. Idempotent: keyed
+        on the path tuple so repeated calls with the same paths skip work.
+        """
+        paths = tuple(self.config.static_mask_paths or ())
+        if paths == self._static_composite_key:
+            return
+        self._static_composite = None
+        self._static_composite_key = paths
+        if not paths:
+            return
+        for path in paths:
+            raw = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if raw is None:
+                logger.warning(f"Could not load static mask: {path}")
+                continue
+            # Disk convention: black (0) = masked. Internal: 1 = masked.
+            binary = (raw < 128).astype(np.uint8)
+            if self._static_composite is None:
+                self._static_composite = binary
+            else:
+                if binary.shape != self._static_composite.shape:
+                    binary = cv2.resize(binary,
+                        (self._static_composite.shape[1], self._static_composite.shape[0]),
+                        interpolation=cv2.INTER_NEAREST)
+                self._static_composite = np.maximum(self._static_composite, binary)
+        if self._static_composite is not None:
+            n = len(paths)
+            pct = float(np.sum(self._static_composite > 0) / self._static_composite.size * 100)
+            logger.info(f"Static mask: {n} layer(s) loaded, {pct:.1f}% coverage")
 
     def _get_fisheye_circle_mask(
         self, width: int, height: int, margin_percent: float

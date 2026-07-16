@@ -613,12 +613,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         # Load image navigator if input is set
         if self._prefs.get("input_dir"):
             self.after(200, self._load_image_list)
-        # Restore static mask layers if output dir has them
-        output_dir = self._prefs.get("output_dir", "")
-        if output_dir and Path(output_dir).is_dir():
-            sm_dir = Path(output_dir) / "static_masks"
-            if sm_dir.exists():
-                self._init_static_mask_manager(output_dir)
+        # Load shared static mask library (fixed location next to the GUI
+        # module — see static_masks.LIBRARY_DIR).  Independent of which
+        # dataset is open.
+        self._init_static_mask_manager()
 
         # Fisheye subsection prefs (Metashape tab)
         for pref_key, attr_name in [
@@ -1020,25 +1018,26 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         sm_sec.pack(fill="x", pady=(0, 6), padx=4)
         sm = sm_sec.content
 
-        # Layer list — plain frame, grows with content (no empty scroll area)
+        # Layer list — created but NOT packed initially. CTkFrame defaults to
+        # height=200 when empty, which would leave a tall gap above the
+        # buttons. _refresh_static_mask_list() packs it (before sm_btns) only
+        # when there are actual layers, and pack_forget()s it when the list
+        # empties back out.
         self._static_mask_list = ctk.CTkFrame(sm, fg_color="transparent")
-        self._static_mask_list.pack(fill="x", padx=6, pady=(2, 4))
-
-        # Placeholder label shown when no layers exist
-        self._sm_empty_label = ctk.CTkLabel(
-            self._static_mask_list, text="No static masks defined",
-            font=("Consolas", 10), text_color="#6b7280",
-        )
-        self._sm_empty_label.pack(pady=4)
 
         # Buttons row
         sm_btns = ctk.CTkFrame(sm, fg_color="transparent")
         sm_btns.pack(fill="x", padx=6, pady=(0, 4))
+        self._sm_btns_row = sm_btns  # ref for pack(before=...) on refresh
 
         ctk.CTkButton(sm_btns, text="New", width=70, height=28,
                        fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
                        font=ctk.CTkFont(size=12),
                        command=self._on_new_static_mask).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(sm_btns, text="Import", width=70, height=28,
+                       fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                       font=ctk.CTkFont(size=12),
+                       command=self._on_import_static_mask).pack(side="left", padx=(0, 4))
         ctk.CTkButton(sm_btns, text="Edit", width=70, height=28,
                        fg_color=COLOR_ACTION_MUTED, hover_color=COLOR_ACTION_MUTED_H,
                        font=ctk.CTkFont(size=12),
@@ -1047,6 +1046,38 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                        fg_color=COLOR_ACTION_DANGER, hover_color=COLOR_ACTION_DANGER_H,
                        font=ctk.CTkFont(size=12),
                        command=self._on_delete_static_mask).pack(side="left")
+
+        # Save mode toggle: OFF (default) writes new masks into the shared
+        # library; ON pops a Save As dialog so the PNG can live anywhere on
+        # disk while still being indexed in the library.
+        sm_save_row = ctk.CTkFrame(sm, fg_color="transparent")
+        sm_save_row.pack(fill="x", padx=6, pady=(2, 4))
+        self.sm_save_elsewhere_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(sm_save_row, text="Save new mask to a chosen location",
+                        variable=self.sm_save_elsewhere_var,
+                        font=ctk.CTkFont(size=12)).pack(side="left")
+
+        # Stamp row: pick a target dir, then OR the enabled layers onto every
+        # mask file in it. Lives inline (no popup) so it matches the rest of
+        # the Mask tab — the entry is the confirm.
+        sm_stamp = ctk.CTkFrame(sm, fg_color="transparent")
+        sm_stamp.pack(fill="x", padx=6, pady=(0, 4))
+        ctk.CTkLabel(sm_stamp, text="Output Dir:", anchor="w",
+                     font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 4))
+        self.sm_stamp_entry = ctk.CTkEntry(
+            sm_stamp,
+            placeholder_text="folder of mask files to stamp (defaults to main Output)",
+            font=ctk.CTkFont(size=12),
+        )
+        self.sm_stamp_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(sm_stamp, text="...", width=BROWSE_BUTTON_WIDTH, height=28,
+                      fg_color=COLOR_ACTION_SECONDARY, hover_color=COLOR_ACTION_SECONDARY_H,
+                      font=ctk.CTkFont(size=12),
+                      command=self._browse_stamp_dir).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(sm_stamp, text="Stamp to Output", width=130, height=28,
+                       fg_color=COLOR_ACTION_PRIMARY, hover_color=COLOR_ACTION_PRIMARY_H,
+                       font=ctk.CTkFont(size=12),
+                       command=self._on_stamp_static_mask).pack(side="left")
 
         self._static_mask_manager = None  # Initialized when input dir is set
         self._sm_layer_widgets = []       # List of (frame, checkbox_var, name_label) per layer
@@ -1301,7 +1332,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
     def _browse_output_folder(self):
         self._browse_dir_into(self.output_entry, title="Select Output Folder")
-        self._reset_static_mask_manager()
 
     def _browse_input_file(self):
         self._browse_file_for(
@@ -1974,35 +2004,36 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
     #  Static mask handlers
     # ------------------------------------------------------------------
 
-    def _init_static_mask_manager(self, dataset_dir: str):
-        """Initialize the static mask manager for the current dataset."""
-        from static_masks import StaticMaskManager
-        self._static_mask_manager = StaticMaskManager(Path(dataset_dir))
-        self._refresh_static_mask_list()
+    def _init_static_mask_manager(self):
+        """Initialize the static mask manager against the shared library.
 
-    def _reset_static_mask_manager(self):
-        """Reset the static mask manager and reload from the current output dir."""
-        self._static_mask_manager = None
+        Idempotent: the library is fixed (``static_mask_library/`` next to
+        the GUI module), so re-calling this just rebuilds the layer list.
+        """
+        from static_masks import StaticMaskManager
+        if self._static_mask_manager is None:
+            self._static_mask_manager = StaticMaskManager()
         self._refresh_static_mask_list()
-        # Auto-discover if the new output dir already has static masks
-        output_dir = self.output_entry.get().strip()
-        if output_dir and Path(output_dir).is_dir():
-            sm_dir = Path(output_dir) / "static_masks"
-            if sm_dir.exists():
-                self._init_static_mask_manager(output_dir)
 
     def _refresh_static_mask_list(self):
-        """Rebuild the layer list UI from the manager's state."""
+        """Rebuild the layer list UI from the manager's state.
+
+        Empty state collapses to zero height by un-packing the list frame —
+        otherwise CTkFrame's default height (~200px) would leave a gap above
+        the action buttons.
+        """
         for w in self._sm_layer_widgets:
             w["frame"].destroy()
         self._sm_layer_widgets = []
 
         mgr = self._static_mask_manager
         if mgr is None or not mgr.layers:
-            self._sm_empty_label.pack(pady=4)
+            self._static_mask_list.pack_forget()
             return
 
-        self._sm_empty_label.pack_forget()
+        # Insert the list above the action buttons row.
+        self._static_mask_list.pack(fill="x", padx=6, pady=(2, 0),
+                                    before=self._sm_btns_row)
 
         for i, layer in enumerate(mgr.layers):
             row = ctk.CTkFrame(self._static_mask_list, fg_color="#2b2b2b",
@@ -2048,17 +2079,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         if not input_dir or not Path(input_dir).is_dir():
             self.log("Set an input directory first")
             return
-        output_dir = self.output_entry.get().strip()
-        if not output_dir:
-            self.log("Set an output directory first")
-            return
 
-        # Re-init if manager is missing or points to a different output dir
-        expected_dir = Path(output_dir) / "static_masks"
-        if (self._static_mask_manager is None
-                or self._static_mask_manager.static_dir != expected_dir):
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-            self._init_static_mask_manager(output_dir)
+        # Library manager is fixed; just make sure it's initialized.
+        if self._static_mask_manager is None:
+            self._init_static_mask_manager()
 
         reference = self._get_current_reference_image()
         if reference is None:
@@ -2082,25 +2106,83 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         threading.Thread(target=_paint, daemon=True).start()
 
     def _prompt_static_mask_name(self, mask):
-        """Show a small dialog to name the new static mask layer."""
+        """Persist a freshly-painted mask.
+
+        Routing depends on the 'Save new mask to a chosen location' checkbox:
+        - Unchecked → write into the shared library (just prompts for a name).
+        - Checked  → Save As dialog for the PNG path, then prompt for a
+                     display name.  The layer entry stores the absolute path.
+        """
+        save_elsewhere = bool(getattr(self, "sm_save_elsewhere_var", None)
+                              and self.sm_save_elsewhere_var.get())
+
+        if save_elsewhere:
+            dest = filedialog.asksaveasfilename(
+                title="Save static mask PNG to...",
+                defaultextension=".png",
+                filetypes=[("PNG image", "*.png"), ("All files", "*.*")],
+            )
+            if not dest:
+                self.log("Static mask save cancelled")
+                return
+            name_dialog = ctk.CTkInputDialog(
+                text="Name this static mask layer:",
+                title="Static Mask Name",
+            )
+            name = name_dialog.get_input()
+            if not (name and name.strip()):
+                self.log("Static mask not saved (no name given)")
+                return
+            self._static_mask_manager.add_layer_at_path(name.strip(), mask, Path(dest))
+            self._refresh_static_mask_list()
+            self.log(f"Static mask saved to {dest}")
+            return
+
         dialog = ctk.CTkInputDialog(
             text="Name this static mask layer:",
             title="Save Static Mask",
         )
         name = dialog.get_input()
-        if name and name.strip():
-            self._static_mask_manager.add_layer(name.strip(), mask)
-            self._refresh_static_mask_list()
-            self.log(f"Static mask saved: {name.strip()}")
-            # Persist to active project if one is selected
-            if (hasattr(self, '_project_store') and self._project_store
-                    and hasattr(self, '_selected_project_id') and self._selected_project_id):
-                proj = self._project_store.get(self._selected_project_id)
-                if proj:
-                    proj.static_masks_dir = str(self._static_mask_manager.static_dir)
-                    self._project_store.save()
-        else:
+        if not (name and name.strip()):
             self.log("Static mask not saved (no name given)")
+            return
+        self._static_mask_manager.add_layer(name.strip(), mask)
+        self._refresh_static_mask_list()
+        self.log(f"Static mask saved to library: {name.strip()}")
+
+    def _on_import_static_mask(self):
+        """Add an existing PNG anywhere on disk to the library index.
+
+        The file is NOT copied — only an absolute-path reference is stored.
+        Useful for re-using a mask painted in another session without
+        duplicating data on disk.
+        """
+        if self._static_mask_manager is None:
+            self._init_static_mask_manager()
+        source = filedialog.askopenfilename(
+            title="Import static mask PNG",
+            filetypes=[("PNG image", "*.png"), ("All files", "*.*")],
+        )
+        if not source:
+            return
+
+        # Suggest a name from the filename stem; let the user override.
+        suggested = Path(source).stem
+        name_dialog = ctk.CTkInputDialog(
+            text=f"Name this imported layer (default: {suggested}):",
+            title="Import Static Mask",
+        )
+        name = name_dialog.get_input()
+        if name is None:
+            self.log("Import cancelled")
+            return
+        name = name.strip() or suggested
+        layer = self._static_mask_manager.import_layer(name, Path(source))
+        if layer is None:
+            self.log(f"Import failed: not a readable mask: {source}")
+            return
+        self._refresh_static_mask_list()
+        self.log(f"Imported static mask '{name}' from {source}")
 
     def _get_selected_static_mask_indices(self):
         """Return indices of selected (highlighted) static mask layers."""
@@ -2142,12 +2224,14 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         idx = selected[0]
         layer = mgr.layers[idx]
-        mask_path = mgr.static_dir / layer.filename
+        # Resolve absolute or library-relative filenames uniformly.
+        mask_path = mgr._resolve(layer)
         existing = _cv2.imread(str(mask_path), _cv2.IMREAD_GRAYSCALE)
         if existing is None:
             self.log(f"Could not load mask: {mask_path}")
             return
-        existing = (existing > 127).astype(_np.uint8)
+        # Disk convention: black (0) = masked. Internal: 1 = masked.
+        existing = (existing < 128).astype(_np.uint8)
 
         reference = self._get_current_reference_image()
         if reference is None:
@@ -2187,6 +2271,68 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             mgr.remove_layer(i)
         self._refresh_static_mask_list()
         self.log(f"Deleted static mask(s): {', '.join(names)}")
+
+    def _browse_stamp_dir(self):
+        """Browse helper for the Static Masks 'Output Dir' entry."""
+        current = self.sm_stamp_entry.get().strip()
+        initial = current if current and Path(current).is_dir() else self.output_entry.get().strip()
+        path = filedialog.askdirectory(
+            title="Select folder of mask files to stamp",
+            initialdir=initial if initial and Path(initial).is_dir() else "",
+        )
+        if path:
+            self.sm_stamp_entry.delete(0, "end")
+            self.sm_stamp_entry.insert(0, path)
+
+    def _on_stamp_static_mask(self):
+        """OR the enabled static-mask layers onto every mask file in the
+        Static Masks 'Output Dir' field. Falls back to the main Output dir
+        when the field is empty. Skips the segmentation pipeline entirely —
+        purely a file I/O pass.
+        """
+        mgr = self._static_mask_manager
+        if mgr is None or not any(l.enabled for l in mgr.layers):  # noqa: E741
+            self.log("Stamp: no enabled static mask layers")
+            return
+
+        target = self.sm_stamp_entry.get().strip()
+        if not target:
+            target = self.output_entry.get().strip()
+        if not target:
+            self.log("Stamp: set Static Masks → Output Dir (or the main Output) first")
+            return
+
+        target_path = Path(target)
+        if not target_path.is_dir():
+            self.log(f"Stamp: not a directory: {target_path}")
+            return
+
+        n_files = mgr.count_stampable_targets(target_path)
+        if n_files == 0:
+            self.log(f"Stamp: no .png/.npy mask files found in {target_path}")
+            return
+
+        n_layers = sum(1 for l in mgr.layers if l.enabled)  # noqa: E741
+        self.log(f"Stamping {n_layers} layer(s) onto {n_files} file(s) in {target_path}...")
+
+        import threading
+
+        def _worker():
+            try:
+                stats = mgr.stamp_onto_directory(target_path)
+                msg = (
+                    f"Stamped {stats['modified']}/{stats['total_examined']} mask(s)"
+                )
+                if stats["skipped_unreadable"]:
+                    msg += f"  skipped {stats['skipped_unreadable']} unreadable"
+                if stats["skipped_resize_failed"]:
+                    msg += f"  skipped {stats['skipped_resize_failed']} resize-failed"
+                self.after(0, lambda: self.log(msg))
+            except Exception as e:
+                err_msg = f"Stamp failed: {e}"
+                self.after(0, lambda: self.log(err_msg))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_preview(self):
         # Invalidate cached image list + explicit preview image if the Input
@@ -2356,12 +2502,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         self._prefs["save_reject_review_images"] = self.review_rejects_var.get()
         self._save_prefs()
 
-        # Initialize static mask manager for this dataset
-        expected_dir = Path(output_path) / "static_masks"
-        if (self._static_mask_manager is None
-                or self._static_mask_manager.static_dir != expected_dir):
-            if Path(output_path).is_dir():
-                self._init_static_mask_manager(output_path)
+        # Ensure shared library manager is loaded (fixed location, not
+        # per-dataset). Cheap if already initialized.
+        if self._static_mask_manager is None:
+            self._init_static_mask_manager()
 
         if self.is_running or self.mq_processing:
             self.log("A process is already running.")
@@ -2475,6 +2619,13 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                 cached_cfg.yolo_model_size = normalized.yolo_model_size
                 cached_cfg.rfdetr_model_size = normalized.rfdetr_model_size
                 cached_cfg.static_mask_paths = normalized.static_mask_paths
+                # The segmenter's _static_composite is built in __init__ from
+                # the original paths; on cache hit we must refresh it or stale
+                # overlays (often None from an empty initial run) get reused.
+                rebuild = getattr(self._pipeline_cached.segmenter,
+                                  "_rebuild_static_composite", None)
+                if callable(rebuild):
+                    rebuild()
                 return self._pipeline_cached
             # Mismatch (or cold): evict before building so GPU memory is freed
             # before the new pipeline allocates.
