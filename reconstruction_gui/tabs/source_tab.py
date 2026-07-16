@@ -2471,11 +2471,9 @@ def _build_fisheye_section(app, parent):
     settings_row = ctk.CTkFrame(mc, fg_color="transparent")
     settings_row.pack(fill="x", pady=3, padx=6)
     ctk.CTkLabel(settings_row, text="Face width", font=ctk.CTkFont(size=11)).pack(side="left")
-    app.fisheye_face_width_var = ctk.StringVar(value="0")
+    app.fisheye_face_width_var = ctk.StringVar(value="2100")
     ctk.CTkEntry(settings_row, textvariable=app.fisheye_face_width_var,
-                 width=50, placeholder_text="0").pack(side="left", padx=(4, 0))
-    ctk.CTkLabel(settings_row, text="(auto)", font=ctk.CTkFont(size=10),
-                 text_color=COLOR_TEXT_DIM).pack(side="left", padx=(2, 8))
+                 width=50, placeholder_text="2100").pack(side="left", padx=(4, 8))
     ctk.CTkLabel(settings_row, text="Format:", font=ctk.CTkFont(size=11)).pack(side="left")
     app.fisheye_format_var = ctk.StringVar(value="png")
     for fmt in ("png", "tiff", "jpg"):
@@ -2871,7 +2869,13 @@ def _run_cubeface_convert(app):
         app.log(f"Error: Masks directory not found: {masks_dir}")
         return
 
-    face_width = int(app.fisheye_face_width_var.get() or "0")
+    try:
+        face_width = int(app.fisheye_face_width_var.get())
+    except ValueError:
+        face_width = 0
+    if face_width <= 0:
+        app.log("Error: Face width must be a positive number of pixels (e.g. 2100)")
+        return
     output_format = app.fisheye_format_var.get()
     force = app.fisheye_force_var.get()
 
