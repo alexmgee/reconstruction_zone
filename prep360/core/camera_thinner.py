@@ -202,7 +202,7 @@ def _load_colmap_poses_from_text(images_txt: Path) -> dict[str, ColmapPoseRecord
 
 
 def _load_colmap_poses_from_binary(model_dir: Path) -> dict[str, ColmapPoseRecord]:
-    model = read_colmap_pose_model_binary(model_dir)
+    model = read_colmap_pose_model_binary(model_dir, variant="colmap")
     poses: dict[str, ColmapPoseRecord] = {}
     for image in model.images.values():
         poses[image.name] = ColmapPoseRecord(

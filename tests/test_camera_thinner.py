@@ -312,7 +312,7 @@ def test_binary_pose_loading_uses_core_reader(tmp_path: Path) -> None:
     ) as reader:
         poses = load_colmap_poses(binary_dir)
 
-    reader.assert_called_once_with(binary_dir)
+    reader.assert_called_once_with(binary_dir, variant="colmap")
     assert "frame_000.jpg" in poses
 
 

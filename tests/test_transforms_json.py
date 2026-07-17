@@ -368,7 +368,7 @@ def test_transform_translation_matches_a1_binary_fixture(tmp_path: Path) -> None
     _write_cameras_bin(sparse_dir / "cameras.bin")
     _write_images_bin(sparse_dir / "images.bin", _sample_pose_records())
 
-    model = read_colmap_pose_model_binary(sparse_dir)
+    model = read_colmap_pose_model_binary(sparse_dir, variant="colmap")
     dataset = colmap_pose_model_to_transforms(model)
 
     centers_by_id = {image_id: image.center for image_id, image in model.images.items()}

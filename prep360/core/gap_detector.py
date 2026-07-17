@@ -266,7 +266,7 @@ class GapDetector:
 
     def parse_colmap_binary_poses(self, model_dir: str) -> List[CameraPosition]:
         """Parse camera positions from COLMAP cameras.bin + images.bin."""
-        model = read_colmap_pose_model_binary(model_dir)
+        model = read_colmap_pose_model_binary(model_dir, variant="colmap")
         return self._pose_model_to_camera_positions(model)
 
     def _pose_model_to_camera_positions(

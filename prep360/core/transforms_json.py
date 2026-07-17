@@ -164,7 +164,7 @@ def export_colmap_binary_to_transforms_json(
         raise FileExistsError(f"Output already exists: {output}")
 
     _ensure_binary_colmap_sparse(sparse_path)
-    model = read_colmap_pose_model_binary(sparse_path)
+    model = read_colmap_pose_model_binary(sparse_path, variant="colmap")
     dataset = colmap_pose_model_to_transforms(model, image_prefix=image_prefix)
     write_transforms_json(dataset, output)
     return len(dataset.frames)
