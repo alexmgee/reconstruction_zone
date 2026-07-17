@@ -194,7 +194,7 @@ def a2_binary_dir(tmp_path: Path) -> Path:
 def test_full_model_to_validation_dict_populates_validation_fields(
     a2_binary_dir: Path,
 ) -> None:
-    model = read_colmap_full_model_binary(a2_binary_dir)
+    model = read_colmap_full_model_binary(a2_binary_dir, variant="colmap")
     data = colmap_full_model_to_validation_dict(model)
 
     image = data["images"][205]
@@ -208,7 +208,7 @@ def test_full_model_to_validation_dict_populates_validation_fields(
 def test_adapter_preserves_non_contiguous_ids_as_dict_keys(
     a2_binary_dir: Path,
 ) -> None:
-    data = read_colmap_binary_full_for_validation(a2_binary_dir)
+    data = read_colmap_binary_full_for_validation(a2_binary_dir, variant="colmap")
 
     assert set(data["cameras"]) == {10, 42}
     assert set(data["images"]) == {101, 205, 307}
@@ -216,20 +216,20 @@ def test_adapter_preserves_non_contiguous_ids_as_dict_keys(
 
 
 def test_adapter_preserves_zero_observation_image(a2_binary_dir: Path) -> None:
-    data = read_colmap_binary_full_for_validation(a2_binary_dir)
+    data = read_colmap_binary_full_for_validation(a2_binary_dir, variant="colmap")
 
     assert 101 in data["images"]
     assert data["images"][101].points2d == []
 
 
 def test_adapter_normalizes_invalid_observation_sentinel(a2_binary_dir: Path) -> None:
-    data = read_colmap_binary_full_for_validation(a2_binary_dir)
+    data = read_colmap_binary_full_for_validation(a2_binary_dir, variant="colmap")
 
     assert data["images"][205].points2d[1][2] == -1
 
 
 def test_adapter_refuses_pose_only_model(a2_binary_dir: Path) -> None:
-    pose_model = read_colmap_pose_model_binary(a2_binary_dir)
+    pose_model = read_colmap_pose_model_binary(a2_binary_dir, variant="colmap")
 
     with pytest.raises(ValueError, match=FULL_MODEL_REQUIRED_MSG):
         colmap_full_model_to_validation_dict(pose_model)
@@ -248,7 +248,7 @@ def test_binary_adapter_matches_text_parser_semantics(
     _write_full_binary_fixture(binary_dir)
     _write_full_text_fixture(text_dir)
 
-    adapted = read_colmap_binary_full_for_validation(binary_dir)
+    adapted = read_colmap_binary_full_for_validation(binary_dir, variant="colmap")
     text_cameras = parse_cameras_txt(text_dir / "cameras.txt")
     text_images = parse_images_txt(text_dir / "images.txt")
     text_points = parse_points3d_txt(text_dir / "points3D.txt")
@@ -292,7 +292,7 @@ def test_binary_adapter_matches_pycolmap_adapter_if_available(
 ) -> None:
     pycolmap = pytest.importorskip("pycolmap")
 
-    adapted = read_colmap_binary_full_for_validation(a2_binary_dir)
+    adapted = read_colmap_binary_full_for_validation(a2_binary_dir, variant="colmap")
     reconstruction = pycolmap.Reconstruction(str(a2_binary_dir))
     pycolmap_data = from_pycolmap_reconstruction(reconstruction)
 
@@ -369,7 +369,7 @@ def test_validate_masks_warns_when_zero_points_checked(
     config.min_track_length = 99
     validator = GeometricValidator(config)
     validator.load_reconstruction_data(
-        read_colmap_binary_full_for_validation(binary_dir),
+        read_colmap_binary_full_for_validation(binary_dir, variant="colmap"),
         source_label=str(binary_dir),
     )
 
@@ -384,7 +384,7 @@ def test_validate_masks_warns_when_zero_points_checked(
 
 def test_geometric_validator_loads_adapted_binary_data(a2_binary_dir: Path) -> None:
     validator = GeometricValidator()
-    data = read_colmap_binary_full_for_validation(a2_binary_dir)
+    data = read_colmap_binary_full_for_validation(a2_binary_dir, variant="colmap")
 
     validator.load_reconstruction_data(data, source_label=str(a2_binary_dir))
 
@@ -411,7 +411,7 @@ def test_geometric_validator_binary_and_text_results_match_non_vacuously(
 
     binary_validator = GeometricValidator(config)
     binary_validator.load_reconstruction_data(
-        read_colmap_binary_full_for_validation(binary_dir),
+        read_colmap_binary_full_for_validation(binary_dir, variant="colmap"),
         source_label=str(binary_dir),
     )
     binary_report = binary_validator.validate_masks(str(masks_dir))
@@ -438,7 +438,7 @@ def test_geometric_validator_consumer_test_has_negative_control(
 
     config = _explicit_validation_config(str(binary_dir))
     validator = GeometricValidator(config)
-    adapted_data = read_colmap_binary_full_for_validation(binary_dir)
+    adapted_data = read_colmap_binary_full_for_validation(binary_dir, variant="colmap")
     validator.load_reconstruction_data(adapted_data, source_label=str(binary_dir))
     valid_report = validator.validate_masks(str(masks_dir))
     assert valid_report.total_points_checked >= 1

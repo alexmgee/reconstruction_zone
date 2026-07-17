@@ -21,7 +21,8 @@ from .colmap_types import (
     ColmapTrackElement,
 )
 
-# COLMAP camera model IDs 0-11 (name, num_params).
+# Upstream COLMAP camera model IDs 0-17 (name, num_params).
+# Verified against pycolmap 4.1.0 (CameraModelId + Camera.create param counts).
 COLMAP_CAMERA_MODELS: dict[int, tuple[str, int]] = {
     0: ("SIMPLE_PINHOLE", 3),
     1: ("PINHOLE", 4),
@@ -34,7 +35,29 @@ COLMAP_CAMERA_MODELS: dict[int, tuple[str, int]] = {
     8: ("SIMPLE_RADIAL_FISHEYE", 4),
     9: ("RADIAL_FISHEYE", 5),
     10: ("THIN_PRISM_FISHEYE", 12),
+    11: ("RAD_TAN_THIN_PRISM_FISHEYE", 16),
+    12: ("SIMPLE_DIVISION", 4),
+    13: ("DIVISION", 5),
+    14: ("SIMPLE_FISHEYE", 3),
+    15: ("FISHEYE", 4),
+    16: ("EUCM", 6),
+    17: ("EQUIRECTANGULAR", 2),
+}
+
+# Legacy SphereSfM-fork table: IDs 0-10 match upstream, but the fork assigned
+# 11 to its SPHERE model (3 params) — upstream 11 is RAD_TAN_THIN_PRISM_FISHEYE
+# (16 params). The variant is trusted out-of-band provenance (the caller knows
+# which engine produced the model); reading with the wrong table typically
+# fails fast on an unknown ID or a size mismatch, but that is defense in
+# depth, not a guarantee — crafted multi-camera files can realign by chance.
+SPHERESFM_CAMERA_MODELS: dict[int, tuple[str, int]] = {
+    **{k: v for k, v in COLMAP_CAMERA_MODELS.items() if k <= 10},
     11: ("SPHERE", 3),
+}
+
+CAMERA_MODEL_TABLES: dict[str, dict[int, tuple[str, int]]] = {
+    "colmap": COLMAP_CAMERA_MODELS,
+    "spheresfm": SPHERESFM_CAMERA_MODELS,
 }
 
 COLMAP_INVALID_POINT3D_ID_BINARY = 2**64 - 1
@@ -52,13 +75,30 @@ class _ParsedImage:
     points2d: tuple[ColmapPoint2D, ...]
 
 
-def read_colmap_pose_model_binary(model_dir: str | Path) -> ColmapPoseModel:
+def _camera_model_table(variant: str) -> dict[int, tuple[str, int]]:
+    if variant not in CAMERA_MODEL_TABLES:
+        raise ValueError(
+            f"Unknown camera-model variant: {variant!r} "
+            f"(expected one of {sorted(CAMERA_MODEL_TABLES)})",
+        )
+    return CAMERA_MODEL_TABLES[variant]
+
+
+def read_colmap_pose_model_binary(
+    model_dir: str | Path,
+    *,
+    variant: str,
+) -> ColmapPoseModel:
     """Read cameras.bin and images.bin as pose-only COLMAP data.
 
+    variant selects the camera-model ID namespace: "colmap" (upstream 0-17)
+    or "spheresfm" (legacy fork, 11=SPHERE). No default — callers must state
+    which engine produced the model.
     Does not require points3D.bin.
     Does not retain observations.
     Raises FileNotFoundError/ValueError on missing or malformed input.
     """
+    camera_models = _camera_model_table(variant)
     model_path = Path(model_dir)
     cameras_path = model_path / "cameras.bin"
     images_path = model_path / "images.bin"
@@ -68,7 +108,7 @@ def read_colmap_pose_model_binary(model_dir: str | Path) -> ColmapPoseModel:
     if not images_path.is_file():
         raise FileNotFoundError(f"Missing COLMAP binary file: {images_path}")
 
-    cameras = _parse_cameras_bin(cameras_path.read_bytes())
+    cameras = _parse_cameras_bin(cameras_path.read_bytes(), camera_models, variant)
     parsed_images = _parse_images_bin(images_path.read_bytes(), retain_observations=False)
 
     points_path = model_path / "points3D.bin"
@@ -99,8 +139,18 @@ def read_colmap_pose_model_binary(model_dir: str | Path) -> ColmapPoseModel:
     )
 
 
-def read_colmap_full_model_binary(model_dir: str | Path) -> ColmapFullModel:
-    """Read cameras.bin, images.bin, and points3D.bin as a full COLMAP model."""
+def read_colmap_full_model_binary(
+    model_dir: str | Path,
+    *,
+    variant: str,
+) -> ColmapFullModel:
+    """Read cameras.bin, images.bin, and points3D.bin as a full COLMAP model.
+
+    variant selects the camera-model ID namespace: "colmap" (upstream 0-17)
+    or "spheresfm" (legacy fork, 11=SPHERE). No default — callers must state
+    which engine produced the model.
+    """
+    camera_models = _camera_model_table(variant)
     model_path = Path(model_dir)
     cameras_path = model_path / "cameras.bin"
     images_path = model_path / "images.bin"
@@ -113,7 +163,7 @@ def read_colmap_full_model_binary(model_dir: str | Path) -> ColmapFullModel:
     if not points_path.is_file():
         raise FileNotFoundError(f"Missing COLMAP binary file: {points_path}")
 
-    cameras = _parse_cameras_bin(cameras_path.read_bytes())
+    cameras = _parse_cameras_bin(cameras_path.read_bytes(), camera_models, variant)
     parsed_images = _parse_images_bin(images_path.read_bytes(), retain_observations=True)
     points3d = _parse_points3d_bin(points_path.read_bytes())
 
@@ -168,7 +218,11 @@ def _camera_center_from_pose(qvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
     return -rot.T @ tvec
 
 
-def _parse_cameras_bin(data: bytes) -> dict[int, ColmapCamera]:
+def _parse_cameras_bin(
+    data: bytes,
+    camera_models: dict[int, tuple[str, int]],
+    variant: str,
+) -> dict[int, ColmapCamera]:
     if len(data) < 8:
         raise ValueError("Truncated cameras.bin: missing camera count")
 
@@ -186,10 +240,14 @@ def _parse_cameras_bin(data: bytes) -> dict[int, ColmapCamera]:
         )
         offset += 24
 
-        if model_id not in COLMAP_CAMERA_MODELS:
-            raise ValueError(f"Unknown COLMAP camera model id: {model_id}")
+        if model_id not in camera_models:
+            raise ValueError(
+                f"Unknown COLMAP camera model id: {model_id} "
+                f"under variant '{variant}' — if this model came from the "
+                f"other engine, re-read it with the matching variant",
+            )
 
-        model_name, num_params = COLMAP_CAMERA_MODELS[model_id]
+        model_name, num_params = camera_models[model_id]
         params_size = num_params * 8
         if offset + params_size > len(data):
             raise ValueError(

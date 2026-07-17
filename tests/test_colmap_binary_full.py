@@ -241,14 +241,14 @@ def test_read_full_model_requires_points3d(tmp_path: Path) -> None:
     _write_images_bin(model_dir / "images.bin", data["images"])
 
     with pytest.raises(FileNotFoundError, match="points3D.bin"):
-        read_colmap_full_model_binary(model_dir)
+        read_colmap_full_model_binary(model_dir, variant="colmap")
 
 
 def test_read_full_images_preserves_points2d(tmp_path: Path) -> None:
     model_dir = tmp_path / "sparse"
     _write_full_binary_fixture(model_dir)
 
-    model = read_colmap_full_model_binary(model_dir)
+    model = read_colmap_full_model_binary(model_dir, variant="colmap")
 
     assert len(model.images[101].points2d) == 0
     assert len(model.images[205].points2d) == 3
@@ -261,7 +261,7 @@ def test_pose_only_still_does_not_retain_points2d(tmp_path: Path) -> None:
     model_dir = tmp_path / "sparse"
     _write_full_binary_fixture(model_dir)
 
-    model = read_colmap_pose_model_binary(model_dir)
+    model = read_colmap_pose_model_binary(model_dir, variant="colmap")
 
     assert model.read_mode is ColmapReadMode.POSE_ONLY
     assert not hasattr(model.images[205], "points2d")
@@ -271,7 +271,7 @@ def test_points3d_preserves_error_color_and_track(tmp_path: Path) -> None:
     model_dir = tmp_path / "sparse"
     _write_full_binary_fixture(model_dir)
 
-    model = read_colmap_full_model_binary(model_dir)
+    model = read_colmap_full_model_binary(model_dir, variant="colmap")
     point = model.points3d[9001]
 
     assert point.rgb == (12, 34, 56)
@@ -290,7 +290,7 @@ def test_non_contiguous_ids_are_dict_keys(tmp_path: Path) -> None:
     model_dir = tmp_path / "sparse"
     _write_full_binary_fixture(model_dir)
 
-    model = read_colmap_full_model_binary(model_dir)
+    model = read_colmap_full_model_binary(model_dir, variant="colmap")
 
     assert set(model.cameras) == {10, 42}
     assert set(model.images) == {101, 205, 307}
@@ -305,7 +305,7 @@ def test_text_and_binary_full_semantics_match(tmp_path: Path) -> None:
     _write_full_binary_fixture(binary_dir)
     _write_full_text_fixture(text_dir)
 
-    binary_model = read_colmap_full_model_binary(binary_dir)
+    binary_model = read_colmap_full_model_binary(binary_dir, variant="colmap")
     text_cameras = parse_cameras_txt(text_dir / "cameras.txt")
     text_images = parse_images_txt(text_dir / "images.txt")
     text_points = parse_points3d_txt(text_dir / "points3D.txt")
@@ -357,7 +357,7 @@ def test_pycolmap_semantic_parity_if_available(tmp_path: Path) -> None:
     model_dir = tmp_path / "sparse"
     _write_full_binary_fixture(model_dir)
 
-    native = read_colmap_full_model_binary(model_dir)
+    native = read_colmap_full_model_binary(model_dir, variant="colmap")
     reconstruction = pycolmap.Reconstruction(str(model_dir))
 
     assert set(native.cameras) == set(reconstruction.cameras)
@@ -415,7 +415,7 @@ def test_read_model_dir_pose_only_compatibility(tmp_path: Path) -> None:
     model_dir = tmp_path / "sparse"
     _write_full_binary_fixture(model_dir)
 
-    pose_model = read_colmap_pose_model_binary(model_dir)
+    pose_model = read_colmap_pose_model_binary(model_dir, variant="colmap")
 
     assert pose_model.read_mode is ColmapReadMode.POSE_ONLY
     assert set(pose_model.images) == {101, 205, 307}
@@ -437,7 +437,7 @@ def test_truncated_points3d_before_track_length_has_clear_error(tmp_path: Path) 
     (model_dir / "points3D.bin").write_bytes(payload)
 
     with pytest.raises(ValueError, match="Truncated points3D.bin: incomplete point header"):
-        read_colmap_full_model_binary(model_dir)
+        read_colmap_full_model_binary(model_dir, variant="colmap")
 
 
 def test_truncated_points3d_has_clear_error(tmp_path: Path) -> None:
@@ -456,4 +456,4 @@ def test_truncated_points3d_has_clear_error(tmp_path: Path) -> None:
     (model_dir / "points3D.bin").write_bytes(payload)
 
     with pytest.raises(ValueError, match="Truncated points3D.bin"):
-        read_colmap_full_model_binary(model_dir)
+        read_colmap_full_model_binary(model_dir, variant="colmap")

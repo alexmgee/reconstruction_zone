@@ -37,6 +37,19 @@ logger = logging.getLogger(__name__)
 # COLMAP Data Structures
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Camera models with a correct pinhole K + distortion path in this module.
+# Anything else (fisheye family, EUCM, EQUIRECTANGULAR, SPHERE) is refused
+# explicitly — never silently projected as pinhole.
+VALIDATION_SUPPORTED_MODELS = {
+    'SIMPLE_PINHOLE', 'PINHOLE', 'SIMPLE_RADIAL', 'RADIAL', 'OPENCV',
+}
+
+
+def supports_geometric_validation(model: str) -> bool:
+    """True if geometric validation implements this camera model correctly."""
+    return model in VALIDATION_SUPPORTED_MODELS
+
+
 @dataclass
 class COLMAPCamera:
     """A COLMAP camera model."""
@@ -61,10 +74,12 @@ class COLMAPCamera:
             fx, fy, cx, cy = self.params[:4]
             return np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
         else:
-            # Fallback: assume first param is focal length
-            f = self.params[0]
-            cx, cy = self.width / 2, self.height / 2
-            return np.array([[f, 0, cx], [0, f, cy], [0, 0, 1]], dtype=np.float64)
+            raise ValueError(
+                f"Geometric validation does not support camera model "
+                f"'{self.model}' (camera {self.camera_id}): no pinhole "
+                f"intrinsics/projection implemented for it. Supported models: "
+                f"{sorted(VALIDATION_SUPPORTED_MODELS)}."
+            )
 
     def get_distortion(self) -> Optional[np.ndarray]:
         """Return distortion coefficients for OpenCV undistort, or None."""
@@ -446,6 +461,19 @@ class GeometricValidator:
         self.points3d: Dict[int, COLMAPPoint3D] = {}
         self._name_to_id: Dict[str, int] = {}  # image name → image_id
 
+    def _reject_unsupported_cameras(self) -> None:
+        """Refuse at load time — not lazily per-point — so a zero-point model
+        cannot 'pass' validation with cameras we can't actually project."""
+        unsupported = sorted({
+            cam.model for cam in self.cameras.values()
+            if not supports_geometric_validation(cam.model)
+        })
+        if unsupported:
+            raise ValueError(
+                f"Geometric validation does not support camera model(s) "
+                f"{unsupported}. Supported: {sorted(VALIDATION_SUPPORTED_MODELS)}."
+            )
+
     def load_reconstruction(self, colmap_dir: Optional[str] = None):
         """Load COLMAP sparse reconstruction from text files.
 
@@ -467,6 +495,7 @@ class GeometricValidator:
         self.cameras = parse_cameras_txt(cameras_path)
         self.images = parse_images_txt(images_path)
         self.points3d = parse_points3d_txt(points_path)
+        self._reject_unsupported_cameras()
 
         # Build name lookup
         self._name_to_id = {img.name: img.image_id for img in self.images.values()}
@@ -493,6 +522,7 @@ class GeometricValidator:
         self.cameras = dict(reconstruction["cameras"])
         self.images = dict(reconstruction["images"])
         self.points3d = dict(reconstruction["points3D"])
+        self._reject_unsupported_cameras()
         self._name_to_id = {
             image.name: image.image_id for image in self.images.values()
         }

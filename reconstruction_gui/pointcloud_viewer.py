@@ -56,7 +56,8 @@ _PERSPECTIVE_MODELS = {
     "SIMPLE_PINHOLE", "PINHOLE", "SIMPLE_RADIAL", "RADIAL",
     "OPENCV", "OPENCV_FISHEYE", "FULL_OPENCV",
 }
-_SPHERICAL_MODELS = {"SPHERE"}
+# SPHERE = legacy SphereSfM fork; EQUIRECTANGULAR = upstream COLMAP >= 4.1.0.
+_SPHERICAL_MODELS = {"SPHERE", "EQUIRECTANGULAR"}
 
 
 class PointCloudViewer:
@@ -97,6 +98,7 @@ class PointCloudViewer:
         self._destroyed = False
         self._pump_id: Optional[str] = None
         self._model_data: Optional[Dict[str, Any]] = None
+        self._skipped_frustum_models: set = set()
         self._point_actor = None
         self._camera_actors: List = []
         self._color_mode = "rgb"
@@ -445,8 +447,15 @@ class PointCloudViewer:
 
             if model in _SPHERICAL_MODELS:
                 self._add_sphere_camera(center, R)
-            else:
+            elif model in _PERSPECTIVE_MODELS:
                 self._add_perspective_frustum(center, R, cam)
+            else:
+                if model not in self._skipped_frustum_models:
+                    self._skipped_frustum_models.add(model)
+                    logger.info(
+                        "No frustum geometry implemented for camera model %s "
+                        "— points render, camera markers skipped", model,
+                    )
 
     def _add_perspective_frustum(self, center, R, cam):
         """Add a perspective camera frustum wireframe."""
