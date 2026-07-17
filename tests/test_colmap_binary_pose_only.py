@@ -97,7 +97,7 @@ def test_read_cameras_bin_pose_only_fields(tmp_path: Path) -> None:
     )
     _write_images_bin(tmp_path / "images.bin", [])
 
-    model = read_colmap_pose_model_binary(tmp_path)
+    model = read_colmap_pose_model_binary(tmp_path, variant="colmap")
     camera = model.cameras[7]
 
     assert camera.camera_id == 7
@@ -121,7 +121,7 @@ def test_read_images_bin_pose_only_centers(tmp_path: Path) -> None:
     ]
     _write_images_bin(tmp_path / "images.bin", records)
 
-    model = read_colmap_pose_model_binary(tmp_path)
+    model = read_colmap_pose_model_binary(tmp_path, variant="colmap")
     image = model.images[1]
 
     np.testing.assert_allclose(image.qvec, np.array([1.0, 0.0, 0.0, 0.0]))
@@ -134,7 +134,7 @@ def test_pose_only_traverses_mixed_observation_counts(tmp_path: Path) -> None:
     _write_cameras_bin(tmp_path / "cameras.bin")
     _write_images_bin(tmp_path / "images.bin", records)
 
-    model = read_colmap_pose_model_binary(tmp_path)
+    model = read_colmap_pose_model_binary(tmp_path, variant="colmap")
 
     assert set(model.images) == {101, 205, 307}
     assert model.images[101].name == "frame_00001_t12.5s.jpg"
@@ -159,7 +159,7 @@ def test_pose_only_does_not_retain_observations(tmp_path: Path) -> None:
     _write_cameras_bin(tmp_path / "cameras.bin")
     _write_images_bin(tmp_path / "images.bin", records)
 
-    model = read_colmap_pose_model_binary(tmp_path)
+    model = read_colmap_pose_model_binary(tmp_path, variant="colmap")
 
     assert model.read_mode is ColmapReadMode.POSE_ONLY
     assert model.completeness is ColmapModelCompleteness.POSE_ONLY
@@ -174,14 +174,14 @@ def test_missing_cameras_or_images_bin_has_clear_error(tmp_path: Path) -> None:
     _write_cameras_bin(tmp_path / "cameras.bin")
 
     with pytest.raises(FileNotFoundError, match="images.bin"):
-        read_colmap_pose_model_binary(tmp_path)
+        read_colmap_pose_model_binary(tmp_path, variant="colmap")
 
     images_only = tmp_path / "images_only"
     images_only.mkdir()
     _write_images_bin(images_only / "images.bin", _sample_pose_records())
 
     with pytest.raises(FileNotFoundError, match="cameras.bin"):
-        read_colmap_pose_model_binary(images_only)
+        read_colmap_pose_model_binary(images_only, variant="colmap")
 
 
 def test_unknown_camera_model_id_has_clear_error(tmp_path: Path) -> None:
@@ -191,7 +191,7 @@ def test_unknown_camera_model_id_has_clear_error(tmp_path: Path) -> None:
     _write_images_bin(tmp_path / "images.bin", [])
 
     with pytest.raises(ValueError, match="Unknown COLMAP camera model id: 99"):
-        read_colmap_pose_model_binary(tmp_path)
+        read_colmap_pose_model_binary(tmp_path, variant="colmap")
 
 
 def test_truncated_images_bin_has_clear_error(tmp_path: Path) -> None:
@@ -207,7 +207,7 @@ def test_truncated_images_bin_has_clear_error(tmp_path: Path) -> None:
     (tmp_path / "images.bin").write_bytes(payload)
 
     with pytest.raises(ValueError, match="Truncated images.bin"):
-        read_colmap_pose_model_binary(tmp_path)
+        read_colmap_pose_model_binary(tmp_path, variant="colmap")
 
 
 def test_pycolmap_absent_not_required() -> None:

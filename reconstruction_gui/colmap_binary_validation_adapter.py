@@ -119,7 +119,15 @@ def colmap_full_model_to_validation_dict(model: ColmapFullModel) -> Dict[str, An
     }
 
 
-def read_colmap_binary_full_for_validation(model_dir: str | Path) -> Dict[str, Any]:
-    """Read a binary sparse COLMAP directory and return validation-shaped data."""
-    model = read_colmap_full_model_binary(model_dir)
+def read_colmap_binary_full_for_validation(
+    model_dir: str | Path,
+    *,
+    variant: str,
+) -> Dict[str, Any]:
+    """Read a binary sparse COLMAP directory and return validation-shaped data.
+
+    variant selects the camera-model ID namespace ("colmap" upstream /
+    "spheresfm" legacy fork) — no default; the caller knows the engine.
+    """
+    model = read_colmap_full_model_binary(model_dir, variant=variant)
     return colmap_full_model_to_validation_dict(model)
