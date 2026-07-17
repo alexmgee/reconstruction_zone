@@ -173,7 +173,7 @@ def _build_alignment_engine_section(app, parent):
     ).pack(side="left", padx=(6, 12))
 
     ctk.CTkRadioButton(
-        row, text="SphereSfM", variable=app.alignment_engine_var, value="spheresfm",
+        row, text="SphereSfM (legacy)", variable=app.alignment_engine_var, value="spheresfm",
         command=lambda: _on_engine_change(app),
     ).pack(side="left")
 
@@ -194,7 +194,7 @@ def _build_alignment_engine_panel(app, parent):
     app.alignment_camera_model_menu = ctk.CTkOptionMenu(
         row,
         values=["PINHOLE", "OPENCV", "OPENCV_FISHEYE", "SIMPLE_RADIAL", "RADIAL",
-                "SIMPLE_PINHOLE", "FULL_OPENCV"],
+                "SIMPLE_PINHOLE", "FULL_OPENCV", "EQUIRECTANGULAR", "EUCM"],
         variable=app.alignment_camera_model_var,
         width=180,
     )
@@ -392,6 +392,28 @@ def _build_alignment_tool_section(app, parent):
         "Optional manual override. Most users should keep the preferred binary and leave this unchanged.",
     )
 
+    backend_row = ctk.CTkFrame(c, fg_color="transparent")
+    backend_row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(backend_row, text="Backend:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
+    app.alignment_backend_var = ctk.StringVar(
+        value=str(app._prefs.get("alignment_colmap_backend", "auto")).strip().lower() or "auto",
+    )
+    app.alignment_backend_menu = ctk.CTkOptionMenu(
+        backend_row,
+        values=["auto", "pycolmap", "cli"],
+        variable=app.alignment_backend_var,
+        width=160,
+    )
+    app.alignment_backend_menu.pack(side="left", padx=(6, 12))
+    Tooltip(
+        app.alignment_backend_menu,
+        "auto: in-process pycolmap when its wheel passes qualification, else the CLI binary.\n"
+        "pycolmap: require the wheel — runs refuse to start if it fails qualification.\n"
+        "cli: always run the external binary above.\n"
+        "Backends are qualified in a fresh process per session; a failed backend\n"
+        "stays excluded until the app restarts.",
+    )
+
 
 def _build_alignment_camera_section(app, parent):
     sec = CollapsibleSection(parent, "Camera And Reader", expanded=False)
@@ -560,6 +582,39 @@ def _build_alignment_reconstruct_section(app, parent):
     app.alignment_min_num_inliers_entry = ctk.CTkEntry(row, width=120)
     app.alignment_min_num_inliers_entry.insert(0, "15")
     app.alignment_min_num_inliers_entry.pack(side="left", padx=(6, 0))
+
+    ba_row = ctk.CTkFrame(c, fg_color="transparent")
+    ba_row.pack(fill="x", pady=3, padx=6)
+    ctk.CTkLabel(
+        ba_row, text="BA backend:", width=LABEL_FIELD_WIDTH, anchor="e"
+    ).pack(side="left")
+    app.alignment_ba_backend_var = ctk.StringVar(
+        value=str(app._prefs.get("alignment_ba_backend", "AUTO")).strip().upper() or "AUTO",
+    )
+    app.alignment_ba_backend_menu = ctk.CTkOptionMenu(
+        ba_row,
+        values=["AUTO", "CERES", "CASPAR"],
+        variable=app.alignment_ba_backend_var,
+        width=160,
+    )
+    app.alignment_ba_backend_menu.pack(side="left", padx=(6, 12))
+    app.alignment_ba_use_gpu_var = ctk.BooleanVar(
+        value=bool(app._prefs.get("alignment_ba_use_gpu", True)),
+    )
+    app.alignment_ba_use_gpu_cb = ctk.CTkCheckBox(
+        ba_row, text="GPU BA", variable=app.alignment_ba_use_gpu_var,
+    )
+    app.alignment_ba_use_gpu_cb.pack(side="left", padx=(10, 0))
+    Tooltip(
+        ba_row,
+        "AUTO picks Caspar for pinhole/simple_radial incremental runs, else Ceres.\n"
+        "Caspar runs the large global bundle adjustments on the GPU; the many\n"
+        "small local adjustments stay on Ceres (measured fastest combination).\n"
+        "CASPAR supports only PINHOLE/SIMPLE_RADIAL and incremental mapping.\n"
+        "GPU BA: Caspar is the in-process GPU solver. Ceres GPU/cuDSS engages\n"
+        "only via the cli backend (the in-process wheel's Ceres runs on CPU),\n"
+        "and global-mapper GPU BA is cli-only as well.",
+    )
 
     # Pose prior controls (shown only when mapper = pose_prior)
     app._alignment_pose_prior_frame = ctk.CTkFrame(c, fg_color="transparent")
@@ -1408,6 +1463,11 @@ def _on_engine_change(app, force: bool = False):
     if hasattr(app, "_alignment_ba_refine_focal_cb"):
         _update_ba_refine_lock(app)
 
+    if hasattr(app, "alignment_ba_backend_menu"):
+        ba_state = "disabled" if engine_name == "spheresfm" else "normal"
+        app.alignment_ba_backend_menu.configure(state=ba_state)
+        app.alignment_ba_use_gpu_cb.configure(state=ba_state)
+
     _update_alignment_binary_hint(app)
 
 
@@ -1812,6 +1872,9 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     ba_refine_focal = bool(app.alignment_ba_refine_focal_var.get())
     ba_refine_principal = bool(app.alignment_ba_refine_principal_var.get())
     ba_refine_extra = bool(app.alignment_ba_refine_extra_var.get())
+    ba_backend = app.alignment_ba_backend_var.get().strip().upper()
+    ba_use_gpu = bool(app.alignment_ba_use_gpu_var.get())
+    backend_preference = app.alignment_backend_var.get().strip().lower() or "auto"
 
     # Pose prior settings (only used when mapper = pose_prior_mapper)
     prior_std_x = _parse_optional_float(app.alignment_prior_std_x_entry.get(), "Prior std X")
@@ -1970,6 +2033,7 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     prefs["alignment_mapper"] = base_mapper
     prefs["alignment_binary_path"] = binary_path
     prefs["alignment_camera_model"] = camera_model
+    prefs["alignment_colmap_backend"] = backend_preference
     prefs["alignment_feature_type"] = feature_type
     prefs["alignment_matcher_type"] = matcher_type
     prefs["alignment_single_camera"] = single_camera
@@ -1991,6 +2055,8 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
     prefs["alignment_ba_refine_focal_length"] = ba_refine_focal
     prefs["alignment_ba_refine_principal_point"] = ba_refine_principal
     prefs["alignment_ba_refine_extra_params"] = ba_refine_extra
+    prefs["alignment_ba_backend"] = ba_backend
+    prefs["alignment_ba_use_gpu"] = ba_use_gpu
     prefs["alignment_prior_std_x"] = "" if prior_std_x is None else prior_std_x
     prefs["alignment_prior_std_y"] = "" if prior_std_y is None else prior_std_y
     prefs["alignment_prior_std_z"] = "" if prior_std_z is None else prior_std_z
@@ -2033,6 +2099,8 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
         "ba_refine_focal_length": ba_refine_focal,
         "ba_refine_principal_point": ba_refine_principal,
         "ba_refine_extra_params": ba_refine_extra,
+        "ba_backend": ba_backend,
+        "ba_use_gpu": ba_use_gpu,
         "prior_std_x": prior_std_x,
         "prior_std_y": prior_std_y,
         "prior_std_z": prior_std_z,
@@ -2051,11 +2119,14 @@ def _snapshot_alignment_settings(app) -> Dict[str, object]:
         "workspace_root": workspace_root,
         "engine_name": engine_name,
         "binary_path": binary_path,
+        "backend_preference": backend_preference,
         "profile": profile,
         "max_features": max_features,
         "max_image_size": max_image_size,
         "max_num_matches": max_num_matches,
         "min_num_inliers": min_num_inliers,
+        "ba_backend": ba_backend,
+        "ba_use_gpu": ba_use_gpu,
         "rig_config_path": rig_config_path,
         "adjustment_manifest_path": adjustment_manifest_path,
         "signature": json.dumps(signature_payload, sort_keys=True, default=str),
@@ -2129,6 +2200,7 @@ def _alignment_worker(app, snapshot: Dict[str, object], stages_to_run: List[str]
                 workspace_root=str(snapshot["workspace_root"]),
                 camera_model=str(snapshot["profile"].camera_model),
                 binary_path=str(snapshot["binary_path"]),
+                backend_preference=str(snapshot.get("backend_preference", "auto")),
             )
             runner.start_run(
                 images_dir=str(snapshot["images_dir"]),
@@ -2152,6 +2224,15 @@ def _alignment_worker(app, snapshot: Dict[str, object], stages_to_run: List[str]
 
         profile = snapshot["profile"]
         progress = lambda message: _alignment_log(app, message)  # noqa: E731
+
+        if (
+            str(profile.camera_model).upper() == "EQUIRECTANGULAR"
+            and str(snapshot.get("mapper", "")).lower().startswith("global")
+        ):
+            progress(
+                "WARNING: global mapping with EQUIRECTANGULAR is experimental "
+                "and unvalidated — incremental is the supported native-360 path."
+            )
 
         for stage_key in stages_to_run:
             if app._alignment_cancel_event.is_set():
@@ -2201,6 +2282,8 @@ def _alignment_worker(app, snapshot: Dict[str, object], stages_to_run: List[str]
                     progress_callback=progress,
                     cancel_event=app._alignment_cancel_event,
                     extra_args=dict(profile.reconstruct_extra_args),
+                    ba_backend=str(snapshot["ba_backend"]),
+                    ba_use_gpu=bool(snapshot["ba_use_gpu"]),
                 )
             else:
                 raise RuntimeError(f"Unknown alignment stage: {stage_key}")
