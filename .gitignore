@@ -63,3 +63,6 @@ reconstruction_gui/test_*.py
 CLAUDE.md
 HANDOVER.md
 *.code-workspace
+
+# Agent-collab dispatch logs (plan ledger companion)
+.collab-logs/
