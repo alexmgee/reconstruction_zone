@@ -8,12 +8,19 @@ import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from reconstruction_web import __version__
 from reconstruction_web.file_access import FileAccessError, FolderTokenRegistry
 from reconstruction_web.jobs import JobRegistry, JobRegistryError
+from reconstruction_web.projects import (
+    PROJECT_NOT_FOUND,
+    PROJECT_STORE_UNAVAILABLE,
+    ProjectReader,
+    build_project_reader,
+)
 from reconstruction_web.shell import SHELL_HTML
 from reconstruction_web.state import WebStateConfig, WebStateConfigError, build_state_config
 
@@ -55,11 +62,13 @@ def make_server(
     port: int = DEFAULT_PORT,
     root_registry: FolderTokenRegistry | None = None,
     job_registry: JobRegistry | None = None,
+    project_store: str | Path | None = None,
 ) -> ThreadingHTTPServer:
     _ = state_config  # validated by caller; reserved for future route context
     registry = root_registry or FolderTokenRegistry()
     jobs = job_registry or JobRegistry()
-    handler = _build_handler(registry, jobs)
+    project_reader = build_project_reader(project_store)
+    handler = _build_handler(registry, jobs, project_reader)
     server = _SafeThreadingHTTPServer((HOST, port), handler)
     server.job_registry = jobs
     return server
@@ -77,7 +86,12 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    server = make_server(state_config, port=args.port, root_registry=root_registry)
+    server = make_server(
+        state_config,
+        port=args.port,
+        root_registry=root_registry,
+        project_store=args.project_store,
+    )
     bind_host, bind_port = server.server_address
     print(f"reconstruction_web listening on http://{bind_host}:{bind_port}", file=sys.stderr)
     try:
@@ -125,6 +139,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Register a read-only content root (repeatable, label=path).",
     )
     parser.add_argument(
+        "--project-store",
+        default=None,
+        help="Existing non-production project-store JSON file.",
+    )
+    parser.add_argument(
         "--port",
         type=int,
         default=DEFAULT_PORT,
@@ -136,6 +155,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def _build_handler(
     registry: FolderTokenRegistry,
     jobs: JobRegistry,
+    project_reader: ProjectReader | None,
 ) -> type[BaseHTTPRequestHandler]:
     health_payload = {
         "ok": True,
@@ -194,6 +214,24 @@ def _build_handler(
                     return
                 if route.startswith("/api/jobs/") and route.count("/") == 3:
                     self._handle_job_detail(route.removeprefix("/api/jobs/"))
+                    return
+                if route == "/api/projects":
+                    if project_reader is None:
+                        self._send_json(503, PROJECT_STORE_UNAVAILABLE)
+                    else:
+                        self._send_json(200, project_reader.list_payload())
+                    return
+                if route.startswith("/api/projects/") and route.count("/") == 3:
+                    if project_reader is None:
+                        self._send_json(503, PROJECT_STORE_UNAVAILABLE)
+                        return
+                    payload = project_reader.detail_payload(
+                        route.removeprefix("/api/projects/")
+                    )
+                    if payload is None:
+                        self._send_json(404, PROJECT_NOT_FOUND)
+                    else:
+                        self._send_json(200, payload)
                     return
                 if self.path == "/":
                     self._send_html(SHELL_HTML)

@@ -141,6 +141,8 @@ def test_spoofed_host_rejected_before_every_dispatch_branch(host_server):
         ("GET", "/api/files/stat", (), None),
         ("GET", "/api/jobs", (), None),
         ("GET", f"/api/jobs/{'0' * 32}", (), None),
+        ("GET", "/api/projects", (), None),
+        ("GET", "/api/projects/project-id", (), None),
         (
             "POST",
             "/api/jobs",

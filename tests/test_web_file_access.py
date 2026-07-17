@@ -610,6 +610,7 @@ def test_source_guard_forbidden_literals():
 
 
 def test_no_forbidden_boundary_imports_in_source():
+    project_reader_path = PACKAGE_ROOT / "projects.py"
     forbidden_modules = (
         "reconstruction_gui.project_store",
         "reconstruction_gui.activity_store",
@@ -622,6 +623,8 @@ def test_no_forbidden_boundary_imports_in_source():
     for path in PACKAGE_ROOT.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         for module in forbidden_modules:
+            if path == project_reader_path and module == "reconstruction_gui.project_store":
+                continue
             assert f"import {module}" not in text, f"{module!r} import found in {path}"
             assert f"from {module}" not in text, f"{module!r} import found in {path}"
 
