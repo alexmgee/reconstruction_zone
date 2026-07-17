@@ -57,7 +57,6 @@ except ImportError:
 
 def _import_pipeline():
     from reconstruction_pipeline import (
-        CLASS_PRESETS,
         COCO_CLASSES,
         COCO_NAME_TO_ID,
         ImageGeometry,
@@ -65,7 +64,7 @@ def _import_pipeline():
         MaskingPipeline,
         SegmentationModel,
     )
-    return MaskingPipeline, MaskConfig, SegmentationModel, ImageGeometry, CLASS_PRESETS, COCO_CLASSES, COCO_NAME_TO_ID
+    return MaskingPipeline, MaskConfig, SegmentationModel, ImageGeometry, COCO_CLASSES, COCO_NAME_TO_ID
 
 
 def _import_review():
@@ -455,6 +454,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         workspace_root: str,
         camera_model: str,
         binary_path: Optional[str] = None,
+        backend_preference: Optional[str] = None,
     ):
         from reconstruction_gui.colmap_runner import ColmapRunner
 
@@ -465,11 +465,17 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             detail = status.get("error", "No binary configured")
             raise RuntimeError(f"{normalized} binary is unavailable: {detail}")
 
+        resolved_backend = (
+            (backend_preference or "").strip().lower()
+            or str(self._prefs.get("alignment_colmap_backend", "auto")).strip().lower()
+            or "auto"
+        )
         return ColmapRunner(
             binary_path=resolved_binary,
             camera_model=camera_model,
             workspace_root=workspace_root,
             engine_name=normalized,
+            backend_preference=resolved_backend,
         )
 
     # ── prefs ──
@@ -909,7 +915,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         r2.pack(fill="x", padx=6, pady=(8, 3))
         ctk.CTkLabel(r2, text="Remove:", width=LABEL_FIELD_WIDTH, anchor="e").pack(side="left")
         self.remove_prompts_entry = ctk.CTkEntry(
-            r2, placeholder_text="default: person, tripod, backpack, selfie stick")
+            r2, placeholder_text="(optional) objects to mask out, e.g. person, tripod")
         self.remove_prompts_entry.pack(side="left", fill="x", expand=True, padx=5)
 
         r3 = ctk.CTkFrame(core, fg_color="transparent")
@@ -930,12 +936,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
         _mp.pack(side="left")
         Tooltip(_mp, "Run SAM3 once per prompt with individual confidence\n"
                      "thresholds, then union all masks together")
-        self.multi_label_var = ctk.BooleanVar(value=False)
-        _ml = ctk.CTkCheckBox(mp_toggle_row, text="Multi-label output",
-                              variable=self.multi_label_var, width=0)
-        _ml.pack(side="left", padx=(24, 0))
-        Tooltip(_ml, "Export per-class segmentation maps (pixel values = class IDs)\n"
-                     "for Gaussian Grouping and semantic scene decomposition")
         ctk.CTkButton(mp_toggle_row, text="+ Add Pass", width=80,
                       command=self._add_multi_pass_row).pack(side="right", padx=2)
         ctk.CTkButton(mp_toggle_row, text="Remove", width=70,
@@ -2641,7 +2641,7 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
 
         Returns (config, model_str, geometry) tuple.
         """
-        _, MaskConfig, SegmentationModel, ImageGeometry, _, _, COCO_NAME_TO_ID = _import_pipeline()
+        _, MaskConfig, SegmentationModel, ImageGeometry, _, COCO_NAME_TO_ID = _import_pipeline()
 
         model_str = self.model_var.get()
         model_map = {
@@ -2684,8 +2684,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                             keep_classes.append(cid)
                             break
 
-        remove_prompts = remove_prompts or None
-
         geometry_map = {
             "pinhole": ImageGeometry.PINHOLE,
             "equirect": ImageGeometry.EQUIRECTANGULAR,
@@ -2719,7 +2717,6 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             rfdetr_model_size="small",
             temporal_tracking=self.temporal_tracking_var.get(),
             multi_pass_prompts=multi_pass,
-            multi_label=self.multi_label_var.get(),
             inpaint_masked=self.inpaint_var.get(),
             output_format=self.output_format_var.get(),
             num_workers=int(self.num_workers_var.get()),
@@ -2738,9 +2735,8 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
             save_reject_review_images=self.review_rejects_var.get(),
             keep_prompts=keep_prompts,
             keep_classes=keep_classes,
+            remove_prompts=remove_prompts,
         )
-        if remove_prompts is not None:
-            config_kwargs["remove_prompts"] = remove_prompts
 
         # Static mask overlay paths
         if self._static_mask_manager:

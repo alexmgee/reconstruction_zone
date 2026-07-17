@@ -15,13 +15,16 @@ parsing.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import queue
 import re
 import shutil
+import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -31,6 +34,132 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ── Backend qualification (Phase D) ─────────────────────────────────
+# Both backends are qualified in FRESH subprocesses before use so a broken
+# wheel (crashing DLL, missing enum) can never take the GUI process down or
+# silently degrade a run. Results are cached for the session — a backend
+# that fails qualification stays excluded until app restart (imports cache
+# in sys.modules; there is no hot-reload).
+
+_PYCOLMAP_QUALIFICATION_CACHE: Dict[str, Dict[str, Any]] = {}
+_CLI_CAMERA_MODEL_CACHE: Dict[Tuple[str, str], bool] = {}
+_PYCOLMAP_PYD_SHA256_CACHE: Optional[str] = None
+
+_PYCOLMAP_PROBE_SCRIPT = (
+    "import json\n"
+    "result = {'importable': False, 'version': '', 'has_cuda': False,"
+    " 'caspar': False, 'camera_models': [], 'error': ''}\n"
+    "try:\n"
+    "    import pycolmap\n"
+    "    result['importable'] = True\n"
+    "    result['version'] = str(getattr(pycolmap, '__version__', ''))\n"
+    "    result['has_cuda'] = bool(getattr(pycolmap, 'has_cuda', False))\n"
+    "    bab = getattr(pycolmap, 'BundleAdjustmentBackend', None)\n"
+    "    result['caspar'] = bool(bab is not None and hasattr(bab, 'CASPAR'))\n"
+    "    cmi = getattr(pycolmap, 'CameraModelId', None)\n"
+    "    if cmi is not None:\n"
+    "        result['camera_models'] = ["
+    "m for m in dir(cmi) if m.isupper() and m != 'INVALID']\n"
+    "except Exception as exc:\n"
+    "    result['error'] = repr(exc)\n"
+    "print(json.dumps(result))\n"
+)
+
+
+def qualify_pycolmap_backend(
+    python_exe: Optional[str] = None,
+    *,
+    extra_env: Optional[Dict[str, str]] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Probe pycolmap in a fresh subprocess; cached per interpreter+env."""
+    exe = python_exe or sys.executable
+    cache_key = exe + "|" + repr(sorted((extra_env or {}).items()))
+    if not force and cache_key in _PYCOLMAP_QUALIFICATION_CACHE:
+        return _PYCOLMAP_QUALIFICATION_CACHE[cache_key]
+
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    result: Dict[str, Any] = {
+        "importable": False, "version": "", "has_cuda": False,
+        "caspar": False, "camera_models": [], "error": "",
+    }
+    try:
+        proc = subprocess.run(
+            [exe, "-c", _PYCOLMAP_PROBE_SCRIPT],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+        line = (proc.stdout or "").strip().splitlines()
+        if proc.returncode == 0 and line:
+            result = json.loads(line[-1])
+        else:
+            result["error"] = (proc.stderr or "").strip()[-500:] or f"exit {proc.returncode}"
+    except Exception as exc:
+        result["error"] = repr(exc)
+
+    logger.info(
+        "pycolmap qualification (%s): importable=%s version=%s cuda=%s caspar=%s%s",
+        exe, result.get("importable"), result.get("version"),
+        result.get("has_cuda"), result.get("caspar"),
+        f" error={result.get('error')}" if result.get("error") else "",
+    )
+    _PYCOLMAP_QUALIFICATION_CACHE[cache_key] = result
+    return result
+
+
+def cli_supports_camera_model(
+    binary_path: str,
+    camera_model: str,
+    probe_root: str | Path,
+) -> bool:
+    """Probe whether a COLMAP CLI accepts a camera model; cached per session.
+
+    Runs feature_extractor against an empty image dir: an unsupported model
+    fails the ExistsCameraModelWithName check before any real work happens.
+    """
+    key = (str(binary_path), camera_model.upper())
+    if key in _CLI_CAMERA_MODEL_CACHE:
+        return _CLI_CAMERA_MODEL_CACHE[key]
+
+    probe_dir = Path(probe_root) / "camera_model_probe"
+    images_dir = probe_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    db_path = probe_dir / f"probe_{camera_model.lower()}.db"
+    supported = False
+    try:
+        proc = subprocess.run(
+            [
+                str(binary_path), "feature_extractor",
+                "--database_path", str(db_path),
+                "--image_path", str(images_dir),
+                "--ImageReader.camera_model", camera_model.upper(),
+            ],
+            capture_output=True, text=True, timeout=120,
+        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        supported = "ExistsCameraModelWithName" not in output
+    except Exception as exc:
+        logger.warning(
+            "CLI camera-model probe failed for %s / %s: %s",
+            binary_path, camera_model, exc,
+        )
+        supported = False
+    finally:
+        try:
+            db_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    logger.info(
+        "CLI camera-model probe: %s %s -> %s",
+        Path(binary_path).name, camera_model.upper(),
+        "supported" if supported else "NOT supported",
+    )
+    _CLI_CAMERA_MODEL_CACHE[key] = supported
+    return supported
 
 
 def _import_colmap_parsers():
@@ -145,7 +274,15 @@ class ColmapRunner:
         camera_model: str = "PINHOLE",
         workspace_root: Optional[str] = None,
         engine_name: Optional[str] = None,
+        backend_preference: str = "auto",
     ):
+        normalized_backend = (backend_preference or "auto").strip().lower()
+        if normalized_backend not in ("auto", "pycolmap", "cli"):
+            raise ValueError(
+                f"Unknown backend preference: {backend_preference!r} "
+                f"(expected auto | pycolmap | cli)"
+            )
+        self.backend_preference = normalized_backend
         if not binary_path or not str(binary_path).strip():
             raise ValueError("binary_path is required")
         if workspace_root is None or not str(workspace_root).strip():
@@ -165,6 +302,7 @@ class ColmapRunner:
         self.current_masks_dir: Optional[Path] = None
         self.current_effective_masks_dir: Optional[Path] = None
         self.current_run_info: Dict[str, Any] = {}
+        self._binary_sha256_cache: Optional[str] = None
 
     @staticmethod
     def _resolve_binary_path(binary_path: str) -> Path:
@@ -266,7 +404,10 @@ class ColmapRunner:
     def _is_spheresfm_like(self) -> bool:
         validation = self._binary_validation
         if not validation:
-            return False
+            # No binary validated yet (e.g. parsing a model without running
+            # alignment) — fall back to the explicit engine/camera-model
+            # configuration so namespace and backend choices stay correct.
+            return self._binary_requires_sphere_support()
         return validation.binary_flavor == "spheresfm-like"
 
     def _matching_option_key(self, stock_key: str, spheresfm_key: str) -> str:
@@ -478,8 +619,45 @@ class ColmapRunner:
         if not validation.success:
             raise RuntimeError(validation.error or "Binary validation failed")
 
+    def ensure_camera_model_supported(self) -> None:
+        """Refuse to start when the selected backend cannot handle the camera model.
+
+        EQUIRECTANGULAR and EUCM exist only in COLMAP >= 4.1.0; older wheels
+        and binaries reject (or worse, lack) them. Refusal names the incapable
+        backend so the fix is obvious.
+        """
+        model = self.camera_model.upper()
+        if model not in ("EQUIRECTANGULAR", "EUCM"):
+            return
+        if self._is_spheresfm_like():
+            raise RuntimeError(
+                f"Camera model {model} is not available in SphereSfM mode — "
+                f"use the COLMAP engine (SPHERE is the SphereSfM native model)."
+            )
+        if self._use_pycolmap():
+            qual = qualify_pycolmap_backend()
+            if model not in qual.get("camera_models", []):
+                raise RuntimeError(
+                    f"Camera model {model} requires pycolmap >= 4.1.0; the "
+                    f"qualified wheel is version "
+                    f"'{qual.get('version') or 'unknown'}' and does not "
+                    f"expose it. Upgrade the wheel or switch backend to cli "
+                    f"with a COLMAP 4.1.0+ binary."
+                )
+        else:
+            if not cli_supports_camera_model(
+                str(self.binary_path), model,
+                self.workspace_root / ".backend_probe",
+            ):
+                raise RuntimeError(
+                    f"Camera model {model} is not supported by the configured "
+                    f"binary {self.binary_path} — it predates COLMAP 4.1.0. "
+                    f"Point the Align tab at a COLMAP 4.1.0+ build."
+                )
+
     def start_run(self, images_dir: str, masks_dir: Optional[str] = None) -> Path:
         """Create a fresh run directory and initialize lightweight run metadata."""
+        self.ensure_camera_model_supported()
         images_path = self._validate_existing_dir(images_dir, label="Images directory")
         masks_path = None
         if masks_dir:
@@ -499,11 +677,21 @@ class ColmapRunner:
         self.current_masks_dir = masks_path
         self.current_effective_masks_dir = None
         self.current_run_info = {
+            "schema_version": 2,
             "run_id": run_id,
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "engine": self.engine_name,
             "engine_name": self.engine_name,
             "camera_model": self.camera_model,
             "binary_path": str(self.binary_path),
+            "binary_sha256": self._binary_sha256(),
+            "backend": "",
+            "pycolmap_version": self._pycolmap_version(),
+            "pycolmap_pyd_sha256": self._pycolmap_pyd_sha256(),
+            "camera_model_namespace": (
+                "spheresfm" if self._is_spheresfm_like() else "colmap"
+            ),
+            "ba_backend_resolved": "" if self._is_spheresfm_like() else "CERES",
             "workspace_root": str(self.workspace_root.resolve()),
             "run_dir": str(run_dir.resolve()),
             "images_dir": str(images_path.resolve()),
@@ -517,6 +705,48 @@ class ColmapRunner:
         self._write_run_info()
         logger.info("Started alignment run %s in %s", run_id, run_dir)
         return run_dir
+
+    def _binary_sha256(self) -> str:
+        if self._binary_sha256_cache is not None:
+            return self._binary_sha256_cache
+        try:
+            digest = hashlib.sha256()
+            with self.binary_path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            self._binary_sha256_cache = digest.hexdigest()
+        except Exception as exc:
+            logger.warning("Could not hash alignment binary %s: %s", self.binary_path, exc)
+            self._binary_sha256_cache = ""
+        return self._binary_sha256_cache
+
+    @staticmethod
+    def _pycolmap_version() -> str:
+        try:
+            import pycolmap
+            return str(getattr(pycolmap, "__version__", ""))
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _pycolmap_pyd_sha256() -> str:
+        """Hash of the pycolmap native module — provenance for run_info v2."""
+        global _PYCOLMAP_PYD_SHA256_CACHE
+        if _PYCOLMAP_PYD_SHA256_CACHE is not None:
+            return _PYCOLMAP_PYD_SHA256_CACHE
+        digest = ""
+        try:
+            from pycolmap import _core
+            pyd = Path(_core.__file__)
+            h = hashlib.sha256()
+            with pyd.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1 << 20), b""):
+                    h.update(chunk)
+            digest = h.hexdigest()
+        except Exception as exc:
+            logger.debug("Could not hash pycolmap _core: %s", exc)
+        _PYCOLMAP_PYD_SHA256_CACHE = digest
+        return digest
 
     def _resolve_effective_masks_dir(self) -> Tuple[Optional[Path], Dict[str, Any]]:
         if self.current_masks_dir is None:
@@ -962,9 +1192,39 @@ class ColmapRunner:
             "reader_options": reader_options,
         }
 
+        opts = pycolmap.FeatureExtractionOptions()
+        if max_image_size > 0:
+            opts.max_image_size = max_image_size
+        if max_features > 0:
+            opts.sift.max_num_features = max_features
+
         if normalized_type.startswith("ALIKED"):
-            kwargs["feature_extractor"] = pycolmap.FeatureExtractor.ALIKED
+            extractor_name = (
+                "ALIKED_N32" if normalized_type == "ALIKED_N32" else "ALIKED_N16ROT"
+            )
+            if (
+                hasattr(opts, "type")
+                and hasattr(pycolmap, "FeatureExtractorType")
+                and hasattr(pycolmap.FeatureExtractorType, extractor_name)
+            ):
+                opts.type = getattr(pycolmap.FeatureExtractorType, extractor_name)
+                if max_features > 0 and hasattr(opts, "aliked"):
+                    if hasattr(opts.aliked, "max_num_features"):
+                        opts.aliked.max_num_features = max_features
+                    else:
+                        logger.info("ALIKED feature extraction has no feature-cap option")
+                        if progress_callback:
+                            progress_callback(
+                                "ALIKED feature extraction has no feature-cap option"
+                            )
+            else:
+                logger.warning(
+                    "pycolmap %s lacks ALIKED extraction options; falling back to SIFT",
+                    getattr(pycolmap, "__version__", "unknown"),
+                )
         # SIFT is the default — no extra kwarg needed
+
+        kwargs["extraction_options"] = opts
 
         pycolmap.extract_features(db_path, image_dir, **kwargs)
 
@@ -1146,7 +1406,7 @@ class ColmapRunner:
             matching_type = extra_args.get("FeatureMatching.type")
             if matching_type:
                 matching_options.type = getattr(
-                    pycolmap.FeatureMatchingType, matching_type, matching_options.type
+                    pycolmap.FeatureMatcherType, matching_type, matching_options.type
                 )
 
         if progress_callback:
@@ -1171,6 +1431,9 @@ class ColmapRunner:
         min_num_inliers: int,
         extra_args: Optional[Dict[str, Any]],
         progress_callback: Optional[Callable[[str], None]],
+        ba_backend: str = "AUTO",
+        ba_use_gpu: bool = True,
+        ba_gpu_index: int = -1,
     ) -> StageResult:
         """Run reconstruction via pycolmap (incremental or global)."""
         import pycolmap
@@ -1191,12 +1454,38 @@ class ColmapRunner:
             mode_label = "global" if mapper_key in ("global", "global_mapper") else "incremental"
             progress_callback(f"Running {mode_label} mapping via pycolmap...")
 
+        caspar_surface = (
+            hasattr(pycolmap.BundleAdjustmentBackend, "CASPAR")
+            and hasattr(pycolmap.IncrementalPipelineOptions(), "ba_local_backend")
+            and hasattr(pycolmap.IncrementalPipelineOptions(), "ba_global_backend")
+        )
+        missing_reason = ""
+        if not caspar_surface:
+            missing_reason = f"pycolmap {pycolmap.__version__} lacks CASPAR"
+        resolved_backend = self._resolve_ba_backend(
+            ba_backend=ba_backend,
+            mapper_key=mapper_key,
+            caspar_surface_exists=caspar_surface,
+            missing_surface_reason=missing_reason,
+            progress_callback=progress_callback,
+        )
+        self._record_reconstruct_provenance("pycolmap", resolved_backend)
+
         if mapper_key in ("global", "global_mapper"):
             recs = pycolmap.global_mapping(db_path, image_dir, str(sparse_root))
         else:
             opts = pycolmap.IncrementalPipelineOptions(
                 min_num_matches=min_num_inliers,
             )
+            opts.ba_use_gpu = ba_use_gpu
+            opts.ba_gpu_index = str(ba_gpu_index)
+            if resolved_backend == "CASPAR":
+                # Hybrid measured 2026-07-17 on 430-image garage set (identical
+                # quality, mapping wall): both-Caspar 341s · Ceres-GPU 209s ·
+                # local=Ceres/global=Caspar 159s. Caspar's GPU launch overhead
+                # loses on the many small local BAs and wins on large global BAs.
+                opts.ba_local_backend = pycolmap.BundleAdjustmentBackend.CERES
+                opts.ba_global_backend = pycolmap.BundleAdjustmentBackend.CASPAR
             if extra_args:
                 for attr, key in [
                     ("ba_refine_focal_length", "Mapper.ba_refine_focal_length"),
@@ -1273,6 +1562,79 @@ class ColmapRunner:
             selected_model_dir=str(model_dir),
         )
 
+    def _camera_model_ids(self) -> set[int]:
+        database_path = self.current_run_dir / "database.db"
+        if not database_path.is_file():
+            return set()
+        with sqlite3.connect(database_path) as connection:
+            rows = connection.execute("SELECT DISTINCT model FROM cameras").fetchall()
+        return {int(row[0]) for row in rows}
+
+    def _resolve_ba_backend(
+        self,
+        ba_backend: str,
+        mapper_key: str,
+        caspar_surface_exists: bool,
+        missing_surface_reason: str = "",
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        requested = (ba_backend or "AUTO").strip().upper()
+        if requested not in {"AUTO", "CERES", "CASPAR"}:
+            raise ValueError(f"Unknown BA backend: {ba_backend}")
+
+        camera_models = self._camera_model_ids()
+        observed = ", ".join(str(model) for model in sorted(camera_models)) or "none"
+        logger.info("Observed camera model IDs for BA backend selection: {%s}", observed)
+        if progress_callback:
+            progress_callback(f"Observed camera model IDs: {{{observed}}}")
+
+        is_incremental = mapper_key in ("incremental", "mapper")
+        is_spheresfm = self._is_spheresfm_like()
+        offending = sorted(camera_models - {1, 2})
+
+        if requested == "CASPAR":
+            if offending:
+                raise RuntimeError(
+                    f"CASPAR does not support camera model IDs {offending}; "
+                    "only PINHOLE (1) and SIMPLE_RADIAL (2) are eligible"
+                )
+            if not is_incremental:
+                raise RuntimeError(f"CASPAR requires incremental mapping, not {mapper_key}")
+            if is_spheresfm:
+                raise RuntimeError("CASPAR is unavailable for SphereSfM mode")
+            if not caspar_surface_exists:
+                raise RuntimeError(missing_surface_reason or "CASPAR backend surface is unavailable")
+            resolved = "CASPAR"
+        elif requested == "AUTO":
+            resolved = (
+                "CASPAR"
+                if not offending
+                and is_incremental
+                and not is_spheresfm
+                and caspar_surface_exists
+                else "CERES"
+            )
+            if resolved == "CERES" and missing_surface_reason and not caspar_surface_exists:
+                logger.info("AUTO selected CERES: %s", missing_surface_reason)
+                if progress_callback:
+                    progress_callback(f"AUTO selected CERES: {missing_surface_reason}")
+        else:
+            resolved = "CERES"
+
+        logger.info("Selected BA backend: %s", resolved)
+        if progress_callback:
+            progress_callback(f"Selected BA backend: {resolved}")
+        return resolved
+
+    def _record_reconstruct_provenance(self, backend: str, ba_backend: str) -> None:
+        if not self.current_run_info:
+            return
+        self.current_run_info["backend"] = backend
+        self.current_run_info["ba_backend_resolved"] = (
+            "" if self._is_spheresfm_like() else ba_backend
+        )
+        self._write_run_info()
+
     def reconstruct(
         self,
         mapper: str = "incremental",
@@ -1281,6 +1643,9 @@ class ColmapRunner:
         progress_callback: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
         extra_args: Optional[Dict[str, Any]] = None,
+        ba_backend: str = "AUTO",
+        ba_use_gpu: bool = True,
+        ba_gpu_index: int = -1,
     ) -> StageResult:
         stage = "reconstruction"
         try:
@@ -1304,6 +1669,9 @@ class ColmapRunner:
                     min_num_inliers=min_num_inliers,
                     extra_args=extra_args,
                     progress_callback=progress_callback,
+                    ba_backend=ba_backend,
+                    ba_use_gpu=ba_use_gpu,
+                    ba_gpu_index=ba_gpu_index,
                 )
                 self._write_stage_log(stage, result.log or result.error)
                 self._record_stage_result(result)
@@ -1323,6 +1691,14 @@ class ColmapRunner:
                 raise ValueError(f"Unknown mapper mode: {mapper}")
             self._ensure_command_supported(command)
 
+            resolved_backend = self._resolve_ba_backend(
+                ba_backend=ba_backend,
+                mapper_key=mapper_key,
+                caspar_surface_exists=not self._is_spheresfm_like(),
+                progress_callback=progress_callback,
+            )
+            self._record_reconstruct_provenance("subprocess", resolved_backend)
+
             args: Dict[str, Any] = {
                 "database_path": self.current_run_dir / "database.db",
                 "image_path": self.current_images_dir,
@@ -1330,6 +1706,14 @@ class ColmapRunner:
             }
             if command in ("mapper", "pose_prior_mapper"):
                 args[self._mapper_option_key("Mapper.min_num_matches")] = min_num_inliers
+            if command == "mapper" and not self._is_spheresfm_like():
+                args["Mapper.ba_use_gpu"] = ba_use_gpu
+                if ba_gpu_index >= 0:
+                    args["Mapper.ba_gpu_index"] = ba_gpu_index
+                if resolved_backend == "CASPAR":
+                    # Hybrid (see _reconstruct_pycolmap): local stays CERES.
+                    args["Mapper.ba_local_backend"] = "CERES"
+                    args["Mapper.ba_global_backend"] = "CASPAR"
             if extra_args:
                 args.update({k: v for k, v in extra_args.items() if v is not None})
 
@@ -1594,6 +1978,24 @@ class ColmapRunner:
 
     @staticmethod
     def _pycolmap_available() -> bool:
+        # Subprocess qualification FIRST: a wheel whose import crashes must
+        # never be imported into this (GUI) process.
+        qual = qualify_pycolmap_backend()
+        if not qual.get("importable"):
+            return False
+        # Provenance enforcement (final-audit finding 1): a generic
+        # `pip install -U pycolmap` silently replaces the custom CUDA wheel
+        # with PyPI's CPU-only Windows build. A CPU wheel is functional but a
+        # silent regression on this machine — exclude it and fall back to the
+        # CUDA CLI instead. Reinstall from ~/COLMAP/release-v4.1.0/ (by hash).
+        if not qual.get("has_cuda"):
+            logger.warning(
+                "pycolmap wheel (version %s) is CPU-only — excluded; using the "
+                "CLI backend. Restore the custom CUDA wheel from the archived "
+                "release artifact (see ACQUISITION-RECORD).",
+                qual.get("version") or "unknown",
+            )
+            return False
         try:
             import pycolmap  # noqa: F401
             return True
@@ -1601,10 +2003,29 @@ class ColmapRunner:
             return False
 
     def _use_pycolmap(self) -> bool:
-        """Use pycolmap for stock COLMAP, subprocess for SphereSfM."""
+        """Select the execution backend for stock COLMAP work.
+
+        SphereSfM is always subprocess. For stock COLMAP the explicit
+        preference wins: "cli" forces subprocess, "pycolmap" requires a
+        qualified wheel (raises if unavailable — no silent downgrade),
+        "auto" uses pycolmap when qualified, else the CLI.
+        """
         if self._is_spheresfm_like():
             return False
-        return self._pycolmap_available()
+        if self.backend_preference == "cli":
+            return False
+        available = self._pycolmap_available()
+        if self.backend_preference == "pycolmap":
+            if not available:
+                qual = qualify_pycolmap_backend()
+                raise RuntimeError(
+                    "Backend preference is 'pycolmap' but the pycolmap wheel "
+                    "failed qualification for this session"
+                    + (f": {qual.get('error')}" if qual.get("error") else "")
+                    + ". Fix the wheel and restart, or switch backend to auto/cli."
+                )
+            return True
+        return available
 
     def parse_model(self, model_dir: Optional[Path] = None) -> Dict[str, Any]:
         """Parse a COLMAP model and compute summary stats.
@@ -1627,8 +2048,10 @@ class ColmapRunner:
         if not model_path.is_dir():
             raise FileNotFoundError(f"Model directory not found: {model_path}")
 
-        # Try pycolmap first — reads binary models directly
-        if self._pycolmap_available():
+        # Try pycolmap first — reads binary models directly. Gated on
+        # _use_pycolmap() (not just availability): SphereSfM models use the
+        # fork camera-model namespace, which pycolmap would misinterpret.
+        if self._use_pycolmap():
             try:
                 parsed = self._parse_model_pycolmap(model_path)
                 parsed["stats"] = self._model_stats_from_parsed(parsed)
@@ -1672,8 +2095,10 @@ class ColmapRunner:
                 read_colmap_binary_full_for_validation,
             )
 
-        parsed = read_colmap_binary_full_for_validation(model_path)
+        variant = "spheresfm" if self._is_spheresfm_like() else "colmap"
+        parsed = read_colmap_binary_full_for_validation(model_path, variant=variant)
         parsed["model_dir"] = str(model_path.resolve())
+        parsed["camera_model_namespace"] = variant
         return parsed
 
     def _parse_model_text(self, model_path: Path) -> Dict[str, Any]:
@@ -1714,6 +2139,9 @@ class ColmapRunner:
         vocab_tree_path: Optional[str] = None,
         mapper: str = "incremental",
         min_num_inliers: int = 15,
+        ba_backend: str = "AUTO",
+        ba_use_gpu: bool = True,
+        ba_gpu_index: int = -1,
         progress_callback: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
         extract_extra_args: Optional[Dict[str, Any]] = None,
@@ -1770,6 +2198,9 @@ class ColmapRunner:
             progress_callback=progress_callback,
             cancel_event=cancel_event,
             extra_args=reconstruct_extra_args,
+            ba_backend=ba_backend,
+            ba_use_gpu=ba_use_gpu,
+            ba_gpu_index=ba_gpu_index,
         )
         results.append(r3)
         return results
