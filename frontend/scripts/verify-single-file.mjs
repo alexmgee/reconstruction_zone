@@ -213,4 +213,9 @@ if (/\bnew\s+URL\s*\(/.test(executable)) fail("un-inlined URL construction is fo
 if (/sourceMappingURL|sourceURL|\.map(?:[?#\"']|$)/i.test(html)) fail("source-map reference is forbidden");
 if (/(?:^|[\"'(/])assets\//i.test(html)) fail("un-inlined asset path is forbidden");
 
+const RAW_SIZE_CEILING = 2_000_000;
+if (bytes.byteLength > RAW_SIZE_CEILING) {
+  fail(`bundle exceeds the ${RAW_SIZE_CEILING}-byte raw-size ceiling: ${bytes.byteLength} bytes`);
+}
+
 console.log(`verify-single-file PASS (${bytes.byteLength} bytes)`);

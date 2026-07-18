@@ -17,6 +17,9 @@ jobs:
         with:
           node-version-file: frontend/.node-version
 
+      - name: Pin npm to the committed version
+        run: npm install --global npm@11.2.0
+
       - name: Assert Node.js and npm versions
         shell: pwsh
         run: |
@@ -126,7 +129,7 @@ jobs:
       - name: Generate CycloneDX SBOM
         working-directory: frontend
         shell: pwsh
-        run: npx --yes @cyclonedx/cyclonedx-npm@6.0.0 --output-format JSON --output-file "$env:RUNNER_TEMP/frontend.cdx.json"
+        run: npx --no-install @cyclonedx/cyclonedx-npm --output-format JSON --output-file "$env:RUNNER_TEMP/frontend.cdx.json"
 
       - name: Upload CycloneDX SBOM
         uses: actions/upload-artifact@v4

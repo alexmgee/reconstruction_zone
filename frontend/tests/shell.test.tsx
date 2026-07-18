@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { App } from "../src/App";
 import type { ApiClient } from "../src/api/client";
 import {
@@ -221,5 +222,34 @@ describe("React shell parity", () => {
     button.focus();
     await user.keyboard("{Enter}");
     expect(onSelectJob).toHaveBeenCalledWith(jobId);
+  });
+
+  it("exposes aria-busy, progress semantics, and focus-visible styling", () => {
+    const { rerender } = render(<StatusView state={makeState({ healthBusy: true })} hidden={false} />);
+    expect(document.querySelector("#health-fields")).toHaveAttribute("aria-busy", "true");
+    rerender(<StatusView state={makeState({ healthBusy: false })} hidden={false} />);
+    expect(document.querySelector("#health-fields")).toHaveAttribute("aria-busy", "false");
+    cleanup();
+
+    render(
+      <JobsView
+        state={makeState({
+          jobSummaries: [summary],
+          selectedJobId: jobId,
+          jobDetailData: detail,
+          detailVisible: true,
+          jobsBusy: true,
+        })}
+        hidden={false}
+        onSelectJob={vi.fn()}
+      />,
+    );
+    const progress = document.querySelector("#job-progress");
+    expect(progress?.tagName).toBe("PROGRESS");
+    expect(progress).toHaveAttribute("max", "100");
+    expect(progress).toHaveTextContent("75%");
+    expect(document.querySelector("#job-list")).toHaveAttribute("aria-busy", "true");
+
+    expect(readFileSync("src/styles.css", "utf8")).toMatch(/:focus-visible/);
   });
 });

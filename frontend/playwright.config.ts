@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import { defineConfig } from "@playwright/test";
 
 const E2E_PORT = "18765";
@@ -22,7 +24,7 @@ export default defineConfig({
   },
   webServer: {
     command: "python -B -m frontend.e2e.serve_shell",
-    cwd: "D:/Projects/reconstruction-zone-web",
+    cwd: resolve(import.meta.dirname, ".."),
     env: { E2E_PORT },
     url: BASE_URL,
     reuseExistingServer: false,
