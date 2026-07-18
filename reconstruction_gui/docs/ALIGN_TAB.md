@@ -181,10 +181,10 @@ faster than Ceres, with identical quality.
 
 **Honest limitations:**
 
-- Ceres GPU acceleration (including the cuDSS sparse solver) engages only via the
-  **cli** backend, and only on large problems (COLMAP routes small ones to CPU
-  solvers by design, because they're faster there). The in-process backend's
-  Ceres runs on CPU. Caspar is the in-process GPU solver.
+- Ceres GPU acceleration (the cuDSS sparse solver) works on both backends, but
+  COLMAP deliberately routes small problems (under ~1000 images by default) to
+  its CPU solvers, because they're faster at that scale — so "GPU BA" with
+  Ceres often runs on CPU for typical datasets. Caspar always runs on the GPU.
 - Global-mapper GPU BA is cli-only.
 
 ## Advanced

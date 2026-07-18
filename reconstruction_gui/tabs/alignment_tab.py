@@ -629,9 +629,9 @@ def _build_alignment_reconstruct_section(app, parent):
         "Caspar runs the large global bundle adjustments on the GPU; the many\n"
         "small local adjustments stay on Ceres (measured fastest combination).\n"
         "CASPAR supports only PINHOLE/SIMPLE_RADIAL and incremental mapping.\n"
-        "GPU BA: Caspar is the in-process GPU solver. Ceres GPU/cuDSS engages\n"
-        "only via the cli backend (the in-process wheel's Ceres runs on CPU),\n"
-        "and global-mapper GPU BA is cli-only as well.",
+        "GPU BA uses CUDA for bundle adjustment (Caspar and Ceres/cuDSS both;\n"
+        "Ceres routes small problems to CPU solvers by design).\n"
+        "Global-mapper GPU BA is cli-only.",
     )
 
     # Pose prior controls (shown only when mapper = pose_prior)
