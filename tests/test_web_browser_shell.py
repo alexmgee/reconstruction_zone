@@ -19,12 +19,12 @@ import pytest
 from reconstruction_web import __version__
 from reconstruction_web.jobs import JobRegistry
 from reconstruction_web.server import HOST, make_server, shutdown_server
-from reconstruction_web.shell import SHELL_HTML
+from reconstruction_web.shell_html import SHELL_HTML
 from reconstruction_web.state import build_state_config
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "reconstruction_web"
-SHELL_PATH = PACKAGE_ROOT / "shell.py"
+SHELL_PATH = PACKAGE_ROOT / "shell_html.py"
 FIXED_404 = b'{"error": "not_found", "message": "Route not found."}'
 EXACT_CSP = (
     "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
@@ -42,6 +42,37 @@ SUMMARY_FIELDS = {
     "finished_at",
 }
 DETAIL_FIELDS = SUMMARY_FIELDS | {"logs", "result", "error"}
+
+
+def _shell_source_tree_and_assignment() -> tuple[str, ast.Module, ast.AnnAssign]:
+    source = SHELL_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(SHELL_PATH))
+    assignments = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "SHELL_HTML"
+    ]
+    assert len(assignments) == 1
+    return source, tree, assignments[0]
+
+
+def _literal_span(source: str, value: ast.expr) -> tuple[str, str, str]:
+    assert value.lineno is not None
+    assert value.col_offset is not None
+    assert value.end_lineno is not None
+    assert value.end_col_offset is not None
+
+    lines = source.splitlines(keepends=True)
+    start = sum(len(line.encode("utf-8")) for line in lines[: value.lineno - 1]) + value.col_offset
+    end = sum(len(line.encode("utf-8")) for line in lines[: value.end_lineno - 1]) + value.end_col_offset
+    source_bytes = source.encode("utf-8")
+    before = source_bytes[:start].decode("utf-8", errors="strict")
+    literal = source_bytes[start:end].decode("utf-8", errors="strict")
+    after = source_bytes[end:].decode("utf-8", errors="strict")
+    assert before + literal + after == source
+    return before, literal, after
 
 
 class ShellInspector(HTMLParser):
@@ -122,8 +153,6 @@ def test_root_serves_exact_compiled_shell_with_hardening_headers(shell_server):
     assert headers["content-security-policy"] == EXACT_CSP
     assert sum(tag == "style" for tag, _ in parser.tags) == 1
     assert sum(tag == "script" for tag, _ in parser.tags) == 1
-    assert b'id="status-view"' in body
-    assert b'id="jobs-view"' in body
 
 
 @pytest.mark.parametrize(
@@ -164,21 +193,28 @@ def test_post_root_keeps_fixed_json_404(shell_server):
 
 
 def test_shell_assignment_is_plain_ast_literal_and_has_no_file_loader():
-    source = SHELL_PATH.read_text(encoding="utf-8")
-    module = ast.parse(source)
-    assignments = [
-        node
-        for node in module.body
-        if isinstance(node, ast.AnnAssign)
-        and isinstance(node.target, ast.Name)
-        and node.target.id == "SHELL_HTML"
-    ]
-    assert len(assignments) == 1
-    value = assignments[0].value
+    source, _, assignment = _shell_source_tree_and_assignment()
+    value = assignment.value
     assert isinstance(value, ast.Constant)
-    assert isinstance(value.value, (bytes, str))
+    assert isinstance(value.value, bytes)
+
+    before, literal, after = _literal_span(source, value)
+    literal_expression = ast.parse(f"({literal})", mode="eval").body
+    assert isinstance(literal_expression, ast.Constant)
+    assert literal_expression.value == value.value
+
+    excised_source = before + after
     for forbidden in ("open(", "read_bytes", "read_text", "Path(", "importlib", "__file__"):
-        assert forbidden not in source
+        assert forbidden not in excised_source
+
+    replacement_tree = ast.parse(before + 'b""' + after)
+    replacement_assignments = [
+        node for node in replacement_tree.body if isinstance(node, ast.AnnAssign)
+    ]
+    assert len(replacement_assignments) == 1
+    replacement_value = replacement_assignments[0].value
+    assert isinstance(replacement_value, ast.Constant)
+    assert replacement_value.value == b""
 
 
 def test_shell_delivery_uses_no_filesystem_read_after_construction(shell_server, monkeypatch):
@@ -212,11 +248,7 @@ def test_no_static_tree_or_non_python_package_asset_exists():
 
 def test_served_html_has_no_external_resource_or_runtime_reference(shell_server):
     server, _ = shell_server
-    headers, body, parser = _served_shell(server)
-    text = body.decode("utf-8")
-    lowered = text.lower()
-    assert "http://" not in lowered
-    assert "https://" not in lowered
+    headers, _, parser = _served_shell(server)
     assert headers["content-security-policy"] == EXACT_CSP
 
     resource_attributes = {"src", "href", "action", "formaction", "poster", "data"}
@@ -225,103 +257,100 @@ def test_served_html_has_no_external_resource_or_runtime_reference(shell_server)
         for name, value in attrs.items():
             if name.lower() in resource_attributes and value is not None:
                 observed_references.append((tag, name.lower(), value))
-    assert observed_references == [
-        ("link", "href", "data:,"),
-        ("a", "href", "#status"),
-        ("a", "href", "#jobs"),
-    ]
+    assert observed_references == [("link", "href", "data:,")]
+    # React creates these anchors at runtime; frontend/tests/shell.test.tsx owns
+    # their rendered-DOM behavior. The compiled declarations remain closed here.
+    assert re.findall(r'\bhref:\s*"(#[^"]+)"', parser.script) == ["#status", "#jobs"]
     assert not any(tag in {"img", "iframe", "object", "embed", "audio", "video"} for tag, _ in parser.tags)
     assert "@import" not in parser.style.lower()
     assert re.search(r"url\s*\(", parser.style, flags=re.IGNORECASE) is None
-    assert "WebSocket" not in parser.script
-    assert "EventSource" not in parser.script
-    assert "sendBeacon" not in parser.script
-    assert "XMLHttpRequest" not in parser.script
 
 
 def test_frontend_fetches_are_same_origin_get_only(shell_server):
     server, _ = shell_server
     _, _, parser = _served_shell(server)
     script = parser.script
-    assert script.count("fetch(") == 1
-    assert 'method: "GET"' in script
-    assert 'const HEALTH_PATH = "/api/health";' in script
-    assert 'const VERSION_PATH = "/api/version";' in script
-    assert 'const JOBS_PATH = "/api/jobs";' in script
-    assert 'JOBS_PATH + "/" + encodeURIComponent(selectedJobId)' in script
-    assert re.search(r'method\s*:\s*"(?:POST|PUT|PATCH|DELETE)"', script) is None
-    assert "request body" not in script.lower()
+    for path in ("/api/health", "/api/version", "/api/jobs"):
+        assert f'"{path}"' in script
+    assert "`${JOBS_PATH}/${encodeURIComponent(jobId)}`" in script
+    assert r"/^\/api\/jobs\/[0-9a-f]{32}$/" in script
+    assert re.search(
+        r"\bmethod\s*:\s*['\"](?:POST|PUT|PATCH|DELETE)['\"]",
+        script,
+    ) is None
     assert "/cancel" not in script
-    assert "localStorage" not in script
-    assert "sessionStorage" not in script
-    assert "document.cookie" not in script
-    assert "serviceWorker" not in script
+    # GET options and job-ID rejection-before-fetch are owned by
+    # frontend/tests/api.test.ts; this test covers the compiled served artifact.
 
 
 def test_rendering_uses_closed_fields_and_text_nodes_only(shell_server):
     server, _ = shell_server
-    _, _, parser = _served_shell(server)
-    script = parser.script
-    assert "document.createElement" in script
-    assert "replaceChildren" in script
-    assert "textContent" in script
-    for forbidden in (
-        "innerHTML",
-        "insertAdjacentHTML",
-        "document.write",
-        "JSON.stringify",
-        "Object.keys",
-        "Object.entries",
+    headers, _, parser = _served_shell(server)
+    assert headers["content-security-policy"] == EXACT_CSP
+    assert re.findall(r'\blabel:\s*"([^"]+)"', parser.script) == [
+        "Healthy",
+        "Service",
+        "Mode",
+        "Local only",
+        "State configured",
+        "Service",
+        "Version",
+        "Source",
+        "Job ID",
+        "Type",
+        "State",
+        "Progress",
+        "Current step",
+        "Created",
+        "Started",
+        "Finished",
+        "Result kind",
+        "Steps completed",
+        "Error code",
+        "Error",
+    ]
+    for visible_heading in (
+        "Runtime status",
+        "Representative jobs",
+        "Local service",
+        "Version",
+        "Retained jobs",
+        "Selected job",
+        "Logs",
     ):
-        assert forbidden not in script
-    assert re.search(r"\bfor\s*\([^)]*\bin\b", script) is None
-
-    response_fields = set(re.findall(r"\bvalue\.([A-Za-z_][A-Za-z0-9_]*)", script))
-    assert response_fields == DETAIL_FIELDS | {
-        "jobs",
-        "ok",
-        "service",
-        "mode",
-        "local_only",
-        "state_configured",
-        "version",
-        "version_source",
-        "time",
-        "level",
-        "code",
-        "message",
-        "kind",
-        "steps_completed",
-    }
-    assert "encodeURIComponent(selectedJobId)" in script
+        assert visible_heading in parser.script
+    # Closed DOM rendering and injection-sink bans are owned by
+    # frontend/tests/shell.test.tsx and frontend/tests/source-security.test.ts.
 
 
 def test_polling_lifecycle_and_visible_state_catalog_are_present(shell_server):
     server, _ = shell_server
-    _, body, parser = _served_shell(server)
-    script = parser.script
+    _, body, _ = _served_shell(server)
     text = body.decode("utf-8")
-    assert "const HEALTH_INTERVAL_MS = 5000;" in script
-    assert "const JOB_INTERVAL_MS = 2000;" in script
-    assert "const FETCH_TIMEOUT_MS = 5000;" in script
-    assert "setInterval" not in script
-    assert "healthTimer = window.setTimeout(runHealthCycle, delay);" in script
-    assert "jobTimer = window.setTimeout(runJobsCycle, delay);" in script
-    assert "AbortController" in script
-    assert 'document.addEventListener("visibilitychange"' in script
-    assert 'window.addEventListener("pagehide"' in script
     for state_text in (
         "Loading local status...",
+        "Loading version...",
         "Loading jobs...",
+        "Loading job detail...",
         "Refreshing...",
+        "Refreshing detail...",
+        "Local service is healthy.",
+        "Local service reported unhealthy.",
+        "Version information is current.",
+        "Retained jobs are current.",
+        "Job detail is current.",
         "Stale.",
         "Local API unavailable. Is the localhost server still running?",
         "Local API returned HTTP ",
         "Local API returned an unexpected response.",
-        "No representative jobs are available.",
+        "No representative jobs are available. WEB5 is read-only; jobs must be created outside this page.",
+        "Job detail is no longer available. Refreshing list...",
         "Local API reconnected.",
+        "Never",
     ):
         assert state_text in text
+    # Timers, non-overlap, abort/pause/resume, cleanup, and one-shot version
+    # loading are owned by frontend/tests/polling.test.ts.
 
 
 def test_api_routes_keep_json_precedence_and_web2_contracts(shell_server):
@@ -397,7 +426,7 @@ def test_shell_server_binding_and_clean_import_isolation(tmp_path):
     probe = """
 import json
 import sys
-import reconstruction_web.shell
+import reconstruction_web.shell_html
 import reconstruction_web.server
 print(json.dumps({
     "customtkinter": "customtkinter" in sys.modules,
@@ -423,8 +452,9 @@ print(json.dumps({
 
 def test_server_and_shell_sources_have_no_generic_static_serving():
     source = (PACKAGE_ROOT / "server.py").read_text(encoding="utf-8")
-    shell_source = SHELL_PATH.read_text(encoding="utf-8")
-    combined = source + shell_source
+    shell_source, _, assignment = _shell_source_tree_and_assignment()
+    before, _, after = _literal_span(shell_source, assignment.value)
+    combined = source + before + after
     for forbidden in (
         "SimpleHTTPRequestHandler",
         "os.chdir",

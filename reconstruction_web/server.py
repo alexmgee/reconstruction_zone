@@ -21,7 +21,7 @@ from reconstruction_web.projects import (
     ProjectReader,
     build_project_reader,
 )
-from reconstruction_web.shell import SHELL_HTML
+from reconstruction_web.shell_html import SHELL_HTML
 from reconstruction_web.state import WebStateConfig, WebStateConfigError, build_state_config
 
 __all__ = ["HOST", "make_server", "main", "parse_root_argument", "shutdown_server"]
