@@ -39,6 +39,16 @@ Dispatch logs: `../../.collab-logs/` (gitignored 2026-07-16).
 - L7 (max_features 2048 vs 8192 keypoint counts) runs on a 5-image subset of F2.
 
 ## Activity log (newest first)
+- 2026-07-18 · **CORRECTION from lichtfeld-360-plugin audit cross-check.** The plugin's
+  audit (its docs/plans/PROGRESS.md) diagnosed our cuDSS probe as broken: ctypes
+  EnumProcessModulesEx without argtypes silently returns 0 modules. Re-probed here with
+  a VALIDATED instrument (109 modules seen): cudss64_0 + full CUDA family DO load at
+  import; nvcuda64.dll loads during Ceres use_gpu solves. "In-process Ceres = CPU-only"
+  claim RETRACTED; tooltip + ALIGN_TAB.md + memory corrected (small-problem CPU routing
+  and global-mapper-cli-only remain true). Also inherited from plugin audit: Caspar×rig
+  SOUND (1.7e-6° constraint fidelity, noise-floor poses) → no rig gate needed for
+  incremental Caspar; GLOMAP+Caspar measured regression validates our incremental-only
+  gate; hybrid-vs-ceres_gpu crossover is scale-dependent → per-format defaults unit.
 - 2026-07-17 · **FINAL AUDIT (gpt5.6 xhigh-lineage, verdict HOLD) → all findings resolved
   or dispositioned; suite 264/264.** (.collab-logs/codex-final-audit.md)
   F1 provenance-enforcement: FIXED — `_pycolmap_available` now requires has_cuda; CPU
@@ -74,8 +84,9 @@ Dispatch logs: `../../.collab-logs/` (gitignored 2026-07-16).
   integration unvalidated.
 - EUCM + true-fisheye real-imagery validation (no fisheye frames in user library).
 - Old-run migration proof (no pre-plan run dirs existed; rule untested on real v1 data).
-- Doc-debt: ALIGN_TAB.md rewrite; project CLAUDE.md prep360 reframe flags stale
-  (--layout removed); colmap skill refresh (3.14→4.1.0 era, new paths).
+- Doc-debt: ~~ALIGN_TAB.md rewrite~~ DONE 2026-07-17 (commit 5d628996); still open:
+  project CLAUDE.md prep360 reframe flags stale (--layout removed); colmap skill
+  refresh (3.14→4.1.0 era, new paths).
 - 2026-07-17 · **LIVE ACCEPTANCE PASS — PLAN 01 EXECUTION COMPLETE.** Promoted env runs:
   colmap engine 426/430, 0.678px, backend=pycolmap 4.1.0, ba_backend_resolved=CASPAR
   (hybrid), namespace=colmap, run_info schema v2 ✓ · spheresfm legacy 72/76, 1.181px,
