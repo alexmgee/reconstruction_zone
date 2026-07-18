@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reconstruction.zone/contracts/version-response.schema.json",
+  "title": "VersionResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "service",
+    "version",
+    "version_source"
+  ],
+  "properties": {
+    "service": {
+      "const": "reconstruction_web"
+    },
+    "version": {
+      "type": "string"
+    },
+    "version_source": {
+      "const": "reconstruction_web"
+    }
+  }
+}

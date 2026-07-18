@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reconstruction.zone/contracts/health-response.schema.json",
+  "title": "HealthResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ok",
+    "service",
+    "mode",
+    "local_only",
+    "state_configured"
+  ],
+  "properties": {
+    "ok": {
+      "const": true
+    },
+    "service": {
+      "const": "reconstruction_web"
+    },
+    "mode": {
+      "const": "local"
+    },
+    "local_only": {
+      "const": true
+    },
+    "state_configured": {
+      "const": true
+    }
+  }
+}

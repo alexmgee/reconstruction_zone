@@ -59,6 +59,7 @@ dev = [
     "pytest",
     "ruff",
     "pyinstaller",
+    "jsonschema==4.26.0",
 ]
 
 [project.urls]

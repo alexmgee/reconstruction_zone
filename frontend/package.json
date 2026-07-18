@@ -9,7 +9,9 @@
     "npm": "11.2.0"
   },
   "scripts": {
-    "build": "vite build && node scripts/verify-single-file.mjs"
+    "build": "vite build && node scripts/verify-single-file.mjs",
+    "codegen": "node scripts/generate-api-types.mjs",
+    "codegen:check": "node scripts/generate-api-types.mjs --check"
   },
   "dependencies": {
     "react": "19.2.7",
@@ -20,6 +22,7 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
+    "json-schema-to-typescript": "15.0.4",
     "typescript": "7.0.2",
     "vite": "8.1.5",
     "vite-plugin-singlefile": "2.3.3"
