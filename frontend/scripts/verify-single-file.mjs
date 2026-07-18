@@ -5,6 +5,35 @@ const root = resolve(import.meta.dirname, "..");
 const dist = resolve(root, "dist");
 const indexPath = resolve(dist, "index.html");
 
+// Keep synchronized with tests/test_web_server_skeleton.py:24-40,379-395 and
+// tests/test_web_file_access.py:29-45. These are the exact package-wide source
+// guard tokens whose appearance in generated Python would fail pytest.
+const packageGuardExactTokens = [
+  "Path.home(",
+  "expanduser",
+  ".studio_prefs",
+  "SimpleHTTPRequestHandler",
+  "tracker.json",
+  "activity_log.json",
+  "D:\\",
+  "D:/",
+  "C:\\",
+  "C:/",
+  ".prep360",
+  ".reconstruction_zone",
+];
+const packageGuardCaseInsensitiveTokens = [
+  "fastapi",
+  "flask",
+  "aiohttp",
+  "uvicorn",
+  "asyncio",
+  "multiprocessing",
+  "subprocess",
+  "concurrent.futures",
+  "SimpleHTTPRequestHandler",
+];
+
 function fail(message) {
   throw new Error(`single-file verification failed: ${message}`);
 }
@@ -35,6 +64,19 @@ function decodeUtf8(bytes) {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
     fail("dist/index.html is not valid UTF-8");
+  }
+}
+
+function assertNoPackageGuardTokens(source) {
+  for (const token of packageGuardExactTokens) {
+    if (source.includes(token)) fail(`package-source guard token is forbidden: ${JSON.stringify(token)}`);
+  }
+
+  const lowered = source.toLowerCase();
+  for (const token of packageGuardCaseInsensitiveTokens) {
+    if (lowered.includes(token.toLowerCase())) {
+      fail(`case-insensitive package-source guard token is forbidden: ${JSON.stringify(token)}`);
+    }
   }
 }
 
@@ -106,6 +148,7 @@ function maskJavaScriptLiteralsAndComments(source) {
 await assertOnlyIndexHtml();
 const bytes = await readFile(indexPath);
 const html = decodeUtf8(bytes);
+assertNoPackageGuardTokens(html);
 
 const scriptMatches = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
 const styleMatches = [...html.matchAll(/<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi)];

@@ -9,7 +9,7 @@
     "npm": "11.2.0"
   },
   "scripts": {
-    "build": "vite build && node scripts/verify-single-file.mjs",
+    "build": "vite build && node scripts/verify-single-file.mjs && node scripts/generate-shell-html.mjs",
     "codegen": "node scripts/generate-api-types.mjs",
     "codegen:check": "node scripts/generate-api-types.mjs --check",
     "test": "vitest run"
