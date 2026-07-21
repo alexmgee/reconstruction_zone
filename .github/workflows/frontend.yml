@@ -97,7 +97,7 @@ jobs:
         run: git diff --exit-code -- reconstruction_web/shell_html.py
 
       - name: Install web test dependencies
-        run: pip install pytest jsonschema==4.26.0 numpy
+        run: pip install numpy opencv-python-headless Pillow tqdm pyyaml customtkinter py360convert scipy pytest jsonschema==4.26.0
 
       - name: Run web-track Python tests
         shell: bash
