@@ -97,7 +97,7 @@ jobs:
         run: git diff --exit-code -- reconstruction_web/shell_html.py
 
       - name: Install web test dependencies
-        run: pip install pytest jsonschema==4.26.0
+        run: pip install pytest jsonschema==4.26.0 numpy
 
       - name: Run web-track Python tests
         shell: bash
