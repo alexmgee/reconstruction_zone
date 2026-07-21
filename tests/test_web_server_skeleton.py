@@ -151,6 +151,17 @@ def test_fake_source_workspace_descendants_are_rejected(tmp_path, monkeypatch):
         resolve_state_root(web_descendant)
 
 
+def test_package_workspace_root_rejected_on_any_checkout_path(monkeypatch):
+    """The derived package anchor must reject the source tree even when the checkout
+    lives outside the known developer workspace paths (e.g. a CI runner)."""
+    import reconstruction_web
+
+    monkeypatch.setattr("reconstruction_web.state._owner_workspace_anchors", lambda: ())
+    package_dir = Path(reconstruction_web.__file__).resolve().parent
+    with pytest.raises(WebStateConfigError, match="not allowed"):
+        resolve_state_root(package_dir)
+
+
 def test_capture_copy_style_path_allowed_when_present(tmp_path):
     capture_root = tmp_path / "Capture"
     copy_path = capture_root / "_rz_web_test_copies" / "web_state"

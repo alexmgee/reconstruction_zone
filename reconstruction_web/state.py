@@ -127,6 +127,20 @@ def _is_same_or_descendant(path: Path, anchor: Path) -> bool:
 
 def _forbidden_workspace_anchors() -> tuple[Path, ...]:
     """Source-code workspace roots whose descendants must not be used as state roots."""
+    return (_package_workspace_root(), *_owner_workspace_anchors())
+
+
+def _package_workspace_root() -> Path:
+    """The tree containing this package (checkout or install), derived at call time.
+
+    Anchoring on the package location keeps the source-tree protection working on
+    any checkout path (e.g. CI runners), not only the known developer workspaces.
+    """
+    return Path(__file__).resolve().parent.parent
+
+
+def _owner_workspace_anchors() -> tuple[Path, ...]:
+    """Known developer workspace paths, protected even when running another copy of the code."""
     anchors: list[Path] = []
     for drive_letter in string.ascii_uppercase:
         projects = Path(f"{drive_letter}:{os.sep}") / "Projects"
