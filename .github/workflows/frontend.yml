@@ -107,7 +107,7 @@ jobs:
         working-directory: frontend
         shell: pwsh
         env:
-          PLAYWRIGHT_DOWNLOAD_HOST: https://cdn.playwright.dev/dbazure/download/playwright
+          PLAYWRIGHT_DOWNLOAD_HOST: https://cdn.playwright.dev
         run: |
           $revision = node -p "require('./node_modules/playwright-core/browsers.json').browsers.find(browser => browser.name === 'chromium').revision"
           Write-Host "Resolved Playwright Chromium revision: $revision"
