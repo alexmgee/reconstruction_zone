@@ -78,3 +78,6 @@ frontend/coverage/
 frontend/.env*
 frontend/test-results/
 frontend/playwright-report/
+
+# User mask library (persistent user data, not source)
+static_mask_library/
