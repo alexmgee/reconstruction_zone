@@ -2605,7 +2605,10 @@ class ReconstructionZone(AppInfrastructure, ctk.CTk):
                     msg += f"  skipped {stats['skipped_resize_failed']} resize-failed"
                 self.after(0, lambda: self.log(msg))
             except Exception as e:
-                self.after(0, lambda: self.log(f"Stamp failed: {e}"))
+                # Bind by default argument: `e` is unbound once the except
+                # block exits, so a late-running callback would raise
+                # NameError instead of reporting the failure.
+                self.after(0, lambda err=e: self.log(f"Stamp failed: {err}"))
 
         threading.Thread(target=_worker, daemon=True).start()
 

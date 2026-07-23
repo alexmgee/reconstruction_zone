@@ -42,13 +42,15 @@ try:
         AdjustmentRecipe,
         SkyFilter, SkyFilterConfig,
         OSVHandler,
-        FisheyeViewConfig, FISHEYE_PRESETS,
+        FisheyeViewConfig,  # noqa: F401 — probes the optional API surface below
+        FISHEYE_PRESETS,
         DualFisheyeCalibration,
-        MotionSelector,
+        MotionSelector,  # noqa: F401 — probed here; re-imported at each use site
         SharpestExtractor, SharpestConfig,
     )
     from prep360.core.fisheye_reframer import (
-        default_osmo360_calibration, batch_extract as fisheye_batch_extract,
+        default_osmo360_calibration,
+        batch_extract as fisheye_batch_extract,  # noqa: F401 — probes the optional API
     )
     from prep360.core.queue_manager import VideoQueue, ExtractionSettings
     from prep360.core.paired_split_video_extractor import (
@@ -3786,7 +3788,7 @@ def _reframe_worker(
 ):
     try:
         from prep360.core.reframer import (
-            Reframer, OutputLayout, get_view_preset, copy_view_config, validate_view_config,
+            Reframer, OutputLayout, get_view_preset, validate_view_config,
         )
 
         preset_key = _get_erp_preset_key(app)
@@ -3851,7 +3853,7 @@ def _reframe_worker(
             for err in result.errors[:5]:
                 lines.append(f"    - {err}")
 
-        app.log(f"\n" + "\n".join(lines))
+        app.log("\n" + "\n".join(lines))
 
         if result.success:
             input_src = video_path or frames_dir or ""

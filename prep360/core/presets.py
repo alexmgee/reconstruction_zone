@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from .reframer import ViewConfig, Ring, FreeView, get_view_preset, resolve_preset_name
+from .reframer import ViewConfig, Ring, FreeView, get_view_preset
 
 
 @dataclass

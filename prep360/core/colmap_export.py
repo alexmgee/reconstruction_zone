@@ -701,7 +701,7 @@ def write_rig_config(
     rig_config = [{"cameras": []}]
 
     for i, view in enumerate(views):
-        yaw, pitch, fov, view_name = view.yaw, view.pitch, view.fov, view.name
+        yaw, pitch, view_name = view.yaw, view.pitch, view.name
         R_face = _create_rotation_matrix(yaw, pitch, 0).T  # world-to-camera
         qw, qx, qy, qz = rotation_to_quaternion(R_face)
 

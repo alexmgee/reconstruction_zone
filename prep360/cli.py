@@ -480,7 +480,7 @@ def cmd_pipeline(args):
     view_config.output_size = args.size
     reframe_layout = getattr(args, "reframe_layout", "flat")
 
-    from .core.reframer import OutputLayout, Reframer
+    from .core.reframer import OutputLayout
 
     reframer = Reframer(view_config, preset_name="prep360_default")
     result = reframer.reframe_batch(
