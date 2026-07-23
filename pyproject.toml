@@ -59,6 +59,7 @@ dev = [
     "pytest",
     "ruff",
     "pyinstaller",
+    "jsonschema==4.26.0",
 ]
 
 [project.urls]
@@ -73,7 +74,7 @@ prep360 = "prep360.cli:main"
 reconstruction-zone = "reconstruction_gui.reconstruction_zone:main"
 
 [tool.setuptools.packages.find]
-include = ["prep360*", "reconstruction_gui*"]
+include = ["prep360*", "reconstruction_gui*", "reconstruction_web*"]
 
 [tool.ruff]
 target-version = "py310"

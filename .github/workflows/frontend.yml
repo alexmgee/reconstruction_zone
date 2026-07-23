@@ -1,0 +1,154 @@
+name: Frontend
+
+on:
+  push:
+    branches: [main, main-web]
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/.node-version
+
+      - name: Pin npm to the committed version
+        run: npm install --global npm@11.2.0
+
+      - name: Assert Node.js and npm versions
+        shell: pwsh
+        run: |
+          if ((node --version) -ne "v24.12.0") { throw "Expected Node.js v24.12.0" }
+          if ((npm --version) -ne "11.2.0") { throw "Expected npm 11.2.0" }
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts
+
+      - name: Reject unapproved VITE environment variables
+        shell: pwsh
+        run: |
+          $viteVariables = @(Get-ChildItem Env: | Where-Object Name -Like 'VITE_*')
+          if ($viteVariables.Count -ne 0) {
+            $names = $viteVariables.Name -join ', '
+            $viteVariables | ForEach-Object { Remove-Item "Env:$($_.Name)" }
+            throw "Unapproved VITE environment variables were present: $names"
+          }
+
+      - name: Assert no frontend environment files
+        shell: pwsh
+        run: |
+          $envFiles = @(Get-ChildItem frontend -Recurse -Force -File | Where-Object Name -Like '.env*')
+          if ($envFiles.Count -ne 0) {
+            throw "Frontend .env files found: $($envFiles.FullName -join ', ')"
+          }
+
+      - name: Check generated API types
+        working-directory: frontend
+        run: npm run codegen:check
+
+      - name: Run Vitest
+        working-directory: frontend
+        run: npm test
+
+      - name: Build twice for reproducibility
+        shell: pwsh
+        run: |
+          $buildA = Join-Path $env:RUNNER_TEMP 'build-a'
+          $buildB = Join-Path $env:RUNNER_TEMP 'build-b'
+          New-Item -ItemType Directory -Path $buildA, $buildB | Out-Null
+
+          Push-Location frontend
+          npm run build
+          Pop-Location
+          Copy-Item frontend/dist/index.html (Join-Path $buildA 'index.html')
+          Copy-Item reconstruction_web/shell_html.py (Join-Path $buildA 'shell_html.py')
+
+          Remove-Item frontend/dist -Recurse -Force
+          Push-Location frontend
+          npm run build
+          Pop-Location
+          Copy-Item frontend/dist/index.html (Join-Path $buildB 'index.html')
+          Copy-Item reconstruction_web/shell_html.py (Join-Path $buildB 'shell_html.py')
+
+      - name: Compare reproducible index.html
+        shell: pwsh
+        run: |
+          & fc.exe /b "$env:RUNNER_TEMP\build-a\index.html" "$env:RUNNER_TEMP\build-b\index.html"
+          if ($LASTEXITCODE -ne 0) { throw "index.html builds differ" }
+
+      - name: Compare reproducible shell_html.py
+        shell: pwsh
+        run: |
+          & fc.exe /b "$env:RUNNER_TEMP\build-a\shell_html.py" "$env:RUNNER_TEMP\build-b\shell_html.py"
+          if ($LASTEXITCODE -ne 0) { throw "shell_html.py builds differ" }
+
+      - name: Assert generated shell is committed
+        run: git diff --exit-code -- reconstruction_web/shell_html.py
+
+      - name: Install web test dependencies
+        run: pip install numpy opencv-python-headless Pillow tqdm pyyaml customtkinter py360convert scipy pytest jsonschema==4.26.0
+
+      - name: Run web-track Python tests
+        shell: bash
+        run: python -m pytest tests/test_web_*.py -q
+
+      - name: Install Playwright Chromium revision 1228
+        working-directory: frontend
+        shell: pwsh
+        env:
+          PLAYWRIGHT_DOWNLOAD_HOST: https://cdn.playwright.dev
+        run: |
+          $revision = node -p "require('./node_modules/playwright-core/browsers.json').browsers.find(browser => browser.name === 'chromium').revision"
+          Write-Host "Resolved Playwright Chromium revision: $revision"
+          if ($revision -ne "1228") { throw "Expected Playwright Chromium revision 1228" }
+          npx --no-install playwright install chromium
+
+      - name: Run Playwright end-to-end tests
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: Audit npm dependencies
+        working-directory: frontend
+        run: npm audit
+
+      - name: Audit npm registry signatures
+        working-directory: frontend
+        run: npm audit signatures
+
+      - name: Generate CycloneDX SBOM
+        working-directory: frontend
+        shell: pwsh
+        run: npx --no-install @cyclonedx/cyclonedx-npm --output-format JSON --output-file "$env:RUNNER_TEMP/frontend.cdx.json"
+
+      - name: Upload CycloneDX SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-cyclonedx-sbom
+          path: ${{ runner.temp }}/frontend.cdx.json
+          if-no-files-found: error
+
+      - name: Assert clean working tree
+        shell: pwsh
+        run: |
+          $status = git status --porcelain
+          if ($status) { throw "Unexpected working-tree changes:`n$($status -join "`n")" }
+
+      - name: Assert generated files are LF-only
+        shell: pwsh
+        run: |
+          foreach ($path in @('frontend/dist/index.html', 'reconstruction_web/shell_html.py')) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing $path" }
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            if ($bytes -contains 13) { throw "$path contains a CR byte" }
+          }

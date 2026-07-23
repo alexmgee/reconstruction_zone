@@ -1,0 +1,23 @@
+{
+  "job_id": "0123456789abcdef0123456789abcdef",
+  "job_type": "representative",
+  "state": "failed",
+  "progress": 65,
+  "current_step": "step</dd><script>window.__e2eSentinel='changed'</script>",
+  "created_at": "2026-07-18T12:00:00.000Z",
+  "started_at": "2026-07-18T12:00:01.000Z",
+  "finished_at": "2026-07-18T12:00:02.000Z",
+  "logs": [
+    {
+      "time": "2026-07-18T12:00:02.000Z",
+      "level": "error",
+      "code": "LOG<svg onload=\"window.__e2eSentinel='changed'\">",
+      "message": "message<iframe srcdoc=\"<script>window.__e2eSentinel='changed'</script>\"></iframe>"
+    }
+  ],
+  "result": null,
+  "error": {
+    "code": "E_BAD\"><a href=\"javascript:window.__e2eSentinel='changed'\">probe</a>",
+    "message": "failure<img src=\"/e2e-error-probe\" onerror=\"window.__e2eSentinel='changed'\">"
+  }
+}

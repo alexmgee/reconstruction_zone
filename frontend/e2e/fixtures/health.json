@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "service": "reconstruction_web",
+  "mode": "local",
+  "local_only": true,
+  "state_configured": true
+}

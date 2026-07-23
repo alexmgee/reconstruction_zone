@@ -56,7 +56,11 @@ reconstruction_gui/test_*.py
 .env
 *.env
 # Internal docs and legacy (not for GitHub)
-/docs/
+/docs/*
+!/docs/planning/
+docs/planning/*
+!/docs/planning/pointport_integration/
+!/docs/planning/pointport_integration/**
 /legacy/
 
 # Dev-only files
@@ -64,5 +68,13 @@ CLAUDE.md
 HANDOVER.md
 *.code-workspace
 
-# Agent-collab dispatch logs (plan ledger companion)
+# Agent-collab dispatch logs and local test scratch (never commit)
 .collab-logs/
+test_tmp/
+
+node_modules/
+.vite/
+frontend/coverage/
+frontend/.env*
+frontend/test-results/
+frontend/playwright-report/
