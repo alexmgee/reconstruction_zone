@@ -5,10 +5,14 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import pycolmap
 import pytest
 
 from reconstruction_gui.colmap_runner import ColmapRunner
+
+# The entire module is a contract against a live pycolmap install; skip where the
+# optional dependency is absent (e.g. CI), matching the convention used in
+# tests/test_backend_qualification.py and tests/test_colmap_binary_full.py.
+pycolmap = pytest.importorskip("pycolmap")
 
 
 def _runner(tmp_path: Path) -> ColmapRunner:
