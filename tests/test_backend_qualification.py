@@ -153,6 +153,11 @@ def test_erp_run_refuses_on_incapable_cli(tmp_path, monkeypatch):
 
 
 def test_erp_run_refuses_on_pre41_wheel(tmp_path, monkeypatch):
+    # Reaching the camera-model capability check needs a genuinely importable
+    # wheel: _pycolmap_available() import-checks pycolmap directly after the
+    # (here monkeypatched) qualification probe, so without it the
+    # backend-preference guard raises a different error first.
+    pytest.importorskip("pycolmap")
     monkeypatch.setattr(
         cr, "qualify_pycolmap_backend",
         lambda *a, **k: _failed_qualification(
