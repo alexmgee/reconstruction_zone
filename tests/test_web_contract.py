@@ -30,6 +30,8 @@ SCHEMA_NAMES = (
     "health-response.schema.json",
     "job-detail-response.schema.json",
     "jobs-response.schema.json",
+    "project-detail-response.schema.json",
+    "projects-response.schema.json",
     "version-response.schema.json",
 )
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
@@ -77,6 +79,107 @@ def contract_server(tmp_path: Path):
     thread.start()
     try:
         yield server, registry
+    finally:
+        shutdown_server(server, thread, join_timeout=3)
+
+
+@pytest.fixture
+def project_store(tmp_path: Path) -> Path:
+    existing_source = tmp_path / "existing_source"
+    existing_source.mkdir()
+    existing_work_dir = tmp_path / "existing_work_dir"
+    existing_work_dir.mkdir()
+    missing_source = tmp_path / "missing_source"
+    missing_work_dir = tmp_path / "missing_work_dir"
+    store_path = tmp_path / "contract-project-store.json"
+    store_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "store_path": str(store_path),
+                "projects": [
+                    {
+                        "id": "contract-project",
+                        "title": "Contract Project",
+                        "created_at": "2026-07-17T12:34:56.789012",
+                        "updated_at": "",
+                        "sources": [
+                            {
+                                "label": "Existing source",
+                                "path": str(existing_source),
+                                "media_type": "images",
+                                "file_count": 3,
+                                "notes": "",
+                            },
+                            {
+                                "label": "Missing source",
+                                "path": str(missing_source),
+                                "media_type": "video",
+                                "file_count": 0,
+                                "notes": "Missing by design",
+                            },
+                            {
+                                "label": "Empty source path",
+                                "path": "",
+                                "media_type": "other",
+                                "file_count": 0,
+                                "notes": "",
+                            },
+                        ],
+                        "work_dirs": [
+                            {
+                                "label": "Existing work directory",
+                                "path": str(existing_work_dir),
+                                "stage": "masked",
+                                "file_count": 2,
+                                "derived_from": "Existing source",
+                            },
+                            {
+                                "label": "Missing work directory",
+                                "path": str(missing_work_dir),
+                                "stage": "",
+                                "file_count": 0,
+                                "derived_from": "",
+                            },
+                        ],
+                        "notes": "Project contract fixture",
+                        "tags": ["contract"],
+                        "root_dir": str(tmp_path / "project_root"),
+                        "static_masks_dir": str(tmp_path / "project_root" / "static_masks"),
+                    },
+                    {
+                        "id": "blank-created-at",
+                        "title": "Blank Created Timestamp",
+                        "created_at": "",
+                        "updated_at": "2026-07-17T12:34:56.789012",
+                        "sources": [],
+                        "work_dirs": [],
+                        "notes": "",
+                        "tags": [],
+                        "root_dir": "",
+                        "static_masks_dir": "",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return store_path
+
+
+@pytest.fixture
+def project_contract_server(tmp_path: Path, project_store: Path):
+    state_root = tmp_path / "project_web_state"
+    state_root.mkdir()
+    server = make_server(
+        build_state_config(state_root),
+        port=0,
+        project_store=project_store,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
     finally:
         shutdown_server(server, thread, join_timeout=3)
 
@@ -158,6 +261,46 @@ def test_real_server_responses_match_contracts(contract_server, validators) -> N
         validators["error-response.schema.json"].validate(error)
 
 
+def test_real_project_server_responses_match_contracts(
+    project_contract_server, contract_server, validators
+) -> None:
+    status, projects = _request_json(project_contract_server, "/api/projects")
+    assert status == 200
+    validators["projects-response.schema.json"].validate(projects)
+
+    status, detail = _request_json(
+        project_contract_server,
+        "/api/projects/contract-project",
+    )
+    assert status == 200
+    validators["project-detail-response.schema.json"].validate(detail)
+    path_items = [*detail["sources"], *detail["work_dirs"]]
+    assert any(item["exists"] is True for item in path_items)
+    assert any(item["exists"] is False for item in path_items)
+    assert "root_dir" in detail
+    assert "static_masks_dir" in detail
+
+    status, not_found = _request_json(
+        project_contract_server,
+        "/api/projects/unknown-id",
+    )
+    assert status == 404
+    assert not_found == {
+        "error": "project_not_found",
+        "message": "Project not found.",
+    }
+    validators["error-response.schema.json"].validate(not_found)
+
+    unavailable_server, _ = contract_server
+    status, unavailable = _request_json(unavailable_server, "/api/projects")
+    assert status == 503
+    assert unavailable == {
+        "error": "project_store_unavailable",
+        "message": "A valid non-production project store is required.",
+    }
+    validators["error-response.schema.json"].validate(unavailable)
+
+
 VALID_TIMESTAMP = "2026-07-17T12:34:56.789Z"
 VALID_SUMMARY = {
     "job_id": "0123456789abcdef0123456789abcdef",
@@ -168,6 +311,36 @@ VALID_SUMMARY = {
     "created_at": VALID_TIMESTAMP,
     "started_at": VALID_TIMESTAMP,
     "finished_at": None,
+}
+VALID_PROJECT_DETAIL = {
+    "id": "contract-project",
+    "title": "Contract Project",
+    "created_at": "2026-07-17T12:34:56.789012",
+    "updated_at": "",
+    "sources": [
+        {
+            "label": "Source",
+            "path": "",
+            "media_type": "images",
+            "file_count": 3,
+            "notes": "",
+            "exists": True,
+        }
+    ],
+    "work_dirs": [
+        {
+            "label": "Work directory",
+            "path": "missing",
+            "stage": "masked",
+            "file_count": 0,
+            "derived_from": "Source",
+            "exists": False,
+        }
+    ],
+    "notes": "",
+    "tags": ["contract"],
+    "root_dir": "",
+    "static_masks_dir": "",
 }
 
 
@@ -181,11 +354,25 @@ def _negative_contract_cases() -> tuple[tuple[str, dict[str, Any]], ...]:
     invalid_timestamp = {
         "jobs": [{**VALID_SUMMARY, "created_at": "2026-07-17T12:34:56Z"}]
     }
+    project_missing_required = copy.deepcopy(VALID_PROJECT_DETAIL)
+    project_missing_required.pop("title")
+    project_extra_property = {**VALID_PROJECT_DETAIL, "unexpected": True}
+    project_nested_extra_property = copy.deepcopy(VALID_PROJECT_DETAIL)
+    project_nested_extra_property["sources"][0]["unexpected"] = True
+    project_wrong_file_count = copy.deepcopy(VALID_PROJECT_DETAIL)
+    project_wrong_file_count["sources"][0]["file_count"] = "3"
+    project_negative_file_count = copy.deepcopy(VALID_PROJECT_DETAIL)
+    project_negative_file_count["work_dirs"][0]["file_count"] = -1
     return (
         ("jobs-response.schema.json", extra_property),
         ("version-response.schema.json", missing_required),
         ("jobs-response.schema.json", wrong_type),
         ("jobs-response.schema.json", invalid_timestamp),
+        ("project-detail-response.schema.json", project_missing_required),
+        ("project-detail-response.schema.json", project_extra_property),
+        ("project-detail-response.schema.json", project_nested_extra_property),
+        ("project-detail-response.schema.json", project_wrong_file_count),
+        ("project-detail-response.schema.json", project_negative_file_count),
     )
 
 

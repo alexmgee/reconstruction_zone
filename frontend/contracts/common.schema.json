@@ -221,6 +221,174 @@
           ]
         }
       }
+    },
+    "ProjectSummary": {
+      "title": "ProjectSummary",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "tags",
+        "source_count",
+        "work_dir_count",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "work_dir_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      }
+    },
+    "ProjectSourceDetail": {
+      "title": "ProjectSourceDetail",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "path",
+        "media_type",
+        "file_count",
+        "notes",
+        "exists"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "notes": {
+          "type": "string"
+        },
+        "exists": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ProjectWorkDirDetail": {
+      "title": "ProjectWorkDirDetail",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "path",
+        "stage",
+        "file_count",
+        "derived_from",
+        "exists"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "derived_from": {
+          "type": "string"
+        },
+        "exists": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ProjectDetail": {
+      "title": "ProjectDetail",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "created_at",
+        "updated_at",
+        "sources",
+        "work_dirs",
+        "notes",
+        "tags",
+        "root_dir",
+        "static_masks_dir"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/ProjectSourceDetail"
+          }
+        },
+        "work_dirs": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/ProjectWorkDirDetail"
+          }
+        },
+        "notes": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "root_dir": {
+          "type": "string"
+        },
+        "static_masks_dir": {
+          "type": "string"
+        }
+      }
     }
   }
 }

@@ -16,6 +16,8 @@ const SCHEMA_FILES = [
   "health-response.schema.json",
   "job-detail-response.schema.json",
   "jobs-response.schema.json",
+  "project-detail-response.schema.json",
+  "projects-response.schema.json",
   "version-response.schema.json",
 ];
 

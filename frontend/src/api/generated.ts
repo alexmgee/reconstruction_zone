@@ -1,10 +1,17 @@
 /* generated — do not edit
  * Source: frontend/contracts/*.schema.json
- * Canonical schema SHA-256: 82775ff5649b9065453dc9bb9452230998e4ea4b5ff3da54b8d5915fe0ff5b28
+ * Canonical schema SHA-256: dffbd13d387877edfeccf4337624f194d4bacdf93be273fe4bd7a869cbf47b7b
  */
-export const SCHEMA_SHA256 = "82775ff5649b9065453dc9bb9452230998e4ea4b5ff3da54b8d5915fe0ff5b28" as const;
+export const SCHEMA_SHA256 = "dffbd13d387877edfeccf4337624f194d4bacdf93be273fe4bd7a869cbf47b7b" as const;
 
-export type ApiResponse = ErrorResponse | HealthResponse | JobDetailResponse | JobsResponse | VersionResponse;
+export type ApiResponse =
+  | ErrorResponse
+  | HealthResponse
+  | JobDetailResponse
+  | JobsResponse
+  | ProjectDetailResponse
+  | ProjectsResponse
+  | VersionResponse;
 export type Timestamp = string;
 export type TimestampOrNull = Timestamp | null;
 
@@ -58,6 +65,46 @@ export interface JobSummary {
   created_at: Timestamp;
   started_at: TimestampOrNull;
   finished_at: TimestampOrNull;
+}
+export interface ProjectDetailResponse {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  sources: ProjectSourceDetail[];
+  work_dirs: ProjectWorkDirDetail[];
+  notes: string;
+  tags: string[];
+  root_dir: string;
+  static_masks_dir: string;
+}
+export interface ProjectSourceDetail {
+  label: string;
+  path: string;
+  media_type: string;
+  file_count: number;
+  notes: string;
+  exists: boolean;
+}
+export interface ProjectWorkDirDetail {
+  label: string;
+  path: string;
+  stage: string;
+  file_count: number;
+  derived_from: string;
+  exists: boolean;
+}
+export interface ProjectsResponse {
+  projects: ProjectSummary[];
+}
+export interface ProjectSummary {
+  id: string;
+  title: string;
+  tags: string[];
+  source_count: number;
+  work_dir_count: number;
+  created_at: string;
+  updated_at: string;
 }
 export interface VersionResponse {
   service: "reconstruction_web";

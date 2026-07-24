@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reconstruction.zone/contracts/projects-response.schema.json",
+  "title": "ProjectsResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "projects"
+  ],
+  "properties": {
+    "projects": {
+      "type": "array",
+      "items": {
+        "$ref": "common.schema.json#/$defs/ProjectSummary"
+      }
+    }
+  }
+}
