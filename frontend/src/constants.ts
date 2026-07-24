@@ -1,6 +1,7 @@
 export const HEALTH_INTERVAL_MS = 5000;
 export const JOB_INTERVAL_MS = 2000;
 export const FETCH_TIMEOUT_MS = 5000;
+export const PROJECT_ID_PATTERN = /^[A-Za-z0-9._~-]+$/;
 
 export const EMPTY_JOBS_TEXT =
   "No representative jobs are available. WEB5 is read-only; jobs must be created outside this page.";

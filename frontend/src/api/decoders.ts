@@ -5,6 +5,10 @@ import type {
   JobResult,
   JobSummary,
   LogEntry,
+  ProjectDetailResponse,
+  ProjectSourceDetail,
+  ProjectSummary,
+  ProjectWorkDirDetail,
   VersionResponse,
 } from "./generated";
 import { JOB_STATES, LOG_CLASSES, type JobState } from "../constants";
@@ -46,6 +50,10 @@ export type DecodedDetail = Omit<
   result: DecodedResult | null;
   error: DecodedError | null;
 };
+export type DecodedProjectSummary = ProjectSummary;
+export type DecodedProjectSourceDetail = ProjectSourceDetail;
+export type DecodedProjectWorkDirDetail = ProjectWorkDirDetail;
+export type DecodedProjectDetail = ProjectDetailResponse;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -136,6 +144,149 @@ export function normalizeJobs(value: unknown): DecodedSummary[] | null {
     jobs.push(job);
   }
   return jobs;
+}
+
+export function normalizeProjectSummary(value: unknown): DecodedProjectSummary | null {
+  if (
+    !isObject(value) ||
+    typeof value.id !== "string" ||
+    typeof value.title !== "string" ||
+    !Array.isArray(value.tags) ||
+    !value.tags.every((tag) => typeof tag === "string") ||
+    typeof value.source_count !== "number" ||
+    !Number.isInteger(value.source_count) ||
+    value.source_count < 0 ||
+    typeof value.work_dir_count !== "number" ||
+    !Number.isInteger(value.work_dir_count) ||
+    value.work_dir_count < 0 ||
+    typeof value.created_at !== "string" ||
+    typeof value.updated_at !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    title: value.title,
+    tags: value.tags,
+    source_count: value.source_count,
+    work_dir_count: value.work_dir_count,
+    created_at: value.created_at,
+    updated_at: value.updated_at,
+  };
+}
+
+export function normalizeProjectList(value: unknown): DecodedProjectSummary[] | null {
+  if (!isObject(value) || !Array.isArray(value.projects)) {
+    return null;
+  }
+  const projects: DecodedProjectSummary[] = [];
+  for (const candidate of value.projects) {
+    const project = normalizeProjectSummary(candidate);
+    if (project === null) {
+      return null;
+    }
+    projects.push(project);
+  }
+  return projects;
+}
+
+export function normalizeProjectSourceDetail(
+  value: unknown,
+): DecodedProjectSourceDetail | null {
+  if (
+    !isObject(value) ||
+    typeof value.label !== "string" ||
+    typeof value.path !== "string" ||
+    typeof value.media_type !== "string" ||
+    typeof value.notes !== "string" ||
+    typeof value.file_count !== "number" ||
+    !Number.isInteger(value.file_count) ||
+    value.file_count < 0 ||
+    typeof value.exists !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    label: value.label,
+    path: value.path,
+    media_type: value.media_type,
+    file_count: value.file_count,
+    notes: value.notes,
+    exists: value.exists,
+  };
+}
+
+export function normalizeProjectWorkDirDetail(
+  value: unknown,
+): DecodedProjectWorkDirDetail | null {
+  if (
+    !isObject(value) ||
+    typeof value.label !== "string" ||
+    typeof value.path !== "string" ||
+    typeof value.stage !== "string" ||
+    typeof value.derived_from !== "string" ||
+    typeof value.file_count !== "number" ||
+    !Number.isInteger(value.file_count) ||
+    value.file_count < 0 ||
+    typeof value.exists !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    label: value.label,
+    path: value.path,
+    stage: value.stage,
+    file_count: value.file_count,
+    derived_from: value.derived_from,
+    exists: value.exists,
+  };
+}
+
+export function normalizeProjectDetail(value: unknown): DecodedProjectDetail | null {
+  if (
+    !isObject(value) ||
+    typeof value.id !== "string" ||
+    typeof value.title !== "string" ||
+    typeof value.created_at !== "string" ||
+    typeof value.updated_at !== "string" ||
+    typeof value.notes !== "string" ||
+    typeof value.root_dir !== "string" ||
+    typeof value.static_masks_dir !== "string" ||
+    !Array.isArray(value.tags) ||
+    !value.tags.every((tag) => typeof tag === "string") ||
+    !Array.isArray(value.sources) ||
+    !Array.isArray(value.work_dirs)
+  ) {
+    return null;
+  }
+  const sources: DecodedProjectSourceDetail[] = [];
+  for (const candidate of value.sources) {
+    const source = normalizeProjectSourceDetail(candidate);
+    if (source === null) {
+      return null;
+    }
+    sources.push(source);
+  }
+  const workDirs: DecodedProjectWorkDirDetail[] = [];
+  for (const candidate of value.work_dirs) {
+    const workDir = normalizeProjectWorkDirDetail(candidate);
+    if (workDir === null) {
+      return null;
+    }
+    workDirs.push(workDir);
+  }
+  return {
+    id: value.id,
+    title: value.title,
+    created_at: value.created_at,
+    updated_at: value.updated_at,
+    sources,
+    work_dirs: workDirs,
+    notes: value.notes,
+    tags: value.tags,
+    root_dir: value.root_dir,
+    static_masks_dir: value.static_masks_dir,
+  };
 }
 
 export function normalizeLog(value: unknown): DecodedLog | null {

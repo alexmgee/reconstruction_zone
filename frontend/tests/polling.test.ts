@@ -33,6 +33,8 @@ function mockApi(): ApiClient {
     getVersion: vi.fn().mockResolvedValue(version),
     getJobs: vi.fn().mockResolvedValue({ jobs: [summary] }),
     getJobDetail: vi.fn().mockResolvedValue(detail),
+    getProjects: vi.fn(),
+    getProjectDetail: vi.fn(),
     abortAll: vi.fn(),
   };
 }

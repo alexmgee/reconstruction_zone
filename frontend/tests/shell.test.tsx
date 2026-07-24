@@ -75,6 +75,8 @@ function settledApi(): ApiClient {
     }),
     getJobs: vi.fn().mockResolvedValue({ jobs: [] }),
     getJobDetail: vi.fn(),
+    getProjects: vi.fn(),
+    getProjectDetail: vi.fn(),
     abortAll: vi.fn(),
   };
 }
